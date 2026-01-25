@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.5.1 | 2026-01-25 | 节点宽度管理器（API Manager 可配置默认宽度） |
 | 2.5 | 2026-01-25 | 节点宽度保持机制（防止 252px 重置） |
 | 2.4 | 2026-01-25 | 节点生成图片预览持久化 |
 | 2.3 | 2026-01-25 | 模型排序、拖拽 UI |
@@ -288,6 +289,8 @@ ComfyUI-Custom-Batchbox/
 | `/api/batchbox/save-settings/preview` | POST | 预览文件名 |
 | `/api/batchbox/model-order/{category}` | GET | 获取模型排序 |
 | `/api/batchbox/model-order/{category}` | POST | 更新模型排序 |
+| `/api/batchbox/node-settings` | GET | 获取节点显示设置 |
+| `/api/batchbox/node-settings` | POST | 更新节点显示设置 |
 
 ---
 
@@ -406,7 +409,7 @@ def _sort_models_by_order(self, model_names, category):
 
 ### 7.6 节点宽度保持机制
 
-防止节点宽度在动态更新时被重置为 ~252px（LiteGraph 默认计算宽度）。
+防止节点宽度在动态更新时被重置为 ~252px（LiteGraph 默认计算宽度）。**v2.5.1 新增"节点宽度管理器"**，用户可在 API Manager → 保存设置 Tab 中配置新建节点的默认宽度（300-1200px）。
 
 **问题流程：**
 
@@ -449,13 +452,38 @@ flowchart TD
     B --> C[设置 _fresh_create = true]
     C --> D{50ms 后检查}
     D --> E{_fresh_create?}
-    E -->|是| F[新建节点: 使用 500px 默认宽度]
+    E -->|是| F1[新建节点: 获取配置宽度]
+    F1 --> F2[getNodeSettings]
+    F2 --> F3[使用 default_width]
     E -->|否| G[加载节点: 使用保存的宽度]
     
     H[工作流加载] --> I{loadedGraphNode}
     I --> J[设置 _fresh_create = false]
     J --> K[保存 savedWidth]
     K --> L[初始化后恢复 savedWidth]
+```
+
+**可配置默认宽度（v2.5.1）：**
+
+```javascript
+// 从后端获取节点设置
+async function getNodeSettings() {
+    const resp = await api.fetchApi("/api/batchbox/node-settings");
+    const data = await resp.json();
+    return data.node_settings || { default_width: 500 };
+}
+
+// 在 nodeCreated 中使用
+const nodeSettings = await getNodeSettings();
+const defaultWidth = nodeSettings.default_width || 500;
+node.size = [defaultWidth, computedSize[1]];
+```
+
+**配置存储 (api_config.yaml)：**
+
+```yaml
+node_settings:
+  default_width: 500  # 范围: 300-1200px
 ```
 
 **修改的函数：**
@@ -465,8 +493,13 @@ flowchart TD
 | `dynamic_inputs.js` | `addDynamicInput` | 保存/恢复宽度 |
 | `dynamic_inputs.js` | `removeDynamicInput` | 保存/恢复宽度 |
 | `dynamic_inputs.js` | `updateInputsForType` | 保存/恢复宽度 |
+| `dynamic_inputs.js` | `getNodeSettings` | 新增: 从后端获取配置 |
+| `dynamic_inputs.js` | `nodeCreated` | 使用配置的默认宽度 |
 | `dynamic_params.js` | `resizeNodePreservingWidth` | 新增辅助函数 |
 | `dynamic_params.js` | 7 处 `setSize` 调用 | 替换为辅助函数 |
+| `config_manager.py` | `get_node_settings` | 新增: 获取节点设置 |
+| `config_manager.py` | `update_node_settings` | 新增: 更新节点设置 |
+| `api_manager.js` | `renderSaveSettings` | 添加宽度滑块 UI |
 
 ---
 
@@ -490,6 +523,13 @@ flowchart TD
 ---
 
 ## 9. 更新日志
+
+### v2.5.1 (2026-01-25)
+- ✅ 节点默认宽度可配置（300-1200px）
+- ✅ API Manager → 保存设置 Tab 添加宽度滑块
+- ✅ `getNodeSettings()` 从后端获取配置
+- ✅ `/api/batchbox/node-settings` API 端点
+- ✅ `config_manager.py` 新增 `get/update_node_settings`
 
 ### v2.5 (2026-01-25)
 - ✅ 节点宽度保持机制（防止 252px 重置）

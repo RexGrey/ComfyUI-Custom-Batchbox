@@ -1407,7 +1407,80 @@ class BatchboxManager {
 
     // ==================== SAVE SETTINGS ====================
     async renderSaveSettings(container) {
-        container.innerHTML = `<h3>📁 自动保存设置</h3><p style="color: #aaa;">配置生成图片的自动保存选项。</p>`;
+        container.innerHTML = "";
+        
+        // ========== Node Display Settings Section ==========
+        const nodeSection = document.createElement("div");
+        nodeSection.className = "batchbox-settings-section";
+        nodeSection.innerHTML = `<h3>📐 节点显示设置</h3><p style="color: #aaa;">配置节点的默认显示样式。</p>`;
+        
+        // Load node settings
+        let nodeSettings = { default_width: 500 };
+        try {
+            const resp = await api.fetchApi("/api/batchbox/node-settings");
+            const data = await resp.json();
+            nodeSettings = data.node_settings || nodeSettings;
+        } catch (e) {
+            console.error("Failed to load node settings:", e);
+        }
+        
+        const nodeForm = document.createElement("div");
+        nodeForm.className = "batchbox-node-settings-form";
+        nodeForm.innerHTML = `
+            <div class="batchbox-form-group">
+                <label>节点默认宽度 (px)</label>
+                <div class="batchbox-input-hint">新建节点时使用的初始宽度</div>
+                <div class="batchbox-slider-row">
+                    <input type="range" id="node-width-slider" class="batchbox-slider" min="300" max="1200" step="10" value="${nodeSettings.default_width}">
+                    <input type="number" id="node-width-input" class="batchbox-input-sm" min="300" max="1200" value="${nodeSettings.default_width}" style="width: 80px;">
+                </div>
+            </div>
+            
+            <div class="batchbox-form-actions">
+                <button class="batchbox-btn btn-primary" id="save-node-settings-btn">💾 保存节点设置</button>
+            </div>
+        `;
+        nodeSection.appendChild(nodeForm);
+        container.appendChild(nodeSection);
+        
+        // Sync slider and input
+        const widthSlider = container.querySelector("#node-width-slider");
+        const widthInput = container.querySelector("#node-width-input");
+        widthSlider.oninput = () => { widthInput.value = widthSlider.value; };
+        widthInput.oninput = () => { 
+            const val = Math.min(1200, Math.max(300, parseInt(widthInput.value) || 500));
+            widthSlider.value = val;
+        };
+        
+        // Save node settings button
+        container.querySelector("#save-node-settings-btn").onclick = async () => {
+            const newWidth = parseInt(widthInput.value) || 500;
+            try {
+                const resp = await api.fetchApi("/api/batchbox/node-settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ default_width: newWidth }),
+                });
+                if (resp.ok) {
+                    this.showToast("节点设置已保存！新建节点将使用 " + newWidth + "px 宽度", "success");
+                } else {
+                    throw new Error("保存失败");
+                }
+            } catch (e) {
+                this.showToast("保存失败: " + e.message, "error");
+            }
+        };
+        
+        // ========== Divider ==========
+        const divider = document.createElement("hr");
+        divider.style.cssText = "margin: 30px 0; border: none; border-top: 1px solid #444;";
+        container.appendChild(divider);
+        
+        // ========== Auto Save Settings Section ==========
+        const saveSection = document.createElement("div");
+        saveSection.className = "batchbox-settings-section";
+        saveSection.innerHTML = `<h3>📁 自动保存设置</h3><p style="color: #aaa;">配置生成图片的自动保存选项。</p>`;
+        container.appendChild(saveSection);
 
         // Load current settings
         let settings = {};

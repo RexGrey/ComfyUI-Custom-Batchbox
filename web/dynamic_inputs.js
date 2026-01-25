@@ -32,8 +32,32 @@ const DYNAMIC_INPUT_NODES = [
     "DynamicImageEditor"
 ];
 
-// Default node width for supported nodes (in pixels)
-const NODE_DEFAULT_WIDTH = 500;
+// Cache for node settings (default_width, etc.)
+let nodeSettingsCache = null;
+
+/**
+ * Fetch node settings from backend (cached)
+ */
+async function getNodeSettings() {
+    if (nodeSettingsCache !== null) {
+        return nodeSettingsCache;
+    }
+    
+    try {
+        const resp = await api.fetchApi("/api/batchbox/node-settings");
+        if (resp.status === 200) {
+            const data = await resp.json();
+            nodeSettingsCache = data.node_settings || { default_width: 500 };
+            return nodeSettingsCache;
+        }
+    } catch (e) {
+        console.warn("[DynamicInputs] Failed to fetch node settings:", e);
+    }
+    
+    // Default fallback
+    nodeSettingsCache = { default_width: 500 };
+    return nodeSettingsCache;
+}
 
 /**
  * Fetch dynamic_inputs config for a model from backend
@@ -330,11 +354,13 @@ app.registerExtension({
         setTimeout(async () => {
             // If still marked as fresh create, this is truly a new node
             if (node._batchbox_fresh_create) {
-                // Set default width for newly created nodes
+                // Set default width for newly created nodes (from config)
+                const nodeSettings = await getNodeSettings();
+                const defaultWidth = nodeSettings.default_width || 500;
                 const computedSize = node.computeSize();
-                node.size = [NODE_DEFAULT_WIDTH, computedSize[1]];
+                node.size = [defaultWidth, computedSize[1]];
                 node.setDirtyCanvas(true, true);
-                console.log(`[Batchbox] Set initial width for new ${nodeType}: ${NODE_DEFAULT_WIDTH}px`);
+                console.log(`[Batchbox] Set initial width for new ${nodeType}: ${defaultWidth}px`);
             }
             delete node._batchbox_fresh_create;
             

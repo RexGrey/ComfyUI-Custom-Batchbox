@@ -778,3 +778,53 @@
 .batchbox-sortable-row.drag-over td {
     border-top: 2px solid #f0c040;
 }
+
+/* ========== Node Settings Form ========== */
+.batchbox-settings-section {
+    margin-bottom: 20px;
+}
+
+.batchbox-node-settings-form {
+    max-width: 500px;
+}
+
+.batchbox-slider-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.batchbox-slider {
+    flex: 1;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #333;
+    border-radius: 3px;
+    outline: none;
+}
+
+.batchbox-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f0c040, #e0a030);
+    cursor: pointer;
+    border: 2px solid #1a1a1a;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.batchbox-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f0c040, #e0a030);
+    cursor: pointer;
+    border: 2px solid #1a1a1a;
+}
+
+.batchbox-slider:hover::-webkit-slider-thumb {
+    background: linear-gradient(135deg, #ffd050, #f0b040);
+}

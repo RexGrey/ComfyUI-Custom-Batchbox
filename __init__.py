@@ -299,6 +299,28 @@ try:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    @server.PromptServer.instance.routes.get("/api/batchbox/node-settings")
+    async def get_node_settings(request):
+        """Get node display settings (e.g., default_width)"""
+        try:
+            settings = config_manager.get_node_settings()
+            return web.json_response({"node_settings": settings})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/node-settings")
+    async def update_node_settings(request):
+        """Update node display settings"""
+        try:
+            data = await request.json()
+            success = config_manager.update_node_settings(data)
+            if success:
+                return web.json_response({"success": True, "node_settings": config_manager.get_node_settings()})
+            else:
+                return web.json_response({"error": "Failed to save settings"}, status=500)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     print("[ComfyUI-Custom-Batchbox] API endpoints registered")
 
 except Exception as e:

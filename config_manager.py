@@ -736,7 +736,28 @@ class ConfigManager:
         if "save_settings" not in self._config:
             self._config["save_settings"] = {}
         self._config["save_settings"].update(new_settings)
-        return self._save_config()
+        return self.save_config_data(self._config)
+    
+    def get_node_settings(self) -> Dict:
+        """Get node settings with defaults (e.g., default_width)"""
+        self.load_config()
+        defaults = {
+            "default_width": 500,  # Default node width in pixels
+        }
+        node_settings = self._config.get("node_settings", {})
+        # Merge with defaults
+        for key, value in defaults.items():
+            if key not in node_settings:
+                node_settings[key] = value
+        return node_settings
+    
+    def update_node_settings(self, new_settings: Dict) -> bool:
+        """Update node settings in config file"""
+        self.load_config()
+        if "node_settings" not in self._config:
+            self._config["node_settings"] = {}
+        self._config["node_settings"].update(new_settings)
+        return self.save_config_data(self._config)
 
 
 # Global instance
