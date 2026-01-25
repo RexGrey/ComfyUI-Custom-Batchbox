@@ -102,6 +102,17 @@ async function fetchModelSchema(modelName, forceRefresh = false) {
 // ================================================================
 
 /**
+ * Helper function to resize node while preserving user's custom width.
+ * Only updates height based on computeSize(), keeps current width.
+ * @param {Object} node - ComfyUI node instance
+ */
+function resizeNodePreservingWidth(node) {
+  const currentWidth = node.size[0];
+  const computedSize = node.computeSize();
+  node.setSize([currentWidth, computedSize[1]]);
+}
+
+/**
  * Create a widget for a parameter definition.
  * @param {Object} node - ComfyUI node instance
  * @param {Object} paramDef - Parameter definition from schema
@@ -259,7 +270,7 @@ class DynamicParameterManager {
       if (selectorWidget) {
         selectorWidget.hidden = !v;
       }
-      this.node.setSize(this.node.computeSize());
+      resizeNodePreservingWidth(this.node);
     });
     toggleWidget.serialize = false;  // Don't participate in widgets_values serialization
 
@@ -274,10 +285,10 @@ class DynamicParameterManager {
     // Update toggle callback to reference selectorWidget
     toggleWidget.callback = (v) => {
       selectorWidget.hidden = !v;
-      this.node.setSize(this.node.computeSize());
+      resizeNodePreservingWidth(this.node);
     };
 
-    this.node.setSize(this.node.computeSize());
+    resizeNodePreservingWidth(this.node);
   }
 
   updateSeedWidgetVisibility(visible) {
@@ -291,8 +302,8 @@ class DynamicParameterManager {
       }
     }
     
-    // Force node resize
-    this.node.setSize(this.node.computeSize());
+    // Force node resize while preserving width
+    resizeNodePreservingWidth(this.node);
   }
 
   updateWidgets(flatSchema) {
@@ -338,8 +349,8 @@ class DynamicParameterManager {
       }
     }
 
-    // Force node resize
-    this.node.setSize(this.node.computeSize());
+    // Force node resize while preserving width
+    resizeNodePreservingWidth(this.node);
   }
 
   addGroupSeparator(groupName) {
@@ -398,7 +409,7 @@ class DynamicParameterManager {
       }
     }
 
-    this.node.setSize(this.node.computeSize());
+    resizeNodePreservingWidth(this.node);
   }
 
   removeDynamicWidgets() {
@@ -522,8 +533,8 @@ function addGenerateButton(node) {
     widgets.splice(1, 0, generateBtn);
   }
 
-  // Force node resize
-  node.setSize(node.computeSize());
+  // Force node resize while preserving width
+  resizeNodePreservingWidth(node);
 }
 
 // ==========================================
@@ -651,7 +662,7 @@ app.registerExtension({
                 selectorWidget.value = o.endpointState.selectedEndpoint;
               }
             }
-            this.setSize(this.computeSize());
+            resizeNodePreservingWidth(this);
           }
         }, 300);  // Slightly after dynamicParams restore
       }

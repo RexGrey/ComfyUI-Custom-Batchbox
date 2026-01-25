@@ -32,6 +32,9 @@ const DYNAMIC_INPUT_NODES = [
     "DynamicImageEditor"
 ];
 
+// Default node width for supported nodes (in pixels)
+const NODE_DEFAULT_WIDTH = 500;
+
 /**
  * Fetch dynamic_inputs config for a model from backend
  */
@@ -122,8 +125,14 @@ function addDynamicInput(node, prefix, index, inputType) {
         }
     }
 
+    // Save current width before adding input (to preserve user's custom width)
+    const currentWidth = node.size[0];
+    
     node.addInput(inputName, inputType);
-    node.setSize(node.computeSize());
+    
+    // Restore width after adding input, only update height
+    const computedSize = node.computeSize();
+    node.setSize([currentWidth, computedSize[1]]);
     return true;
 }
 
@@ -139,8 +148,14 @@ function removeDynamicInput(node, inputName) {
     // Don't remove if connected
     if (node.inputs[index].link != null) return false;
 
+    // Save current width before removing input (to preserve user's custom width)
+    const currentWidth = node.size[0];
+    
     node.removeInput(index);
-    node.setSize(node.computeSize());
+    
+    // Restore width after removing input, only update height
+    const computedSize = node.computeSize();
+    node.setSize([currentWidth, computedSize[1]]);
     return true;
 }
 
@@ -148,6 +163,9 @@ function removeDynamicInput(node, inputName) {
  * Update inputs for a specific type/prefix
  */
 function updateInputsForType(node, prefix, inputType, maxInputs) {
+    // Save current width before any modifications (to preserve user's custom width)
+    const currentWidth = node.size[0];
+    
     const currentCount = countInputsByPrefix(node, prefix);
     const highestConnected = getHighestConnectedIndex(node, prefix);
 
@@ -156,14 +174,11 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
     let targetCount = Math.max(1, highestConnected + 1);
     targetCount = Math.min(targetCount, maxInputs);
 
-
-
     // Add missing inputs up to target
     for (let i = 1; i <= targetCount; i++) {
         const inputName = `${prefix}${i}`;
         const exists = node.inputs?.some(inp => inp.name === inputName);
         if (!exists) {
-
             node.addInput(inputName, inputType);
         }
     }
@@ -181,7 +196,9 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
         }
     }
 
-    node.setSize(node.computeSize());
+    // Restore width after input modifications, only update height
+    const computedSize = node.computeSize();
+    node.setSize([currentWidth, computedSize[1]]);
 }
 
 /**
@@ -282,6 +299,7 @@ async function initializeDynamicInputs(node) {
                     originalCallback.call(modelWidget, value);
                 }
                 // Clear cache and reinitialize for new model
+                // Width is preserved by addDynamicInput/removeDynamicInput functions
                 modelConfigCache[value] = undefined;
                 await updateAllDynamicInputs(node);
             };
@@ -299,19 +317,56 @@ app.registerExtension({
     name: "ComfyUI.CustomBatchbox.DynamicInputs",
 
     async nodeCreated(node) {
-        // Initialize when node is created
-        await initializeDynamicInputs(node);
+        const nodeType = node.comfyClass || node.type;
+        if (!DYNAMIC_INPUT_NODES.includes(nodeType)) {
+            return;
+        }
+        
+        // Mark this as a fresh node creation (not loading from workflow)
+        // This flag will be cleared by loadedGraphNode if it's actually a workflow load
+        node._batchbox_fresh_create = true;
+        
+        // Use a short delay to allow loadedGraphNode to run first if this is a workflow load
+        setTimeout(async () => {
+            // If still marked as fresh create, this is truly a new node
+            if (node._batchbox_fresh_create) {
+                // Set default width for newly created nodes
+                const computedSize = node.computeSize();
+                node.size = [NODE_DEFAULT_WIDTH, computedSize[1]];
+                node.setDirtyCanvas(true, true);
+                console.log(`[Batchbox] Set initial width for new ${nodeType}: ${NODE_DEFAULT_WIDTH}px`);
+            }
+            delete node._batchbox_fresh_create;
+            
+            // Initialize dynamic inputs
+            await initializeDynamicInputs(node);
+        }, 50);
     },
 
     async loadedGraphNode(node) {
-        // Initialize when loading from saved workflow
+        const nodeType = node.comfyClass || node.type;
+        if (!DYNAMIC_INPUT_NODES.includes(nodeType)) {
+            return;
+        }
+        
+        // This is a workflow load, not a fresh create - clear the flag
+        node._batchbox_fresh_create = false;
+        
+        // Save the width from the workflow (user's custom width)
+        const savedWidth = node.size[0];
+        
         setTimeout(async () => {
+            // Initialize dynamic inputs
             await initializeDynamicInputs(node);
             
+            // Restore the saved width after initialization
+            const computedSize = node.computeSize();
+            node.size = [savedWidth, computedSize[1]];
+            
             // Restore preview from saved node.properties
-            if (DYNAMIC_INPUT_NODES.includes(node.comfyClass)) {
-                restorePreviewFromProperties(node);
-            }
+            restorePreviewFromProperties(node);
+            
+            node.setDirtyCanvas(true, true);
         }, 100);
     }
 });

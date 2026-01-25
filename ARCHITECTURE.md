@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.5 | 2026-01-25 | 节点宽度保持机制（防止 252px 重置） |
 | 2.4 | 2026-01-25 | 节点生成图片预览持久化 |
 | 2.3 | 2026-01-25 | 模型排序、拖拽 UI |
 | 2.2 | 2026-01-25 | 自动保存功能 |
@@ -18,6 +19,7 @@
 | [docs/hierarchical_config.md](docs/hierarchical_config.md) | 层级配置指南（Provider > Endpoint > Mode） |
 | [docs/comfyui_widget_serialization.md](docs/comfyui_widget_serialization.md) | ComfyUI Widget 序列化避坑指南 |
 | [docs/preview_persistence.md](docs/preview_persistence.md) | 预览持久化机制 |
+| [docs/node_width_retrospective.md](docs/node_width_retrospective.md) | 节点宽度保持开发复盘 |
 | [YAML_CONFIG_REFERENCE.md](YAML_CONFIG_REFERENCE.md) | YAML 配置参考（供 LLM 使用） |
 
 ---
@@ -402,6 +404,70 @@ def _sort_models_by_order(self, model_names, category):
     return sorted(model_names, key=lambda x: (order_map.get(x, max_index), x))
 ```
 
+### 7.6 节点宽度保持机制
+
+防止节点宽度在动态更新时被重置为 ~252px（LiteGraph 默认计算宽度）。
+
+**问题流程：**
+
+```mermaid
+flowchart LR
+    A[用户调整节点宽度] --> B[切换模型/预设]
+    B --> C[updateWidgets 被调用]
+    C --> D[setSize\computeSize\]
+    D --> E[宽度重置为 252px ❌]
+```
+
+**解决方案流程：**
+
+```mermaid
+flowchart LR
+    A[用户调整节点宽度] --> B[切换模型/预设]
+    B --> C[updateWidgets 被调用]
+    C --> D[resizeNodePreservingWidth]
+    D --> E[保存当前宽度]
+    E --> F[只更新高度]
+    F --> G[宽度保持不变 ✓]
+```
+
+**核心实现：**
+
+```javascript
+// 辅助函数：保持宽度只更新高度
+function resizeNodePreservingWidth(node) {
+  const currentWidth = node.size[0];
+  const computedSize = node.computeSize();
+  node.setSize([currentWidth, computedSize[1]]);
+}
+```
+
+**生命周期区分：**
+
+```mermaid
+flowchart TD
+    A[节点创建] --> B{nodeCreated}
+    B --> C[设置 _fresh_create = true]
+    C --> D{50ms 后检查}
+    D --> E{_fresh_create?}
+    E -->|是| F[新建节点: 使用 500px 默认宽度]
+    E -->|否| G[加载节点: 使用保存的宽度]
+    
+    H[工作流加载] --> I{loadedGraphNode}
+    I --> J[设置 _fresh_create = false]
+    J --> K[保存 savedWidth]
+    K --> L[初始化后恢复 savedWidth]
+```
+
+**修改的函数：**
+
+| 文件 | 函数 | 修改 |
+|------|------|------|
+| `dynamic_inputs.js` | `addDynamicInput` | 保存/恢复宽度 |
+| `dynamic_inputs.js` | `removeDynamicInput` | 保存/恢复宽度 |
+| `dynamic_inputs.js` | `updateInputsForType` | 保存/恢复宽度 |
+| `dynamic_params.js` | `resizeNodePreservingWidth` | 新增辅助函数 |
+| `dynamic_params.js` | 7 处 `setSize` 调用 | 替换为辅助函数 |
+
 ---
 
 ## 8. 维护指南
@@ -424,6 +490,16 @@ def _sort_models_by_order(self, model_names, category):
 ---
 
 ## 9. 更新日志
+
+### v2.5 (2026-01-25)
+- ✅ 节点宽度保持机制（防止 252px 重置）
+- ✅ `resizeNodePreservingWidth()` 辅助函数
+- ✅ 新建/加载节点生命周期区分
+- ✅ 切换模型后宽度不丢失
+- ✅ 工作流保存/加载宽度正确恢复
+
+### v2.4 (2026-01-25)
+- ✅ 节点预览持久化（重启后不丢失）
 
 ### v2.3 (2026-01-25)
 - ✅ 模型排序功能（model_order 配置）

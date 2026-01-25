@@ -60,6 +60,13 @@
 - 节点下拉框按配置顺序显示
 - 顺序保存在 `api_config.yaml`
 
+### 📐 节点宽度保持
+
+- 新建节点使用 500px 默认宽度
+- 切换模型后保持用户设置的宽度
+- 保存/加载工作流后宽度正确恢复
+- 详见 [docs/node_width_retrospective.md](docs/node_width_retrospective.md)
+
 ---
 
 ## 🚀 安装
