@@ -48,6 +48,12 @@
 - 按日期自动创建子文件夹
 - API Manager 内可视化配置
 
+### 🔄 预览持久化
+
+- 重启 ComfyUI 后预览图片不丢失
+- 自动从保存的文件恢复预览
+- 详见 [docs/preview_persistence.md](docs/preview_persistence.md)
+
 ### 📊 模型排序
 
 - 拖拽调整模型显示顺序

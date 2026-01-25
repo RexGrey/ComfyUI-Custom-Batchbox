@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.4 | 2026-01-25 | 节点生成图片预览持久化 |
 | 2.3 | 2026-01-25 | 模型排序、拖拽 UI |
 | 2.2 | 2026-01-25 | 自动保存功能 |
 | 2.1 | 2026-01-25 | 重试机制、TTL 缓存、日志系统 |
@@ -16,6 +17,7 @@
 |------|------|
 | [docs/hierarchical_config.md](docs/hierarchical_config.md) | 层级配置指南（Provider > Endpoint > Mode） |
 | [docs/comfyui_widget_serialization.md](docs/comfyui_widget_serialization.md) | ComfyUI Widget 序列化避坑指南 |
+| [docs/preview_persistence.md](docs/preview_persistence.md) | 预览持久化机制 |
 | [YAML_CONFIG_REFERENCE.md](YAML_CONFIG_REFERENCE.md) | YAML 配置参考（供 LLM 使用） |
 
 ---

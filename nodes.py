@@ -339,6 +339,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 # Extra dynamic parameters passed from frontend
                 # Includes endpoint_override if manual selection enabled
                 "extra_params": ("STRING", {"default": "{}"}),
+                # Last generated images for preview persistence
+                "_last_images": ("STRING", {"default": ""}),
             }
         }
     
@@ -346,7 +348,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
     RETURN_NAMES = ("images", "response_info", "last_image_url")
     FUNCTION = "generate"
     CATEGORY = "ComfyUI-Custom-Batchbox"
-    OUTPUT_NODE = True  # Enable preview in node
+    OUTPUT_NODE = True  # Required for standalone execution
     
     def generate(self, model: str, prompt: str, batch_count: int, **kwargs) -> Dict:
         """Generate images using selected model"""
@@ -403,10 +405,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
             model, batch_count, params, mode, endpoint_override
         )
         
-        # Save preview images to temp folder
-        preview_results = save_preview_images(pil_images, prefix="batchbox")
-        
-        # Auto-save images to output directory
+        # Try auto-save first and use saved paths for preview (persists after restart)
+        preview_results = []
         try:
             from .save_settings import SaveSettings
             from .config_manager import config_manager
@@ -421,13 +421,25 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                         "prompt": params.get("prompt", ""),
                         "batch": i + 1,
                     }
-                    saver.save_image(img, context)
+                    result = saver.save_image(img, context)
+                    if result and "preview" in result:
+                        preview_results.append(result["preview"])
         except Exception as e:
             print(f"[AutoSave] Error: {e}")
         
+        # Fall back to temp folder if auto-save disabled or failed
+        if not preview_results and pil_images:
+            preview_results = save_preview_images(pil_images, prefix="batchbox")
+        
+        # Serialize preview info for persistence (frontend will save to widget)
+        last_images_json = json.dumps(preview_results) if preview_results else ""
+        
         # Return dict with both result tuple and UI data
         return {
-            "ui": {"images": preview_results},
+            "ui": {
+                "images": preview_results,
+                "_last_images": [last_images_json]  # Will be saved to widget by frontend
+            },
             "result": (images_tensor, response_info, last_url)
         }
 
@@ -767,7 +779,7 @@ class NanoBananaPro(DynamicImageNodeBase):
     RETURN_NAMES = ("images", "response_info", "last_image_url")
     FUNCTION = "generate"
     CATEGORY = "ComfyUI-Custom-Batchbox"
-    OUTPUT_NODE = True  # Enable preview in node
+    OUTPUT_NODE = True  # Required for standalone execution
     
     def generate(self, preset: str, auto_switch_provider: bool, batch_count: int,
                  prompt: str, mode: str, aspect_ratio: str, image_size: str, **kwargs) -> Dict:
@@ -804,12 +816,41 @@ class NanoBananaPro(DynamicImageNodeBase):
         # Process batch and get results including PIL images
         images_tensor, response_info, last_url, pil_images = self.process_batch(preset, batch_count, params, mode)
         
-        # Save preview images to temp folder
-        preview_results = save_preview_images(pil_images, prefix="batchbox")
+        # Try auto-save first and use saved paths for preview (persists after restart)
+        preview_results = []
+        try:
+            from .save_settings import SaveSettings
+            from .config_manager import config_manager
+            save_cfg = config_manager.get_save_settings()
+            saver = SaveSettings(save_cfg)
+            
+            if saver.enabled and pil_images:
+                for i, img in enumerate(pil_images):
+                    context = {
+                        "model": preset,
+                        "seed": params.get("seed", 0),
+                        "prompt": params.get("prompt", ""),
+                        "batch": i + 1,
+                    }
+                    result = saver.save_image(img, context)
+                    if result and "preview" in result:
+                        preview_results.append(result["preview"])
+        except Exception as e:
+            print(f"[AutoSave] Error: {e}")
+        
+        # Fall back to temp folder if auto-save disabled or failed
+        if not preview_results and pil_images:
+            preview_results = save_preview_images(pil_images, prefix="batchbox")
+        
+        # Serialize preview info for persistence
+        last_images_json = json.dumps(preview_results) if preview_results else ""
         
         # Return dict with both result tuple and UI data
         return {
-            "ui": {"images": preview_results},
+            "ui": {
+                "images": preview_results,
+                "_last_images": [last_images_json]
+            },
             "result": (images_tensor, response_info, last_url)
         }
 

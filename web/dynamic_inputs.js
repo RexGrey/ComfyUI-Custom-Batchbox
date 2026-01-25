@@ -233,6 +233,24 @@ async function initializeDynamicInputs(node) {
     }
     node._dynamicInputsInitialized = true;
 
+    // Store original onExecuted to save preview info for persistence
+    const originalOnExecuted = node.onExecuted;
+    node.onExecuted = function(message) {
+        if (originalOnExecuted) {
+            originalOnExecuted.call(this, message);
+        }
+        
+        // Save _last_images to node.properties for persistence (properties are saved in workflow JSON)
+        // Let OUTPUT_NODE handle the actual preview display
+        if (message && message._last_images && message._last_images[0]) {
+            if (!this.properties) {
+                this.properties = {};
+            }
+            this.properties._last_images = message._last_images[0];
+            console.log("[Batchbox] Saved preview info to properties");
+        }
+    };
+
     // Store original onConnectionsChange
     const originalOnConnectionsChange = node.onConnectionsChange;
 
@@ -289,8 +307,46 @@ app.registerExtension({
         // Initialize when loading from saved workflow
         setTimeout(async () => {
             await initializeDynamicInputs(node);
+            
+            // Restore preview from saved node.properties
+            if (DYNAMIC_INPUT_NODES.includes(node.comfyClass)) {
+                restorePreviewFromProperties(node);
+            }
         }, 100);
     }
 });
+
+/**
+ * Restore preview images from saved node.properties
+ */
+function restorePreviewFromProperties(node) {
+    // Read from node.properties (saved in workflow JSON)
+    const lastImagesJson = node.properties?._last_images;
+    if (!lastImagesJson) return;
+    
+    try {
+        const images = JSON.parse(lastImagesJson);
+        if (images && images.length > 0) {
+            // Use the same mechanism as ComfyUI's OUTPUT_NODE for bottom preview
+            // This matches how the node displays images after generation
+            node.imageIndex = 0;
+            node.images = images;
+            
+            // Set preview images using URL
+            node.imgs = images.map(img => {
+                const url = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
+                const imgEl = new Image();
+                imgEl.src = url;
+                return imgEl;
+            });
+            
+            // Update node size and trigger redraw
+            node.setDirtyCanvas(true, true);
+            console.log(`[Batchbox] Restored ${images.length} preview image(s) for node ${node.id}`);
+        }
+    } catch (e) {
+        console.warn("[Batchbox] Failed to restore preview:", e);
+    }
+}
 
 console.log("[ComfyUI-Custom-Batchbox] Dynamic Inputs extension (multi-type) loaded");

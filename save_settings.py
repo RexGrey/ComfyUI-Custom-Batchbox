@@ -9,7 +9,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 from PIL import Image
 
 # Get ComfyUI root directory
@@ -200,7 +200,7 @@ class SaveSettings:
         
         return filepath
     
-    def save_image(self, image: Image.Image, context: Dict, original_format: str = None) -> Optional[str]:
+    def save_image(self, image: Image.Image, context: Dict, original_format: str = None) -> Optional[Dict]:
         """
         Save a PIL Image with current settings.
         
@@ -210,7 +210,7 @@ class SaveSettings:
             original_format: Original format of image (e.g., 'png', 'jpg'), used when format='original'
             
         Returns:
-            Saved file path as string, or None if save disabled/failed
+            Dict with 'filepath' and 'preview' (ComfyUI-compatible) keys, or None if save disabled/failed
         """
         if not self.enabled:
             return None
@@ -234,7 +234,7 @@ class SaveSettings:
                 save_kwargs["quality"] = self.quality
             
             # Get save path (with correct extension)
-            filepath = self._get_save_path_with_ext(context, extension)
+            filepath, subfolder = self._get_save_path_with_ext(context, extension)
             
             # Handle RGBA for JPEG (convert to RGB)
             if use_format in ("jpg", "jpeg") and image.mode == "RGBA":
@@ -247,27 +247,43 @@ class SaveSettings:
             image.save(str(filepath), **save_kwargs)
             
             print(f"[AutoSave] Saved: {filepath}")
-            return str(filepath)
+            
+            # Return both filepath and preview-compatible info
+            return {
+                "filepath": str(filepath),
+                "preview": {
+                    "filename": filepath.name,
+                    "subfolder": subfolder,
+                    "type": "output"
+                }
+            }
             
         except Exception as e:
             print(f"[AutoSave] Error saving image: {e}")
             return None
     
-    def _get_save_path_with_ext(self, context: Dict, extension: str) -> Path:
-        """Get save path with specific extension."""
+    def _get_save_path_with_ext(self, context: Dict, extension: str) -> Tuple[Path, str]:
+        """Get save path with specific extension.
+        
+        Returns:
+            Tuple of (filepath, subfolder) where subfolder is relative to output directory
+        """
         # Get ComfyUI output directory as base
         try:
             base_dir = folder_paths.get_output_directory()
         except:
             base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
         
-        # Build output directory
-        output_dir = os.path.join(base_dir, self.output_dir.lstrip("output/").lstrip("output\\"))
+        # Build subfolder path (relative to output directory)
+        subfolder_parts = [self.output_dir.lstrip("output/").lstrip("output\\")]
         
         # Add date subfolder if enabled
         if self.create_date_subfolder:
             date_folder = datetime.now().strftime("%Y-%m-%d")
-            output_dir = os.path.join(output_dir, date_folder)
+            subfolder_parts.append(date_folder)
+        
+        subfolder = "/".join(subfolder_parts)
+        output_dir = os.path.join(base_dir, *subfolder_parts)
         
         # Ensure directory exists
         os.makedirs(output_dir, exist_ok=True)
@@ -282,7 +298,7 @@ class SaveSettings:
             filepath = Path(output_dir) / f"{filename}_{counter}{extension}"
             counter += 1
         
-        return filepath
+        return filepath, subfolder
     
     def preview_filename(self, context: Optional[Dict] = None) -> str:
         """
