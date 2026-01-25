@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.6 | 2026-01-26 | Gemini 原生 API 支持 + Prompt 前缀功能 |
 | 2.5.1 | 2026-01-25 | 节点宽度管理器（API Manager 可配置默认宽度） |
 | 2.5 | 2026-01-25 | 节点宽度保持机制（防止 252px 重置） |
 | 2.4 | 2026-01-25 | 节点生成图片预览持久化 |
@@ -65,9 +66,17 @@ graph TB
     end
     
     subgraph API适配器层
-        O[GenericAdapter] --> P[层级文件配置]
-        O --> Q[请求构建]
-        O --> R[响应解析]
+        O[GenericAdapter] --> P[层级配置]
+        O --> Q{api_format?}
+        Q -->|openai| Q1[OpenAI请求构建]
+        Q -->|gemini| Q2[Gemini请求构建]
+        Q1 --> R[响应解析]
+        Q2 --> R2[Gemini响应解析]
+    end
+    
+    subgraph Prompt处理
+        PP[prompt_prefix] --> PPM[前缀合并]
+        PPM --> Q
     end
     
     A <--> F
@@ -194,6 +203,70 @@ dynamic_inputs:
   image:
     max: 14
     type: IMAGE
+```
+
+### 3.5 多 API 格式支持
+
+**支持的 API 格式：**
+
+| 格式 | 端点示例 | 特点 |
+|------|----------|------|
+| `openai` | `/v1/chat/completions` | 标准 OpenAI 兼容格式（默认） |
+| `gemini` | `/v1beta/models/{model}:generateContent` | Gemini 原生格式，支持 `responseModalities` |
+
+**Gemini 格式请求构建流程：**
+
+```mermaid
+flowchart TD
+    A[build_request 入口] --> B{api_format?}
+    B -->|openai| C[_build_openai_request]
+    B -->|gemini| D[_build_gemini_request]
+    D --> E[构建 contents 数组]
+    E --> F[添加 text part]
+    E --> G[添加 inline_data 图片]
+    D --> H[构建 generationConfig]
+    H --> I[添加 responseModalities]
+    H --> J[添加 seed/maxTokens]
+    C --> K[发送请求]
+    D --> K
+```
+
+**Gemini 响应解析：**
+
+```mermaid
+flowchart TD
+    A[parse_response] --> B{检测响应格式}
+    B -->|candidates 存在| C[_parse_gemini_response]
+    B -->|否则| D[OpenAI 格式解析]
+    C --> E[提取 candidates[0].content.parts]
+    E --> F{part 类型?}
+    F -->|inlineData| G[base64 解码为图片]
+    F -->|fileData| H[提取 fileUri URL]
+    G --> I[返回 APIResponse]
+    H --> I
+```
+
+### 3.6 Prompt 前缀
+
+**功能：** 自动在用户 prompt 前添加配置的前缀文本
+
+**用途：** 强制模型生成图片而非文本回复（如 Gemini 多模态模型）
+
+**配置：**
+```yaml
+api_endpoints:
+  - display_name: Gemini图片
+    prompt_prefix: "生成一张图片："
+    api_format: gemini
+```
+
+**处理流程：**
+```
+用户输入: "哈哈哈"
+     ↓
+prompt_prefix: "生成一张图片："
+     ↓
+实际发送: "生成一张图片：哈哈哈"
 ```
 
 ---
@@ -523,6 +596,14 @@ node_settings:
 ---
 
 ## 9. 更新日志
+
+### v2.6 (2026-01-26)
+- ✅ Gemini 原生 API 格式支持 (`/v1beta/models/{model}:generateContent`)
+- ✅ `responseModalities: ['Image']` 强制只返回图片
+- ✅ Gemini 响应解析（inlineData base64 图片提取）
+- ✅ Prompt 前缀功能（自动添加 "生成一张图片：" 等前缀）
+- ✅ API Manager 端点设置添加 API 格式选择器
+- ✅ API Manager 端点设置添加 Prompt 前缀输入框
 
 ### v2.5.1 (2026-01-25)
 - ✅ 节点默认宽度可配置（300-1200px）

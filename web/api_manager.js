@@ -816,6 +816,28 @@ class BatchboxManager {
                             </div>
                         </div>
                         <p style="font-size: 10px; color: #666; margin: 4px 0 0 0;">留空则继承供应商设置，供应商未设置则使用系统默认</p>
+                        
+                        <div class="batchbox-form-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+                            <div class="batchbox-form-group">
+                                <label style="font-size: 11px;">API 格式</label>
+                                <select class="ep-api-format batchbox-form-input" style="padding: 6px;">
+                                    <option value="openai" ${!ep.api_format || ep.api_format === "openai" ? "selected" : ""}>OpenAI 兼容</option>
+                                    <option value="gemini" ${ep.api_format === "gemini" ? "selected" : ""}>Gemini 原生</option>
+                                </select>
+                                <p style="font-size: 10px; color: #666; margin: 4px 0 0 0;">Gemini 原生支持 responseModalities</p>
+                            </div>
+                            <div class="batchbox-form-group">
+                                <label style="font-size: 11px;">Prompt 前缀</label>
+                                <input type="text" class="ep-prompt-prefix batchbox-form-input" value="${ep.prompt_prefix || ""}" style="padding: 6px;" placeholder="例如: 生成一张图片：">
+                                <p style="font-size: 10px; color: #666; margin: 4px 0 0 0;">自动添加到用户 prompt 前</p>
+                            </div>
+                        </div>
+                        
+                        <div class="batchbox-form-group" style="margin-top: 12px;">
+                            <label style="font-size: 11px;">额外请求参数 (JSON)</label>
+                            <textarea class="ep-extra-params batchbox-form-input" style="padding: 6px; height: 60px; font-family: monospace; font-size: 11px;" placeholder='例如: {"response_modalities": ["Image"]}'>${ep.extra_params ? JSON.stringify(ep.extra_params, null, 2) : ""}</textarea>
+                            <p style="font-size: 10px; color: #666; margin: 4px 0 0 0;">添加到请求体的额外参数，如 response_modalities 强制只返回图片</p>
+                        </div>
                     </div>
                 `;
 
@@ -918,7 +940,7 @@ class BatchboxManager {
             const collectedEndpoints = [];
             let endpointError = false;
 
-            modal.querySelectorAll(".batchbox-endpoint-card").forEach(card => {
+            modal.querySelectorAll(".batchbox-endpoint-card").forEach((card, idx) => {
                 const text2imgEndpoint = card.querySelector(".ep-text2img").value.trim();
                 const img2imgEndpoint = card.querySelector(".ep-img2img").value.trim();
 
@@ -928,27 +950,33 @@ class BatchboxManager {
                     return;
                 }
 
+                // Get original endpoint config to preserve payload_template, response_path, etc.
+                const originalEndpoint = currentEndpoints[idx] || {};
+                const originalModes = originalEndpoint.modes || {};
+
                 const modes = {};
 
-                // Add text2img mode if configured (or use img2img as fallback)
+                // Add text2img mode - preserve original mode config, only update endpoint
                 if (text2imgEndpoint) {
+                    const originalText2img = originalModes.text2img || {};
                     modes.text2img = {
+                        ...originalText2img,  // Preserve payload_template, response_path, etc.
                         endpoint: text2imgEndpoint,
-                        method: "POST",
-                        content_type: "application/json",
-                        response_type: "sync",
-                        response_path: "data[0].url"
+                        method: originalText2img.method || "POST",
+                        content_type: originalText2img.content_type || "application/json",
+                        response_type: originalText2img.response_type || "sync"
                     };
                 }
 
-                // Add img2img mode if configured (or use text2img as fallback)
+                // Add img2img mode - preserve original mode config, only update endpoint
                 if (img2imgEndpoint) {
+                    const originalImg2img = originalModes.img2img || {};
                     const img2imgConfig = {
+                        ...originalImg2img,  // Preserve payload_template, response_path, etc.
                         endpoint: img2imgEndpoint,
-                        method: "POST",
-                        content_type: "multipart/form-data",
-                        response_type: "sync",
-                        response_path: "data[0].url"
+                        method: originalImg2img.method || "POST",
+                        content_type: originalImg2img.content_type || "multipart/form-data",
+                        response_type: originalImg2img.response_type || "sync"
                     };
                     // Add file format settings if specified
                     const fileFormat = card.querySelector(".ep-file-format")?.value;
@@ -959,13 +987,44 @@ class BatchboxManager {
                     modes.img2img = img2imgConfig;
                 }
 
-                collectedEndpoints.push({
+                // Parse extra_params JSON if provided
+                let extraParams = null;
+                const extraParamsText = card.querySelector(".ep-extra-params")?.value.trim();
+                if (extraParamsText) {
+                    try {
+                        extraParams = JSON.parse(extraParamsText);
+                    } catch (e) {
+                        console.warn("[API Manager] Invalid extra_params JSON:", e);
+                        this.showToast("额外请求参数 JSON 格式无效", "error");
+                        endpointError = true;
+                        return;
+                    }
+                }
+
+                const endpointData = {
                     display_name: card.querySelector(".ep-display-name").value.trim(),
                     provider: card.querySelector(".ep-provider").value,
                     priority: parseInt(card.querySelector(".ep-priority").value) || 1,
                     model_name: card.querySelector(".ep-model-name").value.trim(),
                     modes: modes
-                });
+                };
+                
+                // Add api_format if not default (openai)
+                const apiFormat = card.querySelector(".ep-api-format")?.value;
+                if (apiFormat && apiFormat !== "openai") {
+                    endpointData.api_format = apiFormat;
+                }
+                
+                // Add prompt_prefix if provided
+                const promptPrefix = card.querySelector(".ep-prompt-prefix")?.value.trim();
+                if (promptPrefix) {
+                    endpointData.prompt_prefix = promptPrefix;
+                }
+                
+                if (extraParams) {
+                    endpointData.extra_params = extraParams;
+                }
+                collectedEndpoints.push(endpointData);
             });
 
             if (endpointError) {

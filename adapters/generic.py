@@ -45,13 +45,31 @@ class GenericAPIAdapter(APIAdapter):
     def build_request(self, params: Dict, mode: str = "text2img") -> Dict:
         """
         Build HTTP request from parameters using config template.
+        Supports both OpenAI and Gemini API formats.
         """
+        # Get API format from endpoint config (default: openai)
+        api_format = self.endpoint.get("api_format", "openai")
+        
+        # Apply prompt_prefix from endpoint config (e.g., "生成一张图片：")
+        prompt_prefix = self.endpoint.get("prompt_prefix", "")
+        if prompt_prefix and "prompt" in params:
+            original_prompt = params.get("prompt", "")
+            params = params.copy()  # Don't modify original
+            params["prompt"] = f"{prompt_prefix}{original_prompt}"
+            logger.debug(f"Applied prompt_prefix: {prompt_prefix}")
+        
+        # Route to appropriate builder based on API format
+        if api_format == "gemini":
+            return self._build_gemini_request(params, mode)
+        else:
+            return self._build_openai_request(params, mode)
+    
+    def _build_openai_request(self, params: Dict, mode: str = "text2img") -> Dict:
+        """Build request for OpenAI-compatible APIs."""
         endpoint_path = self.mode_config.get("endpoint", "")
         method = self.mode_config.get("method", "POST")
         content_type = self.mode_config.get("content_type", "application/json")
         payload_template = self.mode_config.get("payload_template", {})
-        
-        # Build URL
         url = f"{self.base_url}{endpoint_path}"
         
         # Build headers
@@ -81,6 +99,17 @@ class GenericAPIAdapter(APIAdapter):
                 # Skip empty/None values
                 if value is not None and value != "":
                     payload[param_name] = value
+        
+        # Merge extra_params from endpoint config (e.g., response_modalities)
+        extra_params = self.endpoint.get("extra_params", {})
+        print(f"[GenericAdapter DEBUG] endpoint_config keys: {list(self.endpoint.keys())}")
+        print(f"[GenericAdapter DEBUG] extra_params from endpoint: {extra_params}")
+        if extra_params and isinstance(extra_params, dict):
+            for key, value in extra_params.items():
+                if key not in payload:  # Don't override existing values
+                    payload[key] = value
+            print(f"[GenericAdapter DEBUG] Merged extra_params into payload")
+            logger.debug(f"Merged extra_params: {extra_params}")
         
         request_info = {
             "url": url,
@@ -139,6 +168,80 @@ class GenericAPIAdapter(APIAdapter):
         
         return request_info
     
+    def _build_gemini_request(self, params: Dict, mode: str = "text2img") -> Dict:
+        """
+        Build request for Gemini native API format.
+        
+        Gemini API uses:
+        - Endpoint: /v1beta/models/{model}:generateContent
+        - Payload: {contents: [...], generationConfig: {...}}
+        - Supports responseModalities for image-only output
+        """
+        import base64
+        
+        endpoint_path = self.mode_config.get("endpoint", "")
+        model_name = self.endpoint.get("model_name", "")
+        
+        # Support {{model}} placeholder in endpoint path
+        if "{{model}}" in endpoint_path:
+            endpoint_path = endpoint_path.replace("{{model}}", model_name)
+        
+        url = f"{self.base_url}{endpoint_path}"
+        
+        # Build headers (Gemini uses same Bearer token format)
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Build contents array
+        prompt = params.get("prompt", "")
+        parts = [{"text": prompt}]
+        
+        # Add images if present (for img2img mode)
+        upload_files = params.get("_upload_files", [])
+        for field_name, file_tuple in upload_files:
+            filename, file_bytes, mime_type = file_tuple
+            b64_data = base64.b64encode(file_bytes).decode('utf-8')
+            parts.append({
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": b64_data
+                }
+            })
+        
+        contents = [{"parts": parts}]
+        
+        # Build generationConfig from mode_config or endpoint config
+        generation_config = self.mode_config.get("generation_config", {}).copy()
+        
+        # Also check extra_params for generation config items
+        extra_params = self.endpoint.get("extra_params", {})
+        if "responseModalities" in extra_params and "responseModalities" not in generation_config:
+            generation_config["responseModalities"] = extra_params["responseModalities"]
+        
+        # Add common params to generation_config if not already present
+        if "seed" in params and params["seed"] and "seed" not in generation_config:
+            generation_config["seed"] = int(params["seed"])
+        if "maxOutputTokens" not in generation_config:
+            generation_config["maxOutputTokens"] = 4096
+        
+        # Build payload
+        payload = {
+            "contents": contents,
+            "generationConfig": generation_config
+        }
+        
+        print(f"[GenericAdapter DEBUG] Gemini payload: {payload}")
+        
+        return {
+            "url": url,
+            "method": "POST",
+            "headers": headers,
+            "json": payload
+        }
+
+    
     def _prepare_images_base64(self, params: Dict) -> Dict:
         """
         Convert uploaded files to base64 data URLs for Chat API format.
@@ -167,6 +270,7 @@ class GenericAPIAdapter(APIAdapter):
     def parse_response(self, response: requests.Response) -> APIResponse:
         """
         Parse HTTP response using config-defined paths.
+        Supports both OpenAI and Gemini response formats.
         """
         try:
             data = response.json()
@@ -176,6 +280,11 @@ class GenericAPIAdapter(APIAdapter):
                 error_message=f"Invalid JSON response: {response.text[:200]}",
                 raw_response={"text": response.text}
             )
+        
+        # Check if this is a Gemini response format
+        api_format = self.endpoint.get("api_format", "openai")
+        if api_format == "gemini" or "candidates" in data:
+            return self._parse_gemini_response(data)
         
         response_type = self.mode_config.get("response_type", "sync")
         
@@ -213,6 +322,75 @@ class GenericAPIAdapter(APIAdapter):
             success=True,
             image_urls=images_data.get("urls", []),
             images=images_data.get("bytes", []),
+            raw_response=data
+        )
+    
+    def _parse_gemini_response(self, data: Dict) -> APIResponse:
+        """
+        Parse Gemini API response format.
+        
+        Gemini returns images as base64 in:
+        candidates[0].content.parts[].inline_data.data
+        """
+        import base64
+        
+        images = []
+        image_urls = []
+        
+        print(f"[GenericAdapter DEBUG] Parsing Gemini response: {json.dumps(data, ensure_ascii=False)[:500]}")
+        
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return APIResponse(
+                success=False,
+                error_message="No candidates in Gemini response",
+                raw_response=data
+            )
+        
+        # Check finish reason
+        finish_reason = candidates[0].get("finishReason", "")
+        if finish_reason == "OTHER":
+            return APIResponse(
+                success=False,
+                error_message="Gemini could not generate image for this prompt (try a more descriptive image prompt)",
+                raw_response=data
+            )
+        
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", [])
+        
+        for part in parts:
+            # Check for inline image data (both camelCase and snake_case)
+            inline_data = part.get("inlineData") or part.get("inline_data")
+            if inline_data:
+                b64_data = inline_data.get("data", "")
+                if b64_data:
+                    try:
+                        img_bytes = base64.b64decode(b64_data)
+                        images.append(img_bytes)
+                    except Exception as e:
+                        print(f"[GenericAdapter] Failed to decode Gemini image: {e}")
+            
+            # Check for file data (URL reference, both camelCase and snake_case)
+            file_data = part.get("fileData") or part.get("file_data")
+            if file_data:
+                file_uri = file_data.get("fileUri") or file_data.get("file_uri")
+                if file_uri:
+                    image_urls.append(file_uri)
+        
+        if not images and not image_urls:
+            return APIResponse(
+                success=False,
+                error_message="No images found in Gemini response",
+                raw_response=data
+            )
+        
+        print(f"[GenericAdapter DEBUG] Extracted {len(images)} images from Gemini response")
+        
+        return APIResponse(
+            success=True,
+            images=images,
+            image_urls=image_urls,
             raw_response=data
         )
     
