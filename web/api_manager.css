@@ -1,569 +1,780 @@
 /* Modal Overlay */
 .batchbox-modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.7);
-    z-index: 10000;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 10000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 /* Modal Content */
 .batchbox-modal {
-    background: #1a1a1a;
-    color: #fff;
-    width: 950px;
-    height: 750px;
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #1a1a1a;
+  color: #fff;
+  width: 950px;
+  height: 750px;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 /* Header */
 .batchbox-header {
-    padding: 18px 24px;
-    background: linear-gradient(135deg, #2d2d2d 0%, #1f1f1f 100%);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid #333;
+  padding: 18px 24px;
+  background: linear-gradient(135deg, #2d2d2d 0%, #1f1f1f 100%);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #333;
 }
 
 .batchbox-header h2 {
-    margin: 0;
-    font-size: 20px;
-    color: #f0c040;
-    font-weight: 600;
+  margin: 0;
+  font-size: 20px;
+  color: #f0c040;
+  font-weight: 600;
 }
 
 .batchbox-close-btn {
-    background: none;
-    border: none;
-    color: #666;
-    cursor: pointer;
-    font-size: 24px;
-    transition: color 0.2s;
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 24px;
+  transition: color 0.2s;
 }
 
 .batchbox-close-btn:hover {
-    color: #fff;
+  color: #fff;
 }
 
 /* Content Area */
 .batchbox-content {
-    flex: 1;
-    display: flex;
-    overflow: hidden;
+  flex: 1;
+  display: flex;
+  overflow: hidden;
 }
 
 /* Sidebar */
 .batchbox-sidebar {
-    width: 180px;
-    background: #242424;
-    border-right: 1px solid #333;
-    padding-top: 16px;
+  width: 180px;
+  background: #242424;
+  border-right: 1px solid #333;
+  padding-top: 16px;
 }
 
 .batchbox-tab-btn {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 14px 20px;
-    background: none;
-    border: none;
-    color: #888;
-    cursor: pointer;
-    font-size: 14px;
-    transition: all 0.2s;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 14px 20px;
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
 }
 
 .batchbox-tab-btn:hover {
-    color: #ddd;
-    background: #2a2a2a;
+  color: #ddd;
+  background: #2a2a2a;
 }
 
 .batchbox-tab-btn.active {
-    background: #333;
-    color: #f0c040;
-    font-weight: 600;
-    border-left: 3px solid #f0c040;
+  background: #333;
+  color: #f0c040;
+  font-weight: 600;
+  border-left: 3px solid #f0c040;
 }
 
 /* Main Panel */
 .batchbox-panel {
-    flex: 1;
-    padding: 24px;
-    overflow-y: auto;
-    display: none;
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  display: none;
 }
 
 .batchbox-panel.active {
-    display: block;
+  display: block;
 }
 
 .batchbox-panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
 }
 
 .batchbox-panel-header h3 {
-    margin: 0;
-    font-size: 18px;
-    color: #ddd;
+  margin: 0;
+  font-size: 18px;
+  color: #ddd;
 }
 
 /* Table Styles */
 .batchbox-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 20px;
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 20px;
 }
 
 .batchbox-table th,
 .batchbox-table td {
-    padding: 12px 10px;
-    text-align: left;
-    border-bottom: 1px solid #333;
+  padding: 12px 10px;
+  text-align: left;
+  border-bottom: 1px solid #333;
 }
 
 .batchbox-table th {
-    color: #888;
-    font-size: 12px;
-    text-transform: uppercase;
+  color: #888;
+  font-size: 12px;
+  text-transform: uppercase;
 }
 
 .batchbox-table td {
-    color: #ddd;
-    font-size: 14px;
+  color: #ddd;
+  font-size: 14px;
 }
 
 .batchbox-table tr:hover {
-    background: #252525;
+  background: #252525;
 }
 
 /* Buttons */
 .batchbox-btn {
-    padding: 8px 14px;
-    border-radius: 6px;
-    border: none;
-    cursor: pointer;
-    font-size: 13px;
-    margin-right: 6px;
-    transition: all 0.2s;
-    font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  margin-right: 6px;
+  transition: all 0.2s;
+  font-weight: 500;
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, #f0c040, #e0a030);
-    color: #111;
+  background: linear-gradient(135deg, #f0c040, #e0a030);
+  color: #111;
 }
 
 .btn-primary:hover {
-    background: linear-gradient(135deg, #ffd050, #f0b040);
+  background: linear-gradient(135deg, #ffd050, #f0b040);
 }
 
 .btn-success {
-    background: linear-gradient(135deg, #28a745, #218838);
-    color: white;
+  background: linear-gradient(135deg, #28a745, #218838);
+  color: white;
 }
 
 .btn-success:hover {
-    background: linear-gradient(135deg, #34c759, #28a745);
+  background: linear-gradient(135deg, #34c759, #28a745);
 }
 
 .btn-danger {
-    background: linear-gradient(135deg, #dc3545, #c82333);
-    color: white;
+  background: linear-gradient(135deg, #dc3545, #c82333);
+  color: white;
 }
 
 .btn-danger:hover {
-    background: linear-gradient(135deg, #e74c5c, #dc3545);
+  background: linear-gradient(135deg, #e74c5c, #dc3545);
 }
 
 .btn-edit {
-    background: #444;
-    color: #fff;
+  background: #444;
+  color: #fff;
 }
 
 .btn-edit:hover {
-    background: #555;
+  background: #555;
 }
 
 .btn-cancel {
-    background: #333;
-    color: #aaa;
+  background: #333;
+  color: #aaa;
 }
 
 .btn-cancel:hover {
-    background: #444;
-    color: #fff;
+  background: #444;
+  color: #fff;
 }
 
 /* Footer */
 .batchbox-footer {
-    padding: 16px 24px;
-    border-top: 1px solid #333;
-    text-align: right;
-    background: #1f1f1f;
+  padding: 16px 24px;
+  border-top: 1px solid #333;
+  text-align: right;
+  background: #1f1f1f;
 }
 
 /* Empty State */
 .batchbox-empty {
-    color: #666;
-    text-align: center;
-    padding: 40px;
-    font-style: italic;
+  color: #666;
+  text-align: center;
+  padding: 40px;
+  font-style: italic;
 }
 
 /* Raw Textarea */
 .batchbox-raw-textarea {
-    width: 100%;
-    height: 400px;
-    background: #0d0d0d;
-    color: #0f0;
-    border: 1px solid #333;
-    border-radius: 6px;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 13px;
-    padding: 12px;
-    resize: vertical;
+  width: 100%;
+  height: 400px;
+  background: #0d0d0d;
+  color: #0f0;
+  border: 1px solid #333;
+  border-radius: 6px;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 13px;
+  padding: 12px;
+  resize: vertical;
 }
 
 .batchbox-raw-textarea.error {
-    border-color: #dc3545;
+  border-color: #dc3545;
 }
 
 /* ========== Sub Modal (Forms, Confirm) ========== */
 .batchbox-submodal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 10001;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10001;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .batchbox-submodal {
-    background: #2a2a2a;
-    border-radius: 10px;
-    min-width: 400px;
-    max-width: 700px;
-    max-height: 85vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  background: #2a2a2a;
+  border-radius: 10px;
+  min-width: 400px;
+  max-width: 700px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
 
 .batchbox-form-modal {
-    min-width: 600px;
-    width: 650px;
+  min-width: 600px;
+  width: 650px;
 }
 
 .batchbox-submodal-header {
-    padding: 16px 20px;
-    border-bottom: 1px solid #444;
+  padding: 16px 20px;
+  border-bottom: 1px solid #444;
 }
 
 .batchbox-submodal-header h4 {
-    margin: 0;
-    font-size: 16px;
-    color: #ddd;
+  margin: 0;
+  font-size: 16px;
+  color: #ddd;
 }
 
 .batchbox-submodal-body {
-    padding: 20px;
-    overflow-y: auto;
-    flex: 1;
-    max-height: calc(85vh - 120px);
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  max-height: calc(85vh - 120px);
 }
 
 .batchbox-submodal-body p {
-    color: #aaa;
-    margin: 0;
+  color: #aaa;
+  margin: 0;
 }
 
 .batchbox-submodal-footer {
-    padding: 16px 20px;
-    border-top: 1px solid #444;
-    text-align: right;
+  padding: 16px 20px;
+  border-top: 1px solid #444;
+  text-align: right;
 }
 
 /* Form Styles */
 .batchbox-form-group {
-    margin-bottom: 16px;
+  margin-bottom: 16px;
 }
 
 .batchbox-form-group label {
-    display: block;
-    margin-bottom: 6px;
-    color: #aaa;
-    font-size: 13px;
+  display: block;
+  margin-bottom: 6px;
+  color: #aaa;
+  font-size: 13px;
 }
 
 .batchbox-form-input {
-    width: 100%;
-    padding: 10px 12px;
-    background: #1a1a1a;
-    border: 1px solid #444;
-    color: #fff;
-    border-radius: 6px;
-    font-size: 14px;
-    box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 14px;
+  box-sizing: border-box;
 }
 
 .batchbox-form-input:focus {
-    outline: none;
-    border-color: #f0c040;
+  outline: none;
+  border-color: #f0c040;
 }
 
 .batchbox-form-input:disabled {
-    background: #333;
-    color: #888;
+  background: #333;
+  color: #888;
 }
 
 /* Toast */
 .batchbox-toast {
-    position: fixed;
-    bottom: 80px;
-    right: 20px;
-    padding: 12px 20px;
-    border-radius: 8px;
-    color: #fff;
-    font-size: 14px;
-    z-index: 100000;
-    opacity: 0;
-    transform: translateY(20px);
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  z-index: 100000;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .batchbox-toast.show {
-    opacity: 1;
-    transform: translateY(0);
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .toast-success {
-    background: linear-gradient(135deg, #28a745, #218838);
+  background: linear-gradient(135deg, #28a745, #218838);
 }
 
 .toast-error {
-    background: linear-gradient(135deg, #dc3545, #c82333);
+  background: linear-gradient(135deg, #dc3545, #c82333);
 }
 
 .toast-info {
-    background: linear-gradient(135deg, #17a2b8, #138496);
+  background: linear-gradient(135deg, #17a2b8, #138496);
 }
 
 /* ========== Advanced Modal ========== */
 .batchbox-advanced-modal {
-    min-width: 550px;
-    max-width: 650px;
+  min-width: 550px;
+  max-width: 650px;
 }
 
 .batchbox-form-tabs {
-    display: flex;
-    border-bottom: 1px solid #444;
-    margin-bottom: 16px;
+  display: flex;
+  border-bottom: 1px solid #444;
+  margin-bottom: 16px;
 }
 
 .batchbox-form-tab {
-    padding: 10px 20px;
-    background: none;
-    border: none;
-    color: #888;
-    cursor: pointer;
-    font-size: 14px;
-    border-bottom: 2px solid transparent;
-    transition: all 0.2s;
+  padding: 10px 20px;
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
 }
 
 .batchbox-form-tab:hover {
-    color: #ddd;
+  color: #ddd;
 }
 
 .batchbox-form-tab.active {
-    color: #f0c040;
-    border-bottom-color: #f0c040;
+  color: #f0c040;
+  border-bottom-color: #f0c040;
 }
 
 .batchbox-form-tab-content {
-    display: none;
+  display: none;
 }
 
 .batchbox-form-tab-content.active {
-    display: block;
+  display: block;
 }
 
 .batchbox-form-row {
-    display: flex;
-    gap: 16px;
+  display: flex;
+  gap: 16px;
 }
 
 .batchbox-form-row .batchbox-form-group {
-    flex: 1;
+  flex: 1;
 }
 
 .batchbox-checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    color: #ddd;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: #ddd;
 }
 
 .batchbox-checkbox-label input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
 }
 
 .batchbox-hint {
-    font-size: 12px;
-    color: #666;
-    margin-top: 4px;
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
 }
 
 .batchbox-params-textarea {
-    height: 150px;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 12px;
-    resize: vertical;
+  height: 150px;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 12px;
+  resize: vertical;
 }
 
 .batchbox-dynamic-fields {
-    margin-top: 16px;
-    padding-top: 16px;
-    border-top: 1px solid #333;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
 }
 
 /* ========== Parameter Editor ========== */
 .batchbox-param-mode-toggle {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
 .btn-mode {
-    background: #333;
-    color: #888;
-    border: 1px solid #444;
-    padding: 6px 12px;
-    font-size: 12px;
+  background: #333;
+  color: #888;
+  border: 1px solid #444;
+  padding: 6px 12px;
+  font-size: 12px;
 }
 
 .btn-mode.active {
+  background: #444;
+  color: #f0c040;
+  border-color: #f0c040;
+}
+
+.btn-mode:hover {
+  color: #ddd;
+}
+
+.batchbox-param-section {
+  margin-bottom: 16px;
+}
+
+.batchbox-param-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #333;
+}
+
+.batchbox-param-section-header span {
+  font-size: 13px;
+  color: #aaa;
+  font-weight: 600;
+}
+
+.batchbox-param-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.batchbox-param-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 10px;
+  background: #252525;
+  border-radius: 6px;
+  border: 1px solid #333;
+}
+
+.batchbox-param-item .param-row {
+  display: flex;
+  gap: 8px;
+  grid-column: 1;
+}
+
+.batchbox-param-item input,
+.batchbox-param-item select {
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.batchbox-param-item .param-name {
+  flex: 2;
+  min-width: 100px;
+}
+
+.batchbox-param-item .param-type {
+  flex: 1;
+  min-width: 80px;
+}
+
+.batchbox-param-item .param-default {
+  flex: 1;
+  min-width: 80px;
+}
+
+.batchbox-param-item .param-options {
+  flex: 2;
+  min-width: 120px;
+}
+
+.batchbox-param-item input:focus,
+.batchbox-param-item select:focus {
+  outline: none;
+  border-color: #f0c040;
+}
+
+.btn-sm {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+}
+
+.btn-del-param {
+  width: 24px;
+  height: 24px;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px !important;
+  flex-shrink: 0;
+}
+
+/* ========== Category Tabs ========== */
+.batchbox-category-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 8px;
+  background: #1a1a1a;
+  border-radius: 8px;
+}
+
+.batchbox-cat-tab {
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.batchbox-cat-tab:hover {
+  background: #333;
+  color: #ddd;
+}
+
+.batchbox-cat-tab.active {
+  background: linear-gradient(135deg, #f0c040, #e0a030);
+  color: #111;
+  font-weight: 600;
+}
+
+/* Badge */
+.batchbox-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #333;
+  color: #aaa;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Model List Container */
+.batchbox-model-list-container {
+  min-height: 200px;
+}
+
+/* Secondary Button */
+.btn-secondary {
+  background: #3a3a3a;
+  color: #ddd;
+  border: 1px solid #555;
+}
+
+.btn-secondary:hover {
+  background: #4a4a4a;
+  color: #fff;
+}
+
+/* ========== Save Settings Form ========== */
+.batchbox-save-settings-form {
+  max-width: 500px;
+}
+
+.batchbox-form-row-inline {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.batchbox-input,
+.batchbox-select {
+  width: 100%;
+  padding: 10px 12px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.batchbox-input:focus,
+.batchbox-select:focus {
+  outline: none;
+  border-color: #f0c040;
+}
+
+.batchbox-input-sm {
+  width: 80px;
+  padding: 6px 10px;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.batchbox-input-hint {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 6px;
+  margin-top: -2px;
+}
+
+.batchbox-preview-text {
+  font-family: "Consolas", "Monaco", monospace;
+  background: #0d0d0d;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #0f0;
+  display: block;
+}
+
+.batchbox-sub-option {
+  margin-top: 10px;
+  margin-left: 26px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batchbox-sub-option label {
+  margin-bottom: 0;
+  color: #888;
+  font-size: 12px;
+}
+
+.batchbox-form-actions {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
+}
+
+/* ========== Model Order Buttons ========== */
+.batchbox-order-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px !important;
+}
+
+.btn-order {
+    width: 24px;
+    height: 20px;
+    padding: 0 !important;
+    font-size: 10px !important;
+    background: #333;
+    color: #888;
+    border: 1px solid #444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-order:hover:not(:disabled) {
     background: #444;
     color: #f0c040;
     border-color: #f0c040;
 }
 
-.btn-mode:hover {
-    color: #ddd;
+.btn-order:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
 }
 
-.batchbox-param-section {
-    margin-bottom: 16px;
+.batchbox-action-cell {
+    white-space: nowrap;
 }
 
-.batchbox-param-section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid #333;
+/* ========== Drag and Drop Sorting ========== */
+.batchbox-sortable-row {
+    cursor: default;
+    transition: background-color 0.15s ease, opacity 0.15s ease;
 }
 
-.batchbox-param-section-header span {
-    font-size: 13px;
-    color: #aaa;
-    font-weight: 600;
+.batchbox-drag-handle {
+    cursor: grab;
+    color: #666;
+    font-size: 14px;
+    text-align: center;
+    user-select: none;
+    padding: 8px 4px !important;
+    width: 40px;
 }
 
-.batchbox-param-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+.batchbox-drag-handle:hover {
+    color: #f0c040;
+    background: #333;
 }
 
-.batchbox-param-item {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 8px;
-    padding: 10px;
-    background: #252525;
-    border-radius: 6px;
-    border: 1px solid #333;
+.batchbox-sortable-row:active .batchbox-drag-handle {
+    cursor: grabbing;
 }
 
-.batchbox-param-item .param-row {
-    display: flex;
-    gap: 8px;
-    grid-column: 1;
-}
-
-.batchbox-param-item input,
-.batchbox-param-item select {
-    padding: 6px 8px;
+.batchbox-sortable-row.dragging {
+    opacity: 0.4;
     background: #1a1a1a;
-    border: 1px solid #444;
-    color: #ddd;
-    border-radius: 4px;
-    font-size: 12px;
-    min-width: 0;
 }
 
-.batchbox-param-item .param-name {
-    flex: 2;
-    min-width: 100px;
+.batchbox-sortable-row.drag-over {
+    background: linear-gradient(180deg, #f0c040 0%, #f0c040 3px, transparent 3px);
 }
 
-.batchbox-param-item .param-type {
-    flex: 1;
-    min-width: 80px;
-}
-
-.batchbox-param-item .param-default {
-    flex: 1;
-    min-width: 80px;
-}
-
-.batchbox-param-item .param-options {
-    flex: 2;
-    min-width: 120px;
-}
-
-.batchbox-param-item input:focus,
-.batchbox-param-item select:focus {
-    outline: none;
-    border-color: #f0c040;
-}
-
-.btn-sm {
-    padding: 4px 8px !important;
-    font-size: 11px !important;
-}
-
-.btn-del-param {
-    width: 24px;
-    height: 24px;
-    padding: 0 !important;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px !important;
-    flex-shrink: 0;
+.batchbox-sortable-row.drag-over td {
+    border-top: 2px solid #f0c040;
 }

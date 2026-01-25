@@ -1,0 +1,281 @@
+/**
+ * Dynamic Parameter Styles
+ * Styles for the dynamic parameter widgets in ComfyUI-Custom-Batchbox
+ */
+
+/* Group Header Buttons */
+.batchbox-group-header {
+    background: linear-gradient(135deg, #2a2a3a 0%, #1a1a2a 100%);
+    border: 1px solid #3a3a4a;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 8px 0 4px 0;
+    color: #888;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.batchbox-group-header:hover {
+    background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
+    border-color: #4a4a5a;
+    color: #aaa;
+}
+
+.batchbox-group-header.collapsed {
+    margin-bottom: 2px;
+}
+
+.batchbox-group-header .arrow {
+    transition: transform 0.2s ease;
+}
+
+.batchbox-group-header.collapsed .arrow {
+    transform: rotate(-90deg);
+}
+
+/* Dynamic Widget Container */
+.batchbox-dynamic-widget {
+    transition: opacity 0.2s ease, max-height 0.3s ease;
+    overflow: hidden;
+}
+
+.batchbox-dynamic-widget.hidden {
+    opacity: 0;
+    max-height: 0;
+    margin: 0;
+    padding: 0;
+}
+
+/* Model Selector Styling */
+.batchbox-model-selector {
+    background: linear-gradient(135deg, #1e3a5f 0%, #0d2137 100%);
+    border: 1px solid #2a5a8f;
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: #fff;
+    font-weight: 500;
+}
+
+.batchbox-model-selector:hover {
+    border-color: #3a7abf;
+    box-shadow: 0 0 10px rgba(42, 90, 143, 0.3);
+}
+
+/* Parameter Input Fields */
+.batchbox-param-input {
+    background: #1a1a2a;
+    border: 1px solid #3a3a4a;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #ddd;
+    transition: border-color 0.2s ease;
+}
+
+.batchbox-param-input:focus {
+    border-color: #5a8abf;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(90, 138, 191, 0.2);
+}
+
+/* Toggle Switch */
+.batchbox-toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    background: #2a2a3a;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.batchbox-toggle.active {
+    background: linear-gradient(135deg, #2a8a5f 0%, #1a5a3f 100%);
+}
+
+.batchbox-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 20px;
+    height: 20px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+}
+
+.batchbox-toggle.active::after {
+    transform: translateX(20px);
+}
+
+/* Slider Widget */
+.batchbox-slider {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 6px;
+    background: #2a2a3a;
+    border-radius: 3px;
+    outline: none;
+}
+
+.batchbox-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: linear-gradient(135deg, #5a8abf 0%, #3a6a9f 100%);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.2s ease;
+}
+
+.batchbox-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+/* Number Input with Spin Buttons */
+.batchbox-number-input {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.batchbox-number-input input {
+    width: 60px;
+    text-align: center;
+    background: #1a1a2a;
+    border: 1px solid #3a3a4a;
+    border-radius: 4px;
+    color: #ddd;
+    padding: 6px;
+}
+
+.batchbox-number-input button {
+    width: 24px;
+    height: 24px;
+    background: #2a2a3a;
+    border: 1px solid #3a3a4a;
+    border-radius: 4px;
+    color: #888;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.batchbox-number-input button:hover {
+    background: #3a3a4a;
+    color: #ddd;
+}
+
+/* Select/Combo Box */
+.batchbox-select {
+    background: #1a1a2a;
+    border: 1px solid #3a3a4a;
+    border-radius: 6px;
+    padding: 8px 32px 8px 12px;
+    color: #ddd;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+}
+
+.batchbox-select:hover {
+    border-color: #5a5a6a;
+}
+
+.batchbox-select:focus {
+    border-color: #5a8abf;
+    outline: none;
+}
+
+/* Info Tooltip */
+.batchbox-tooltip {
+    position: relative;
+    display: inline-block;
+    margin-left: 6px;
+    cursor: help;
+}
+
+.batchbox-tooltip::before {
+    content: '?';
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    background: #3a3a4a;
+    border-radius: 50%;
+    font-size: 10px;
+    color: #888;
+}
+
+.batchbox-tooltip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 10px;
+    background: #1a1a2a;
+    border: 1px solid #3a3a4a;
+    border-radius: 4px;
+    color: #ddd;
+    font-size: 11px;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease;
+    z-index: 1000;
+}
+
+.batchbox-tooltip:hover::after {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Animation for Dynamic Updates */
+@keyframes batchbox-fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.batchbox-dynamic-widget.entering {
+    animation: batchbox-fadeIn 0.3s ease forwards;
+}
+
+/* Loading State */
+.batchbox-loading {
+    position: relative;
+    pointer-events: none;
+}
+
+.batchbox-loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border: 2px solid #3a3a4a;
+    border-top-color: #5a8abf;
+    border-radius: 50%;
+    animation: batchbox-spin 0.8s linear infinite;
+}
+
+@keyframes batchbox-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

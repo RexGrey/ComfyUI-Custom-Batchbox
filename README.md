@@ -1,142 +1,229 @@
-# ComfyUI-Custom-Batchbox (Nano Banana Pro)
+# ComfyUI-Custom-Batchbox
 
-**Nano Banana Pro** 是一个功能强大的 ComfyUI 自定义节点，专为需要高效、稳定调用远程绘图 API（如 Nano Banana, Flux Pro 等）的用户设计。它支持批量生成、集中式配置管理以及自动负载均衡（供应商轮询）。
+**ComfyUI-Custom-Batchbox** 是一个强大的 ComfyUI 自定义节点系统，支持动态参数面板、多 API 供应商、自动故障转移，以及完整的可视化配置管理。
 
 ## ✨ 核心功能
 
-*   **⚡ 集中配置**: 告别在节点上重复填写 API Key 和 URL，所有配置统一在 `api_config.yaml` 管理。
-*   **🔌 多供应商轮询 (Load Balancing)**: 若当前 API 供应商请求失败，插件可自动切换到备用供应商，最大程度保证任务成功。
-*   **🔄 批量循环**: 支持一次性提交多个请求 (`batch_count`)。
-*   **🧠 智能识别**: 自动识别同步（Direct）和异步（Polling）API 响应格式。
-*   **📁 预设管理**: 通过下拉菜单快速切换不同的模型或供应商配置。
+### 🎯 动态参数面板
+
+- 选择不同模型后，节点参数自动更新
+- 支持参数分组（基础/高级）
+- 支持多种参数类型：字符串、数字、下拉选择、开关
+
+### 🔌 多供应商支持
+
+- 同一模型可配置多个 API 供应商
+- 支持优先级排序
+- 自动故障转移（Failover）
+
+### 📊 节点类型
+
+| 节点 | 功能 |
+|------|------|
+| �️ 图片生成 | 文生图、图生图 |
+| 📝 文本生成 | AI 脚本、广告词 |
+| 🎬 视频生成 | AI 视频创作 |
+| 🎵 音频生成 | AI 音频合成 |
+| � 图片编辑 | 局部重绘、超分 |
+
+### ⚙️ 可视化配置
+
+- 内置 API Manager 界面
+- 无需编辑 YAML 文件
+- 支持热更新
+
+### 🛡️ 程序强健性
+
+- 请求重试机制（指数退避）
+- 结构化异常处理
+- 可配置日志级别
+- RGBA 透明度保持
+- WebP 格式支持
+
+### 💾 自动保存功能
+
+- 生成图片自动保存到指定目录
+- 可自定义命名格式（模型名、时间戳、seed 等）
+- 支持 PNG/JPG/WebP 或保持原格式
+- 按日期自动创建子文件夹
+- API Manager 内可视化配置
+
+### 📊 模型排序
+
+- 拖拽调整模型显示顺序
+- 节点下拉框按配置顺序显示
+- 顺序保存在 `api_config.yaml`
 
 ---
 
-## 🚀 安装说明
+## 🚀 安装
 
-1.  将本项目文件夹 `ComfyUI-Custom-Batchbox` 放置在您的 ComfyUI `custom_nodes` 目录下。
-    *   路径示例: `...\ComfyUI\custom_nodes\ComfyUI-Custom-Batchbox\`
-2.  确保安装了必要的 Python 依赖（通常 ComfyUI 自带）：
-    *   `requests`
-    *   `pyyaml`
-3.  **重启 ComfyUI**。
+1. 将本项目放入 ComfyUI `custom_nodes` 目录：
+
+   ```
+   ComfyUI/custom_nodes/ComfyUI-Custom-Batchbox/
+   ```
+
+2. 安装依赖：
+
+   ```bash
+   pip install pyyaml requests
+   ```
+
+3. **重启 ComfyUI**
 
 ---
 
-## ⚙️ 配置指南 (重要)
+## ⚙️ 配置指南
 
-在使用节点前，您**必须**配置 API 信息。
+### 方式一：可视化配置（推荐）
 
-1.  打开插件目录下的 **`api_config.yaml`** 文件。
-2.  参照以下格式填入您的服务商信息：
+1. 在 ComfyUI 菜单中找到 **Batchbox API Manager**
+2. 配置供应商：
+   - 名称（如 `bltcy_ai`）
+   - Base URL（如 `https://api.bltcy.ai`）
+   - API Key
+3. 配置模型：
+   - 选择类别（图片/文本/视频等）
+   - 设置参数 Schema
+   - 配置 API 端点
+
+### 方式二：YAML 配置
+
+编辑 `api_config.yaml`：
 
 ```yaml
-# 1. 定义服务商 (Providers)
-# 在这里填写您的中转站或官方 API 的 Base URL 和 Key
+# 1. 供应商配置
 providers:
-  MyProxy:
-    base_url: "https://api.one-api.com"
-    api_key: "sk-xxxxxxxxxxxxxxxx"
+  bltcy_ai:
+    base_url: "https://api.bltcy.ai"
+    api_key: "sk-xxxxxxxx"
 
-  BackupProxy:
-    base_url: "https://api.backup-site.com"
-    api_key: "sk-yyyyyyyyyyyyyyyy"
+# 2. 模型配置
+models:
+  banana_pro:
+    display_name: "🍌 Banana Pro"
+    category: image
+    parameter_schema:
+      basic:
+        prompt: { type: string, default: "" }
+        style: 
+          type: select
+          default: realistic
+          options:
+            - { value: realistic, label: 写实风格 }
+            - { value: anime, label: 动漫风格 }
+    api_endpoints:
+      - provider: bltcy_ai
+        priority: 1
+        modes:
+          text2img:
+            endpoint: "/v1/images/generations"
+          img2img:
+            endpoint: "/v1/images/edits"
 
-# 2. 定义预设 (Presets)
-presets:
-  # 预设名称 (显示在节点菜单中)
-  NanoBanana_Main:
-    description: "Nano Banana (主线路)"
-    provider: "MyProxy"        # <--- 引用上面的服务商
-    model_name: "nano-banana-2"
-    modes:
-      text2img:
-        endpoint: "/v1/images/generations"
-        response_type: "sync"  # "sync" (直接返回) 或 "async" (需要轮询)
-
-  # 备用预设 (用于自动切换)
-  NanoBanana_Backup:
-    description: "Nano Banana (备用线路)"
-    provider: "BackupProxy"    # <--- 引用备用服务商
-    model_name: "nano-banana-2" # 模型名称必须相同，才能触发自动轮询
-    modes:
-      text2img:
-        endpoint: "/api/generate"
-        response_type: "async"
-
-  # [NEW] 独立动态节点 (Dynamic Node)
-  # 定义这个预设后，ComfyUI 中会自动生成一个独立的节点
-  NanoBanana_Specific:
-    provider: "MyProxy"
-    model_name: "nano-banana-2"
-    modes:
-       text2img: { endpoint: "/v1/images/generations", response_type: "sync" }
-    
-    # 关键字段：不加这个字段就是通用节点的预设，加了就是独立节点
-    dynamic_node:
-      class_name: "NanoBananaSpecificNode"      # 必须唯一
-      display_name: "🍌 Nano Banana Specific"   # 搜索菜单里显示的名字
-      parameters:
-        required:
-          # 在这里只定义你想在这个节点上看到的参数
-          image_size: { type: ["1K", "2K", "4K"], default: "2K" }
-          aspect_ratio: { type: ["1:1", "16:9"], default: "16:9" }
-          prompt: { type: STRING, multiline: True }
-        optional:
-          seed: { type: INT, default: 0 }
+# 3. 全局设置
+settings:
+  default_timeout: 600
+  max_retries: 3
+  auto_failover: true
 ```
 
 ---
 
-## 📖 节点使用说明
+## 📖 使用说明
 
-本插件采用了 **混合架构**，提供两种类型的节点，您可以根据喜好选择。
+### 1. 添加节点
 
-### 1. 🍌 通用节点 (Universal Node)
-- **节点名称**: `Nano Banana Pro (Universal)`
-- **特点**: 功能最全，参数最多。
-- **用法**: 
-    1.  添加节点。
-    2.  在 `preset` 下拉菜单中选择任意已配置的模型。
-    3.  即使是为“独立节点”配置的预设，也可以在这里被选到。
+在 ComfyUI 中搜索 `ComfyUI-Custom-Batchbox`，选择对应类型的节点。
 
-### 2. 🆕 独立动态节点 (Dynamic Node)
-- **节点名称**: 取决于您在配置文件的 `display_name` (例如 `🍌 Nano Banana Specific`)。
-- **特点**: 界面清爽，只显示该模型需要的参数。
-- **用法**:
-    1.  在 `api_config.yaml` 中定义 `dynamic_node` 字段。
-    2.  重启 ComfyUI。
-    3.  搜索您定义的名字并添加使用。
+### 2. 选择模型
+
+从下拉菜单选择已配置的模型，参数面板会自动更新。
+
+### 3. 连接输入
+
+- **prompt**: 必填，提示词
+- **image**: 可选，用于图生图
+
+### 4. 执行
+
+连接输出后执行工作流。
 
 ---
 
-### 通用节点参数详解
+## 🔧 端点配置说明
 
-### 参数详解
+### text2img vs img2img
 
-| 参数名 | 说明 |
-| :--- | :--- |
-| **preset** | **预设选择**。从 `api_config.yaml` 加载的配置列表。选择后将自动应用对应的 URL 和 Key。 |
-| **auto_switch_provider** | **自动切换供应商**。<br>- `Disabled`: 仅使用当前选中的预设。<br>- `Enabled`: 如果当前预设请求失败，会自动查找并尝试其他同模型 (`model_name` 相同) 的预设。 |
-| **batch_count** | **批量数量**。循环运行生成的次数。 |
-| **prompt** | 正向提示词。 |
-| **mode** | `text2img` (文生图) 或 `img2img` (图生图)。 |
-| **aspect_ratio** | 图片比例 (如 16:9, 1:1, auto)。 |
-| **image_size** | 图片尺寸/分辨率 (如 1K, 2K)。 |
-| **seed** | 随机种子。 |
+每个模型可配置两种端点：
 
-### 图生图 (img2img)
-连接 `image1` 到 `image14` 端口即可传入参考图。节点会自动处理图片的上传和 Base64 转换。
+| 端点 | 用途 | 触发条件 |
+|------|------|----------|
+| text2img | 文生图 | 无图片输入 |
+| img2img | 图生图 | 有图片输入 |
+
+**配置规则：**
+
+- 至少配置一个端点
+- 如只配置一个，另一个自动使用相同端点
+
+---
+
+## 📁 项目结构
+
+```
+ComfyUI-Custom-Batchbox/
+├── __init__.py          # 入口、API 端点注册
+├── nodes.py             # 节点定义
+├── config_manager.py    # 配置管理器（含缓存、验证）
+├── batchbox_logger.py   # 日志与重试模块
+├── errors.py            # 结构化异常类
+├── image_utils.py       # 图片处理工具
+├── api_config.yaml      # 配置文件
+├── adapters/            # API 适配器
+│   ├── base.py
+│   ├── generic.py       # 通用适配器（层级配置 + 重试）
+│   └── template_engine.py
+├── web/                 # 前端资源
+│   ├── api_manager.js
+│   ├── api_manager.css
+│   ├── dynamic_params.js
+│   └── dynamic_inputs.js
+├── tests/               # 单元测试
+└── docs/                # 文档
+```
 
 ---
 
 ## ❓ 常见问题
 
-**Q: 为什么节点加载失败？**
-A: 请检查 `custom_nodes/ComfyUI-Custom-Batchbox` 目录下是否有 `__init__.py` 和 `nodes.py`。如果是依赖缺失，请尝试 `pip install pyyaml requests`。
+### Q: 节点加载失败？
 
-**Q: 如何让“自动切换”生效？**
-A: 您需要在 `api_config.yaml` 中定义至少两个预设，并且它们的 `model_name` 字段必须**完全一致**。例如 `NanoBanana_Main` 和 `NanoBanana_Backup` 的 model_name 都是 `nano-banana-2`。
+**A:** 检查依赖是否安装：
 
-**Q: 节点一直在 Polling 但是不结束？**
-A: 请检查您的 `base_url` 和 `endpoint` 是否正确。如果是异步任务，确保服务商支持 `/v1/images/tasks/{task_id}` 格式的查询。
+```bash
+pip install pyyaml requests
+```
+
+### Q: 自动切换供应商不生效？
+
+**A:** 确保：
+
+1. 配置了多个供应商
+2. `settings.auto_failover` 设为 `true`
+3. 各端点的供应商优先级正确设置
+
+### Q: API Key 不显示？
+
+**A:** 点击输入框旁边的 👁 按钮可以显示/隐藏。
+
+---
+
+## 📄 许可证
+
+MIT License
+
+## 🔗 相关链接
+
+- [ComfyUI 官方仓库](https://github.com/comfyanonymous/ComfyUI)
