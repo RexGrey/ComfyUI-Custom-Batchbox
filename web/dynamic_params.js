@@ -27,6 +27,31 @@ const schemaCache = new Map();
 const CACHE_TTL_MS = 60000; // 60 seconds
 let lastConfigMtime = 0;
 
+// Flag to distinguish button-triggered execution from global Queue Prompt
+// When true, BatchBox nodes are included in execution
+// When false (default), BatchBox nodes are excluded from global Queue Prompt
+let isButtonTriggeredExecution = false;
+
+// Setting cache for bypass behavior (loaded from backend)
+let bypassQueuePromptEnabled = true; // Default: enabled
+
+// Fetch node settings from backend
+async function fetchNodeSettings() {
+  try {
+    const resp = await api.fetchApi("/api/batchbox/node-settings");
+    if (resp.ok) {
+      const data = await resp.json();
+      bypassQueuePromptEnabled = data.node_settings?.bypass_queue_prompt !== false;
+      console.log(`[DynamicParams] bypass_queue_prompt setting: ${bypassQueuePromptEnabled}`);
+    }
+  } catch (e) {
+    console.warn('[DynamicParams] Failed to fetch node settings:', e);
+  }
+}
+
+// Load settings on startup
+fetchNodeSettings();
+
 // Cache entry: { data: any, timestamp: number }
 function getCachedSchema(modelName) {
   const entry = schemaCache.get(modelName);
@@ -469,6 +494,10 @@ function randomizeSeedAndExecute(node) {
     }
   }
 
+  // Set flag to indicate this is a button-triggered execution
+  // This allows BatchBox nodes to be included in this execution
+  isButtonTriggeredExecution = true;
+  
   // Trigger execution to this node using ComfyUI's partial execution
   executeToNode(node);
 }
@@ -718,14 +747,20 @@ app.registerExtension({
 });
 
 // ==========================================
-// Intercept queuePrompt to update extra_params before execution
+// Intercept queuePrompt to update extra_params and handle BatchBox exclusion
 // ==========================================
 const origQueuePrompt = api.queuePrompt;
 api.queuePrompt = async function(number, workflowData) {
+  // Collect BatchBox node IDs for potential exclusion
+  const batchboxNodeIds = new Set();
+  
   // Update extra_params for all dynamic nodes before sending to backend
   if (app.graph && app.graph._nodes) {
     for (const node of app.graph._nodes) {
       if (node._dynamicParamManager && node.widgets) {
+        // Track BatchBox nodes
+        batchboxNodeIds.add(String(node.id));
+        
         const extraParamsWidget = node.widgets.find(w => w.name === "extra_params");
         if (extraParamsWidget) {
           const dynamicParams = node._dynamicParamManager.collectDynamicParams();
@@ -733,6 +768,29 @@ api.queuePrompt = async function(number, workflowData) {
           console.log(`[DynamicParams] node ${node.id} extra_params:`, extraParamsWidget.value);
         }
       }
+    }
+  }
+  
+  // Capture and reset the flag immediately
+  const wasButtonTriggered = isButtonTriggeredExecution;
+  isButtonTriggeredExecution = false;
+  
+  // If bypass is enabled AND NOT button-triggered (i.e., global Queue Prompt), exclude BatchBox nodes
+  if (bypassQueuePromptEnabled && !wasButtonTriggered && batchboxNodeIds.size > 0 && workflowData?.output) {
+    console.log(`[BatchBox] Global Queue Prompt detected, excluding ${batchboxNodeIds.size} BatchBox node(s)`);
+    
+    // Remove BatchBox nodes from the prompt output
+    for (const nodeId of batchboxNodeIds) {
+      if (workflowData.output[nodeId]) {
+        delete workflowData.output[nodeId];
+        console.log(`[BatchBox] Excluded node ${nodeId} from execution`);
+      }
+    }
+    
+    // Check if any nodes remain
+    if (Object.keys(workflowData.output).length === 0) {
+      console.log(`[BatchBox] No nodes left to execute after exclusion`);
+      return { error: "No nodes to execute (BatchBox nodes are only triggered by their Generate button)" };
     }
   }
   
@@ -748,5 +806,11 @@ window.BatchboxDynamicParams = {
   schemaCache,
   DynamicParameterManager,
 };
+
+// Listen for settings changes from Manager
+window.addEventListener("batchbox:node-settings-changed", () => {
+  console.log("[DynamicParams] Reloading node settings...");
+  fetchNodeSettings();
+});
 
 console.log("[ComfyUI-Custom-Batchbox] Dynamic parameter extension loaded");

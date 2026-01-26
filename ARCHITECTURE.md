@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.8 | 2026-01-26 | Queue Prompt 拦截开关 |
 | 2.7 | 2026-01-26 | "开始生成"按钮部分执行支持 |
 | 2.6 | 2026-01-26 | Gemini 原生 API 支持 + Prompt 前缀功能 |
 | 2.5.1 | 2026-01-25 | 节点宽度管理器（API Manager 可配置默认宽度） |
@@ -626,6 +627,70 @@ flowchart TD
 
 > **注意：** 官方明确警告 monkey-patching 是 deprecated，但目前没有替代方案。实现采用临时覆盖（执行后立即恢复）以最小化影响。
 
+### 7.8 Queue Prompt 拦截机制
+
+**功能：** 全局 Queue Prompt 时自动排除 BatchBox 节点，仅允许通过节点上的"开始生成"按钮触发执行。
+
+**应用场景：**
+- ComfyUI 重启后用户按 Queue Prompt 时，避免重新执行所有 API 调用节点
+- 工作流中有多个独立的 BatchBox 节点时，避免同时触发
+
+**实现流程：**
+
+```mermaid
+flowchart TD
+    A[用户操作] --> B{触发来源?}
+    B -->|节点按钮| C[设置 isButtonTriggered = true]
+    B -->|全局 Queue Prompt| D[isButtonTriggered = false]
+    C --> E[api.queuePrompt 拦截器]
+    D --> E
+    E --> F{bypassEnabled && !isButtonTriggered?}
+    F -->|是| G[从 prompt.output 移除 BatchBox 节点]
+    F -->|否| H[保留所有节点]
+    G --> I[调用原始 queuePrompt]
+    H --> I
+```
+
+**配置存储 (api_config.yaml)：**
+
+```yaml
+node_settings:
+  default_width: 500
+  bypass_queue_prompt: true  # true=开启拦截, false=正常执行
+```
+
+**核心代码模式：**
+
+```javascript
+// 标记按钮触发
+let isButtonTriggeredExecution = false;
+let bypassQueuePromptEnabled = true;
+
+// 拦截 queuePrompt
+const origQueuePrompt = api.queuePrompt;
+api.queuePrompt = async function(number, workflowData) {
+  const wasButtonTriggered = isButtonTriggeredExecution;
+  isButtonTriggeredExecution = false; // 立即重置
+  
+  if (bypassQueuePromptEnabled && !wasButtonTriggered) {
+    // 移除 BatchBox 节点
+    for (const nodeId of batchboxNodeIds) {
+      delete workflowData.output[nodeId];
+    }
+  }
+  return origQueuePrompt.call(this, number, workflowData);
+};
+```
+
+**设置同步注意事项：**
+
+当使用专用 API 保存设置时，必须同步回主配置对象，否则主"保存"按钮会覆盖：
+
+```javascript
+// 保存成功后同步
+this.config.node_settings = { ...this.config.node_settings, ...newSettings };
+```
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -646,6 +711,14 @@ flowchart TD
 ---
 
 ## 9. 更新日志
+
+### v2.8 (2026-01-26)
+- ✅ Queue Prompt 拦截开关
+- ✅ BatchBox 节点可选择仅通过"开始生成"按钮触发
+- ✅ 全局 Queue Prompt 自动排除 BatchBox 节点（可配置）
+- ✅ API Manager → 节点显示设置 → 拦截开关 UI
+- ✅ 设置同步机制修复（防止主保存按钮覆盖）
+- ✅ 设置实时生效（无需刷新页面）
 
 ### v2.7 (2026-01-26)
 - ✅ "开始生成"按钮部分执行支持

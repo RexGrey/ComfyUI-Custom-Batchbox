@@ -743,6 +743,7 @@ class ConfigManager:
         self.load_config()
         defaults = {
             "default_width": 500,  # Default node width in pixels
+            "bypass_queue_prompt": True,  # Whether to exclude BatchBox nodes from global Queue Prompt
         }
         node_settings = self._config.get("node_settings", {})
         # Merge with defaults

@@ -1495,6 +1495,14 @@ class BatchboxManager {
                 </div>
             </div>
             
+            <div class="batchbox-form-group">
+                <label class="batchbox-checkbox-label">
+                    <input type="checkbox" id="node-bypass-queue" ${nodeSettings.bypass_queue_prompt !== false ? 'checked' : ''}>
+                    <span>拦截全局 Queue Prompt</span>
+                </label>
+                <div class="batchbox-input-hint">开启后，BatchBox 节点仅通过节点上的"开始生成"按钮执行，不参与全局 Queue Prompt</div>
+            </div>
+            
             <div class="batchbox-form-actions">
                 <button class="batchbox-btn btn-primary" id="save-node-settings-btn">💾 保存节点设置</button>
             </div>
@@ -1514,14 +1522,23 @@ class BatchboxManager {
         // Save node settings button
         container.querySelector("#save-node-settings-btn").onclick = async () => {
             const newWidth = parseInt(widthInput.value) || 500;
+            const bypassQueuePrompt = container.querySelector("#node-bypass-queue").checked;
+            const newNodeSettings = { 
+                default_width: newWidth,
+                bypass_queue_prompt: bypassQueuePrompt 
+            };
             try {
                 const resp = await api.fetchApi("/api/batchbox/node-settings", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ default_width: newWidth }),
+                    body: JSON.stringify(newNodeSettings),
                 });
                 if (resp.ok) {
-                    this.showToast("节点设置已保存！新建节点将使用 " + newWidth + "px 宽度", "success");
+                    // IMPORTANT: Sync to this.config so main Save button doesn't overwrite
+                    this.config.node_settings = { ...this.config.node_settings, ...newNodeSettings };
+                    this.showToast("节点设置已保存！", "success");
+                    // Notify dynamic_params.js to reload settings
+                    window.dispatchEvent(new CustomEvent("batchbox:node-settings-changed"));
                 } else {
                     throw new Error("保存失败");
                 }
