@@ -473,33 +473,79 @@ function randomizeSeedAndExecute(node) {
   executeToNode(node);
 }
 
+/**
+ * 递归收集节点及其所有上游依赖
+ * @param {string} nodeId - 当前节点 ID
+ * @param {Object} oldOutput - 原始的完整 prompt output
+ * @param {Object} newOutput - 新的只包含需要执行节点的 output
+ */
+function recursiveAddNodes(nodeId, oldOutput, newOutput) {
+  const currentId = String(nodeId);
+  const currentNode = oldOutput[currentId];
+  
+  // 如果节点不存在或已经添加过，跳过
+  if (!currentNode || newOutput[currentId] != null) {
+    return;
+  }
+  
+  // 添加当前节点
+  newOutput[currentId] = currentNode;
+  
+  // 递归添加所有输入节点
+  if (currentNode.inputs) {
+    for (const inputValue of Object.values(currentNode.inputs)) {
+      // 如果输入是数组，说明是来自其他节点的连接
+      // 格式为 [upstream_node_id, output_slot]
+      if (Array.isArray(inputValue)) {
+        recursiveAddNodes(inputValue[0], oldOutput, newOutput);
+      }
+    }
+  }
+}
+
+/**
+ * 执行指定的输出节点（部分执行）
+ * 只执行该节点及其上游依赖节点
+ * @param {Object} node - 要执行的节点
+ */
 async function executeToNode(node) {
+  const nodeIds = [node.id];
+  const originalQueuePrompt = api.queuePrompt;
+  
+  // 临时替换 api.queuePrompt 以拦截和修改 prompt
+  api.queuePrompt = async function(index, prompt) {
+    if (nodeIds && nodeIds.length > 0 && prompt.output) {
+      const oldOutput = prompt.output;
+      const newOutput = {};
+      
+      // 为每个目标节点递归收集依赖
+      for (const nodeId of nodeIds) {
+        recursiveAddNodes(String(nodeId), oldOutput, newOutput);
+      }
+      
+      // 替换 output 为只包含需要执行的节点
+      prompt.output = newOutput;
+      
+      console.log("[BatchBox] Partial execution - original nodes:", Object.keys(oldOutput).length);
+      console.log("[BatchBox] Partial execution - executing nodes:", Object.keys(newOutput).length);
+    }
+    
+    // 调用原始方法
+    const result = await originalQueuePrompt.apply(api, [index, prompt]);
+    
+    // 立即恢复原始方法
+    api.queuePrompt = originalQueuePrompt;
+    
+    return result;
+  };
+  
   try {
-    // Mark this node as the output target for partial execution
-    // ComfyUI's partial execution works by executing to selected output nodes
-
-    // First, ensure the node is selected
-    app.canvas.selectNode(node);
-
-    // Get the workflow in API format
-    const workflow = await app.graphToPrompt();
-
-    if (!workflow || !workflow.output) {
-      console.error("[BatchBox] Failed to get workflow");
-      return;
-    }
-
-    // Queue the prompt with this node as the target
-    // ComfyUI will execute only the necessary nodes
-    const response = await api.queuePrompt(0, workflow);
-
-    if (response.error) {
-      console.error("[BatchBox] Execution error:", response.error);
-    } else {
-      console.log("[BatchBox] Queued execution:", response.prompt_id);
-    }
-  } catch (e) {
-    console.error("[BatchBox] Failed to execute:", e);
+    // 触发队列提交
+    await app.queuePrompt();
+  } catch (error) {
+    console.error("[BatchBox] Execution error:", error);
+    // 确保恢复原始方法
+    api.queuePrompt = originalQueuePrompt;
   }
 }
 

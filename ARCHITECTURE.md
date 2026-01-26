@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.7 | 2026-01-26 | "开始生成"按钮部分执行支持 |
 | 2.6 | 2026-01-26 | Gemini 原生 API 支持 + Prompt 前缀功能 |
 | 2.5.1 | 2026-01-25 | 节点宽度管理器（API Manager 可配置默认宽度） |
 | 2.5 | 2026-01-25 | 节点宽度保持机制（防止 252px 重置） |
@@ -574,7 +575,56 @@ node_settings:
 | `config_manager.py` | `update_node_settings` | 新增: 更新节点设置 |
 | `api_manager.js` | `renderSaveSettings` | 添加宽度滑块 UI |
 
----
+### 7.7 部分执行机制
+
+**功能：** 点击"▶ 开始生成"按钮时，只执行目标节点及其上游依赖，不执行工作流中不相关的分支。
+
+**核心原理：**
+
+ComfyUI 执行工作流时，会将整个 graph 序列化为 `prompt.output` 对象发送给后端。部分执行的实现是在发送前过滤 `prompt.output`，只保留需要执行的节点。
+
+**实现流程：**
+
+```mermaid
+flowchart TD
+    A[点击开始生成按钮] --> B[executeToNode]
+    B --> C[临时覆盖 api.queuePrompt]
+    C --> D[app.queuePrompt 序列化工作流]
+    D --> E[拦截 prompt.output]
+    E --> F[recursiveAddNodes 收集上游依赖]
+    F --> G[过滤 prompt.output]
+    G --> H[调用原始 queuePrompt]
+    H --> I[立即恢复原始方法]
+```
+
+**核心函数：**
+
+| 函数 | 作用 |
+|------|------|
+| `recursiveAddNodes(nodeId, oldOutput, newOutput)` | 递归收集节点及其上游依赖 |
+| `executeToNode(node)` | 临时覆盖 `api.queuePrompt` 实现部分执行 |
+
+**prompt.output 结构示例：**
+
+```javascript
+{
+  "3": { "class_type": "KSampler", "inputs": {...} },      // 上游节点
+  "4": { "class_type": "VAEDecode", "inputs": {"samples": ["3", 0]} },  // 依赖节点3
+  "5": { "class_type": "SaveImage", "inputs": {"images": ["4", 0]} },   // 目标节点
+  "8": { "class_type": "LoadImage", "inputs": {...} },    // 独立分支（被过滤）
+  "9": { "class_type": "PreviewImage", "inputs": {...} }  // 独立分支（被过滤）
+}
+```
+
+**官方 API 状态：**
+
+| 功能 | 官方 API | 实现方式 |
+|------|----------|----------|
+| 右键菜单 | `getNodeMenuItems()` | ✅ 推荐 |
+| 选择工具栏 | `getSelectionToolboxCommands()` | ✅ 推荐 |
+| 修改 prompt | 无官方 API | ⚠️ 临时 monkey-patch |
+
+> **注意：** 官方明确警告 monkey-patching 是 deprecated，但目前没有替代方案。实现采用临时覆盖（执行后立即恢复）以最小化影响。
 
 ## 8. 维护指南
 
@@ -596,6 +646,12 @@ node_settings:
 ---
 
 ## 9. 更新日志
+
+### v2.7 (2026-01-26)
+- ✅ "开始生成"按钮部分执行支持
+- ✅ `recursiveAddNodes()` 递归收集上游依赖节点
+- ✅ `executeToNode()` 临时覆盖 `api.queuePrompt` 过滤 `prompt.output`
+- ✅ 只执行目标节点及其上游依赖，跳过不相关分支
 
 ### v2.6 (2026-01-26)
 - ✅ Gemini 原生 API 格式支持 (`/v1beta/models/{model}:generateContent`)
