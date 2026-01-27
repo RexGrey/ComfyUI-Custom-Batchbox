@@ -228,10 +228,10 @@ class DynamicImageNodeBase:
                       params: Dict[str, Any], mode: str = "text2img",
                       endpoint_override: Optional[str] = None) -> Tuple[torch.Tensor, str, str]:
         """
-        Process batch of image generation requests.
+        Process batch of image generation requests in parallel.
         
-        Generates multiple images sequentially, combining them into a single tensor batch.
-        Preserves preview images for the ComfyUI interface.
+        Generates multiple images concurrently using ThreadPoolExecutor,
+        combining them into a single tensor batch.
         
         Args:
             model_name: Name of the model to use
@@ -241,12 +241,11 @@ class DynamicImageNodeBase:
             endpoint_override: Optional specific endpoint for manual selection
             
         Returns:
-            Tuple of (image_tensor, response_log, last_image_url)
+            Tuple of (image_tensor, response_log, last_image_url, pil_images)
         """
-        successful_tensors = []
-        successful_pil_images = []  # Store PIL images for preview
-        response_log = ""
-        last_url = ""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        successful_results = []  # Store (batch_idx, tensors, pil_images, url, log)
         
         # Ensure seed is an integer (may come as string from extra_params)
         seed = params.get("seed", 0)
@@ -255,53 +254,105 @@ class DynamicImageNodeBase:
         except (ValueError, TypeError):
             seed = 0
         
-        for i in range(batch_count):
-            print(f"\n[Batch] {i+1}/{batch_count} - Model: {model_name}")
+        # Pre-create saver instance outside threads to avoid import issues
+        saver = None
+        saver_enabled = False
+        try:
+            from .save_settings import SaveSettings
+            save_cfg = config_manager.get_save_settings()
+            saver = SaveSettings(save_cfg)
+            saver_enabled = saver.enabled
+        except Exception as e:
+            print(f"[Batch] Could not initialize saver: {e}")
+        
+        def process_single_batch(batch_idx: int):
+            """Process a single batch, save immediately, and return results."""
+            print(f"\n[Batch] {batch_idx+1}/{batch_count} - Model: {model_name}")
             
-            # Update seed for each batch
             current_params = params.copy()
-            if seed > 0:
-                current_params["seed"] = seed + i
+            current_seed = seed + batch_idx if seed > 0 else 0
+            if current_seed > 0:
+                current_params["seed"] = current_seed
             
             result = self.execute_with_failover(model_name, current_params, mode, endpoint_override)
+            
+            batch_tensors = []
+            batch_pil_images = []
+            batch_log = ""
+            batch_url = ""
             
             if result.success:
                 for img_bytes in result.images:
                     try:
-                        # Convert bytes to PIL
                         pil_img = Image.open(BytesIO(img_bytes))
-                        
-                        # Use image_utils to preserve RGBA transparency
-                        pil_img, mode = prepare_for_comfyui(pil_img, preserve_alpha=True)
-                        
-                        successful_pil_images.append(pil_img)
-                        
-                        # Use RGBA-aware tensor conversion
+                        pil_img, img_mode = prepare_for_comfyui(pil_img, preserve_alpha=True)
+                        batch_pil_images.append(pil_img)
                         tensor = pil_to_tensor_rgba(pil_img)
-                        successful_tensors.append(tensor)
+                        batch_tensors.append(tensor)
+                        
+                        # ⚡ IMMEDIATELY SAVE upon receiving image
+                        if saver_enabled and saver:
+                            try:
+                                context = {
+                                    "model": model_name,
+                                    "seed": current_params.get("seed", 0),
+                                    "prompt": current_params.get("prompt", ""),
+                                    "batch": batch_idx + 1,
+                                }
+                                saver.save_image(pil_img, context)
+                            except Exception as save_err:
+                                print(f"[Batch] Immediate save error: {save_err}")
+                            
                     except Exception as e:
-                        response_log += f"Image decode error: {e}\n"
+                        batch_log += f"Image decode error: {e}\n"
                 
                 if result.image_urls:
-                    last_url = result.image_urls[-1]
+                    batch_url = result.image_urls[-1]
             else:
-                response_log += f"Batch {i+1} failed: {result.error_message}\n"
+                batch_log += f"Batch {batch_idx+1} failed: {result.error_message}\n"
+            
+            return (batch_idx, batch_tensors, batch_pil_images, batch_url, batch_log)
         
-        if not successful_tensors:
+        # Run all batches in parallel
+        with ThreadPoolExecutor(max_workers=batch_count) as executor:
+            futures = [executor.submit(process_single_batch, i) for i in range(batch_count)]
+            for future in as_completed(futures):
+                try:
+                    successful_results.append(future.result())
+                except Exception as e:
+                    print(f"[Batch] Thread error: {e}")
+        
+        # Sort by batch index to maintain order
+        successful_results.sort(key=lambda x: x[0])
+        
+        # Combine results
+        all_tensors = []
+        all_pil_images = []
+        response_log = ""
+        last_url = ""
+        
+        for batch_idx, tensors, pil_images, url, log in successful_results:
+            all_tensors.extend(tensors)
+            all_pil_images.extend(pil_images)
+            response_log += log
+            if url:
+                last_url = url
+        
+        if not all_tensors:
             # Return black placeholder
             placeholder = Image.new('RGB', (512, 512), color='black')
             return (
                 pil2tensor(placeholder),
                 f"Generation failed.\n{response_log}",
                 "",
-                [placeholder]  # Return PIL image too
+                [placeholder]
             )
         
         return (
-            torch.cat(successful_tensors, dim=0),
+            torch.cat(all_tensors, dim=0),
             response_log if response_log else "Success",
             last_url,
-            successful_pil_images  # Return PIL images for preview
+            all_pil_images
         )
 
 

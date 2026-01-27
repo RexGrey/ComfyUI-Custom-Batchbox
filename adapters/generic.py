@@ -219,6 +219,22 @@ class GenericAPIAdapter(APIAdapter):
         # Add common params to generation_config if not already present
         if "seed" in params and params["seed"] and "seed" not in generation_config:
             generation_config["seed"] = int(params["seed"])
+        
+        # Build imageConfig for Gemini image generation (nested under generationConfig)
+        image_config = {}
+        logger.debug(f"[Gemini] params keys: {list(params.keys())}")
+        logger.debug(f"[Gemini] image_size={params.get('image_size')}, aspect_ratio={params.get('aspect_ratio')}")
+        if "image_size" in params and params["image_size"]:
+            image_config["imageSize"] = params["image_size"]
+            logger.info(f"[Gemini] Added imageConfig.imageSize: {params['image_size']}")
+        if "aspect_ratio" in params and params["aspect_ratio"]:
+            image_config["aspectRatio"] = params["aspect_ratio"]
+            logger.info(f"[Gemini] Added imageConfig.aspectRatio: {params['aspect_ratio']}")
+        
+        # Add imageConfig to generationConfig if not empty
+        if image_config:
+            generation_config["imageConfig"] = image_config
+        
         if "maxOutputTokens" not in generation_config:
             generation_config["maxOutputTokens"] = 4096
         

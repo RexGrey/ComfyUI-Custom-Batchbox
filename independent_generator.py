@@ -176,24 +176,24 @@ class IndependentGenerator:
             if upload_files:
                 params["_upload_files"] = upload_files
         
-        # Generate images in parallel
-        successful_pil_images = []
+        # Generate images in parallel with immediate saving
         response_log = ""
         
-        async def process_single_batch(batch_idx: int) -> Tuple[int, List[Image.Image], str]:
-            """Process a single batch and return (index, images, log)."""
+        async def process_single_batch(batch_idx: int) -> Tuple[int, List[Dict], str]:
+            """Process a single batch, save immediately, return (index, preview_results, log)."""
             print(f"\n[IndependentGenerator] Batch {batch_idx+1}/{batch_count} - Model: {model}")
             
             current_params = params.copy()
-            if seed > 0:
-                current_params["seed"] = seed + batch_idx
+            current_seed = seed + batch_idx if seed > 0 else 0
+            if current_seed > 0:
+                current_params["seed"] = current_seed
             
             # Run blocking API call in thread pool
             result = await asyncio.to_thread(
                 self.execute_with_failover, model, current_params, mode, endpoint_override
             )
             
-            batch_images = []
+            batch_previews = []
             batch_log = ""
             
             if result.success:
@@ -202,47 +202,47 @@ class IndependentGenerator:
                         pil_img = Image.open(BytesIO(img_bytes))
                         if pil_img.mode not in ("RGB", "RGBA"):
                             pil_img = pil_img.convert("RGB")
-                        batch_images.append(pil_img)
+                        
+                        # ⚡ IMMEDIATELY SAVE upon receiving image
+                        preview = self._save_single_image(pil_img, model, current_params, batch_idx)
+                        if preview:
+                            batch_previews.append(preview)
                     except Exception as e:
                         batch_log += f"Image decode error: {e}\n"
             else:
                 batch_log += f"Batch {batch_idx+1} failed: {result.error_message}\n"
             
-            return (batch_idx, batch_images, batch_log)
+            return (batch_idx, batch_previews, batch_log)
         
         # Run all batches in parallel
         tasks = [process_single_batch(i) for i in range(batch_count)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Collect results in order
+        all_previews = []
         for result in sorted(results, key=lambda x: x[0] if isinstance(x, tuple) else 999):
             if isinstance(result, Exception):
                 response_log += f"Batch error: {result}\n"
             else:
-                _, batch_images, batch_log = result
-                successful_pil_images.extend(batch_images)
+                _, batch_previews, batch_log = result
+                all_previews.extend(batch_previews)
                 response_log += batch_log
         
-        if not successful_pil_images:
+        if not all_previews:
             return {
                 "success": False,
                 "error": f"Generation failed.\n{response_log}",
                 "preview_images": []
             }
         
-        # Save images and get preview info
-        preview_results = self._save_images(successful_pil_images, model, params)
-        
         return {
             "success": True,
-            "preview_images": preview_results,
+            "preview_images": all_previews,
             "response_info": response_log if response_log else "Success"
         }
     
-    def _save_images(self, pil_images: List[Image.Image], model: str, params: Dict) -> List[Dict]:
-        """Save images and return preview info."""
-        preview_results = []
-        
+    def _save_single_image(self, pil_img: Image.Image, model: str, params: Dict, batch_idx: int) -> Optional[Dict]:
+        """Save a single image immediately and return preview info."""
         # Try auto-save first
         try:
             from .save_settings import SaveSettings
@@ -250,32 +250,30 @@ class IndependentGenerator:
             saver = SaveSettings(save_cfg)
             
             if saver.enabled:
-                for i, img in enumerate(pil_images):
-                    context = {
-                        "model": model,
-                        "seed": params.get("seed", 0),
-                        "prompt": params.get("prompt", ""),
-                        "batch": i + 1,
-                    }
-                    result = saver.save_image(img, context)
-                    if result and "preview" in result:
-                        preview_results.append(result["preview"])
+                context = {
+                    "model": model,
+                    "seed": params.get("seed", 0),
+                    "prompt": params.get("prompt", ""),
+                    "batch": batch_idx + 1,
+                }
+                result = saver.save_image(pil_img, context)
+                if result and "preview" in result:
+                    return result["preview"]
         except Exception as e:
             print(f"[IndependentGenerator] AutoSave error: {e}")
         
         # Fall back to temp folder
-        if not preview_results:
+        try:
             temp_dir = folder_paths.get_temp_directory()
+            filename = f"batchbox_independent_{uuid.uuid4().hex[:8]}_{batch_idx}.png"
+            filepath = os.path.join(temp_dir, filename)
+            pil_img.save(filepath, format="PNG")
             
-            for idx, img in enumerate(pil_images):
-                filename = f"batchbox_independent_{uuid.uuid4().hex[:8]}_{idx}.png"
-                filepath = os.path.join(temp_dir, filename)
-                img.save(filepath, format="PNG")
-                
-                preview_results.append({
-                    "filename": filename,
-                    "subfolder": "",
-                    "type": "temp"
-                })
-        
-        return preview_results
+            return {
+                "filename": filename,
+                "subfolder": "",
+                "type": "temp"
+            }
+        except Exception as e:
+            print(f"[IndependentGenerator] Temp save error: {e}")
+            return None
