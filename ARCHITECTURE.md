@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.11 | 2026-01-27 | 配置热重载 + 模型下拉列表实时刷新 |
 | 2.10 | 2026-01-27 | "开始生成"按钮扩展至所有节点类型 |
 | 2.9 | 2026-01-27 | 独立并发生成 + 图片恢复优化 |
 | 2.8 | 2026-01-26 | Queue Prompt 拦截开关 |
@@ -781,6 +782,73 @@ node.setDirtyCanvas(true, true);  // 最终一次性重绘
 | `web/dynamic_params.js` | 前端按钮触发、预览更新、尺寸保存 |
 | `web/dynamic_inputs.js` | 恢复逻辑、`_isRestoring` 抑制机制 |
 
+### 7.10 配置热重载机制
+
+**功能：** 在 API Manager 中保存配置后，画布中的 BatchBox 节点立即刷新参数和模型列表，无需刷新浏览器。
+
+**问题背景：**
+
+| 问题 | 原因 |
+|------|------|
+| 动态参数不刷新 | `onModelChange()` 跳过相同模型 |
+| 模型列表不更新 | Widget options 是 Python 后端定义的静态数据 |
+| 需要手动刷新浏览器 | 没有事件通知机制 |
+
+**实现流程：**
+
+```mermaid
+sequenceDiagram
+    participant Manager as API Manager
+    participant Backend as Python Backend
+    participant Frontend as dynamic_params.js
+    participant Canvas as 画布节点
+
+    Manager->>Backend: POST /api/batchbox/config
+    Manager->>Backend: POST /api/batchbox/reload
+    Manager->>Frontend: dispatchEvent("batchbox:config-changed")
+    Frontend->>Frontend: clearSchemaCache()
+    Frontend->>Backend: GET /api/batchbox/models?category=image
+    Backend-->>Frontend: 最新模型列表
+    Frontend->>Canvas: 更新 widget.options.values
+    Frontend->>Canvas: onModelChange(model, forceRefresh=true)
+    Canvas->>Canvas: 重绘
+```
+
+**前端关键实现：**
+
+```javascript
+// api_manager.js - 保存后触发热重载
+async saveConfig() {
+    await api.fetchApi("/api/batchbox/config", { method: "POST", body: JSON.stringify(this.config) });
+    await api.fetchApi("/api/batchbox/reload", { method: "POST" });  // 强制后端刷新
+    window.dispatchEvent(new CustomEvent("batchbox:config-changed"));  // 通知前端
+}
+
+// dynamic_params.js - 监听配置变更
+window.addEventListener("batchbox:config-changed", async () => {
+    clearSchemaCache();
+    // 1. 获取最新模型列表
+    const models = await fetchModelsForCategory(category);
+    // 2. 更新 widget options
+    modelWidget.options.values = models.names;
+    // 3. 强制刷新参数
+    await node._dynamicParamManager.onModelChange(modelWidget.value, true);
+});
+
+// onModelChange 支持强制刷新
+async onModelChange(modelName, forceRefresh = false) {
+    if (modelName === this.currentModel && !forceRefresh) return;  // 允许强制刷新
+    // ... 继续获取 schema 并更新 widgets
+}
+```
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `web/api_manager.js` | 保存后调用 `/api/batchbox/reload` + 触发 `batchbox:config-changed` 事件 |
+| `web/dynamic_params.js` | 监听事件、刷新模型列表、强制更新参数、`forceRefresh` 参数 |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -801,6 +869,13 @@ node.setDirtyCanvas(true, true);  // 最终一次性重绘
 ---
 
 ## 9. 更新日志
+
+### v2.11 (2026-01-27)
+- ✅ 配置热重载：保存 API Manager 设置后画布节点立即刷新
+- ✅ 模型下拉列表实时更新（无需刷新浏览器）
+- ✅ `batchbox:config-changed` 事件通知机制
+- ✅ 从 `/api/batchbox/models` 获取最新模型列表更新 widget options
+- ✅ `onModelChange()` 支持 `forceRefresh` 参数
 
 ### v2.10 (2026-01-27)
 - ✅ "开始生成"按钮扩展至所有 BatchBox 节点类型

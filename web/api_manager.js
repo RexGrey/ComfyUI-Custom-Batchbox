@@ -76,7 +76,14 @@ class BatchboxManager {
                 body: JSON.stringify(this.config)
             });
             if (resp.status !== 200) throw new Error("Save failed");
-            this.showToast("配置已保存！后端已更新。", "success");
+            
+            // Trigger backend reload to update mtime
+            await api.fetchApi("/api/batchbox/reload", { method: "POST" });
+            
+            // Dispatch event to notify canvas nodes to refresh
+            window.dispatchEvent(new CustomEvent("batchbox:config-changed"));
+            
+            this.showToast("配置已保存！画布节点将自动刷新。", "success");
         } catch (e) {
             this.showToast("保存失败: " + e.message, "error");
         }

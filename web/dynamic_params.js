@@ -243,16 +243,17 @@ class DynamicParameterManager {
     this.collapsedGroups = new Set(["advanced"]);
   }
 
-  async onModelChange(modelName) {
-    if (modelName === this.currentModel) {
+  async onModelChange(modelName, forceRefresh = false) {
+    // Skip if same model UNLESS forceRefresh is requested (e.g., after config change)
+    if (modelName === this.currentModel && !forceRefresh) {
       return;
     }
 
     this.currentModel = modelName;
-    console.log(`[DynamicParams] Model changed to: ${modelName}`);
+    console.log(`[DynamicParams] Model changed to: ${modelName}${forceRefresh ? ' (forced refresh)' : ''}`);
 
-    // Fetch schema
-    const schemaData = await fetchModelSchema(modelName);
+    // Fetch schema (use forceRefresh when hot-reloading config)
+    const schemaData = await fetchModelSchema(modelName, forceRefresh);
     if (!schemaData || !schemaData.flat_schema) {
       console.warn(`[DynamicParams] No schema found for ${modelName}`);
       return;
@@ -1073,6 +1074,7 @@ window.BatchboxDynamicParams = {
   fetchModelSchema,
   schemaCache,
   DynamicParameterManager,
+  clearSchemaCache,  // Expose for external refresh
 };
 
 // Listen for settings changes from Manager
@@ -1081,4 +1083,100 @@ window.addEventListener("batchbox:node-settings-changed", () => {
   fetchNodeSettings();
 });
 
+// Listen for config changes from API Manager - Hot Reload!
+window.addEventListener("batchbox:config-changed", async () => {
+  console.log("[DynamicParams] Config changed, refreshing all BatchBox nodes...");
+  
+  // 1. Clear schema cache to force fresh fetch
+  clearSchemaCache();
+  
+  // 2. Reload node settings (for bypass_queue_prompt etc)
+  await fetchNodeSettings();
+  
+  // 3. Fetch updated model lists from backend for each category
+  const categoryMap = {
+    "DynamicImageGeneration": "image",
+    "DynamicTextGeneration": "text",
+    "DynamicVideoGeneration": "video",
+    "DynamicAudioGeneration": "audio",
+    "DynamicImageEditor": "image_editor",
+    "NanoBananaPro": null  // Uses all models (presets)
+  };
+  
+  const modelListCache = {};  // Cache fetched model lists by category
+  
+  async function fetchModelsForCategory(category) {
+    if (modelListCache[category]) {
+      return modelListCache[category];
+    }
+    try {
+      const url = category ? `/api/batchbox/models?category=${category}` : "/api/batchbox/models";
+      const resp = await api.fetchApi(url);
+      if (resp.ok) {
+        const data = await resp.json();
+        const models = data.models || [];
+        // Build display name -> model name mapping and options list
+        const result = {
+          names: models.map(m => m.name),
+          displayNames: models.map(m => m.display_name || m.name),
+          nameToDisplay: {}
+        };
+        models.forEach(m => {
+          result.nameToDisplay[m.name] = m.display_name || m.name;
+        });
+        modelListCache[category || "all"] = result;
+        return result;
+      }
+    } catch (e) {
+      console.warn(`[DynamicParams] Failed to fetch models for ${category}:`, e);
+    }
+    return null;
+  }
+  
+  // 4. Refresh all BatchBox nodes in the canvas
+  if (app.graph && app.graph._nodes) {
+    const batchboxNodeTypes = Object.keys(categoryMap);
+    
+    for (const node of app.graph._nodes) {
+      if (!batchboxNodeTypes.includes(node.type)) continue;
+      
+      const category = categoryMap[node.type];
+      const modelWidget = node.widgets?.find(w => w.name === "model" || w.name === "preset");
+      
+      if (modelWidget) {
+        // Fetch updated model list for this category
+        const modelData = await fetchModelsForCategory(category);
+        
+        if (modelData && modelData.names.length > 0) {
+          const currentValue = modelWidget.value;
+          
+          // Update widget options
+          if (modelWidget.options) {
+            modelWidget.options.values = modelData.names;
+          }
+          
+          // If current value is still valid, keep it; otherwise select first
+          if (!modelData.names.includes(currentValue)) {
+            modelWidget.value = modelData.names[0];
+            console.log(`[DynamicParams] Node ${node.id}: Model "${currentValue}" no longer exists, switched to "${modelWidget.value}"`);
+          }
+          
+          console.log(`[DynamicParams] Node ${node.id}: Updated model options (${modelData.names.length} models)`);
+        }
+        
+        // Also refresh dynamic parameters
+        if (node._dynamicParamManager && modelWidget.value) {
+          await node._dynamicParamManager.onModelChange(modelWidget.value, true);
+        }
+      }
+    }
+    
+    // Redraw canvas
+    app.graph.setDirtyCanvas(true, true);
+  }
+  
+  console.log("[DynamicParams] Hot reload complete!");
+});
+
 console.log("[ComfyUI-Custom-Batchbox] Dynamic parameter extension loaded");
+
