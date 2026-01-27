@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.13 | 2026-01-27 | 画布右键菜单快捷添加功能 |
 | 2.12 | 2026-01-27 | 动态参数持久化修复（无闪烁恢复机制） |
 | 2.11 | 2026-01-27 | 配置热重载 + 模型下拉列表实时刷新 |
 | 2.10 | 2026-01-27 | "开始生成"按钮扩展至所有节点类型 |
@@ -850,6 +851,66 @@ async onModelChange(modelName, forceRefresh = false) {
 | `web/api_manager.js` | 保存后调用 `/api/batchbox/reload` + 触发 `batchbox:config-changed` 事件 |
 | `web/dynamic_params.js` | 监听事件、刷新模型列表、强制更新参数、`forceRefresh` 参数 |
 
+### 7.11 画布右键菜单快捷添加
+
+**功能：** 在 ComfyUI 画布空白处右键可直接添加 BatchBox 节点，无需在节点浏览器中查找。
+
+**支持的节点：**
+
+| 菜单项 | 节点类型 |
+|--------|----------|
+| 🖼️ Dynamic Image Generation | `DynamicImageGeneration` |
+| 🎬 Dynamic Video Generation | `DynamicVideoGeneration` |
+| 📝 Dynamic Text Generation | `DynamicTextGeneration` |
+| ✏️ Dynamic Image Editor | `DynamicImageEditor` |
+| 🔊 Dynamic Audio Generation | `DynamicAudioGeneration` |
+
+**配置开关：**
+
+```yaml
+node_settings:
+  show_in_canvas_menu: true  # true=显示, false=隐藏
+```
+
+**实现方式：**
+
+ComfyUI 官方推荐的 `getCanvasMenuItems()` hook：
+
+```javascript
+app.registerExtension({
+  name: "ComfyUI-Custom-Batchbox.DynamicParams",
+  
+  getCanvasMenuItems() {
+    if (!showInCanvasMenuEnabled) return [];  // 尊重设置
+    
+    return batchboxNodes.map(nodeInfo => ({
+      content: nodeInfo.label,
+      callback: () => {
+        const node = LiteGraph.createNode(nodeInfo.type);
+        node.pos = [canvas.graph_mouse[0], canvas.graph_mouse[1]];
+        app.graph.add(node);
+      }
+    }));
+  }
+});
+```
+
+**热重载机制：**
+
+设置变更后无需刷新页面即可生效：
+
+1. API Manager 保存设置 → 调用 `/api/batchbox/node-settings`
+2. 触发 `batchbox:node-settings-changed` 事件
+3. `dynamic_params.js` 监听事件 → `fetchNodeSettings()` 更新 `showInCanvasMenuEnabled`
+4. 下次右键时 `getCanvasMenuItems()` 自动返回正确结果
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `web/dynamic_params.js` | `getCanvasMenuItems()` hook + 热重载逻辑 |
+| `web/api_manager.js` | "右键菜单快捷添加" 开关 UI |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -870,6 +931,12 @@ async onModelChange(modelName, forceRefresh = false) {
 ---
 
 ## 9. 更新日志
+
+### v2.13 (2026-01-27)
+- ✅ 画布右键菜单快捷添加功能
+- ✅ 可在 API Manager → 节点显示设置 中开关
+- ✅ 使用 `getCanvasMenuItems()` 官方 hook
+- ✅ 热重载支持（无需刷新页面）
 
 ### v2.12 (2026-01-27)
 - ✅ 动态参数持久化修复：风格、分辨率、比例等参数正确恢复

@@ -34,6 +34,7 @@ let isButtonTriggeredExecution = false;
 
 // Setting cache for bypass behavior (loaded from backend)
 let bypassQueuePromptEnabled = true; // Default: enabled
+let showInCanvasMenuEnabled = true; // Default: enabled (show BatchBox nodes in canvas right-click menu)
 
 // Fetch node settings from backend
 async function fetchNodeSettings() {
@@ -42,7 +43,8 @@ async function fetchNodeSettings() {
     if (resp.ok) {
       const data = await resp.json();
       bypassQueuePromptEnabled = data.node_settings?.bypass_queue_prompt !== false;
-      console.log(`[DynamicParams] bypass_queue_prompt setting: ${bypassQueuePromptEnabled}`);
+      showInCanvasMenuEnabled = data.node_settings?.show_in_canvas_menu !== false;
+      console.log(`[DynamicParams] bypass_queue_prompt: ${bypassQueuePromptEnabled}, show_in_canvas_menu: ${showInCanvasMenuEnabled}`);
     }
   } catch (e) {
     console.warn('[DynamicParams] Failed to fetch node settings:', e);
@@ -915,6 +917,40 @@ function addGenerateButton(node) {
 // ==========================================
 app.registerExtension({
   name: "ComfyUI-Custom-Batchbox.DynamicParams",
+
+  // Add BatchBox nodes directly to the first-level canvas right-click menu
+  getCanvasMenuItems() {
+    // Respect the setting - if disabled, return empty array
+    if (!showInCanvasMenuEnabled) {
+      return [];
+    }
+
+    const batchboxNodes = [
+      { label: "🖼️ Dynamic Image Generation", type: "DynamicImageGeneration" },
+      { label: "🎬 Dynamic Video Generation", type: "DynamicVideoGeneration" },
+      { label: "📝 Dynamic Text Generation", type: "DynamicTextGeneration" },
+      { label: "✏️ Dynamic Image Editor", type: "DynamicImageEditor" },
+      { label: "🔊 Dynamic Audio Generation", type: "DynamicAudioGeneration" },
+    ];
+
+    return batchboxNodes.map(nodeInfo => ({
+      content: nodeInfo.label,
+      callback: () => {
+        const node = LiteGraph.createNode(nodeInfo.type);
+        if (node) {
+          // Position at mouse or center of canvas
+          const canvas = app.canvas;
+          if (canvas.graph_mouse) {
+            node.pos = [canvas.graph_mouse[0], canvas.graph_mouse[1]];
+          } else {
+            node.pos = [100, 100];
+          }
+          app.graph.add(node);
+          canvas.selectNode(node);
+        }
+      }
+    }));
+  },
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
     // Apply to all BatchBox dynamic nodes

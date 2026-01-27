@@ -1510,6 +1510,14 @@ class BatchboxManager {
                 <div class="batchbox-input-hint">开启后，BatchBox 节点仅通过节点上的"开始生成"按钮执行，不参与全局 Queue Prompt</div>
             </div>
             
+            <div class="batchbox-form-group">
+                <label class="batchbox-checkbox-label">
+                    <input type="checkbox" id="node-canvas-menu" ${nodeSettings.show_in_canvas_menu !== false ? 'checked' : ''}>
+                    <span>右键菜单快捷添加</span>
+                </label>
+                <div class="batchbox-input-hint">开启后，在画布空白处右键可直接添加 BatchBox 节点</div>
+            </div>
+            
             <div class="batchbox-form-actions">
                 <button class="batchbox-btn btn-primary" id="save-node-settings-btn">💾 保存节点设置</button>
             </div>
@@ -1530,9 +1538,11 @@ class BatchboxManager {
         container.querySelector("#save-node-settings-btn").onclick = async () => {
             const newWidth = parseInt(widthInput.value) || 500;
             const bypassQueuePrompt = container.querySelector("#node-bypass-queue").checked;
+            const showInCanvasMenu = container.querySelector("#node-canvas-menu").checked;
             const newNodeSettings = { 
                 default_width: newWidth,
-                bypass_queue_prompt: bypassQueuePrompt 
+                bypass_queue_prompt: bypassQueuePrompt,
+                show_in_canvas_menu: showInCanvasMenu
             };
             try {
                 const resp = await api.fetchApi("/api/batchbox/node-settings", {

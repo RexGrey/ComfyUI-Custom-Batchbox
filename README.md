@@ -186,7 +186,12 @@ settings:
 
 ### 1. 添加节点
 
-在 ComfyUI 中搜索 `ComfyUI-Custom-Batchbox`，选择对应类型的节点。
+**方式一：右键快捷菜单（推荐）**
+- 在画布空白处右键，直接选择 BatchBox 节点
+- 可在 API Manager → 节点显示设置 中开关此功能
+
+**方式二：节点浏览器**
+- 搜索 `ComfyUI-Custom-Batchbox`，选择对应类型的节点
 
 ### 2. 选择模型
 
