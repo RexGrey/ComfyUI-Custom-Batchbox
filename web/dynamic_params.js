@@ -878,11 +878,20 @@ app.registerExtension({
   name: "ComfyUI-Custom-Batchbox.DynamicParams",
 
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
-    // Apply to our dynamic nodes
-    if (
-      !nodeData.name.includes("DynamicImage") &&
-      !nodeData.name.includes("NanoBananaPro")
-    ) {
+    // Apply to all BatchBox dynamic nodes
+    const batchboxNodePatterns = [
+      "DynamicImage",
+      "DynamicVideo", 
+      "DynamicText",
+      "DynamicAudio",
+      "NanoBananaPro"
+    ];
+    
+    const isMatchingNode = batchboxNodePatterns.some(pattern => 
+      nodeData.name.includes(pattern)
+    );
+    
+    if (!isMatchingNode) {
       return;
     }
 
