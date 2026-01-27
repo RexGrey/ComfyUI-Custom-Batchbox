@@ -185,37 +185,70 @@ function removeDynamicInput(node, inputName) {
 
 /**
  * Update inputs for a specific type/prefix
+ * 
+ * Strategy: Compact connected slots by removing gaps.
+ * When image2 is disconnected but image3 is connected, 
+ * image3 becomes image2, keeping slots compact.
  */
 function updateInputsForType(node, prefix, inputType, maxInputs) {
     // Save current width before any modifications (to preserve user's custom width)
     const currentWidth = node.size[0];
     
-    const currentCount = countInputsByPrefix(node, prefix);
-    const highestConnected = getHighestConnectedIndex(node, prefix);
-
-    // Always have one more slot than highest connected (up to max)
-    // This ensures there's always an empty slot to connect to
-    let targetCount = Math.max(1, highestConnected + 1);
-    targetCount = Math.min(targetCount, maxInputs);
-
-    // Add missing inputs up to target
-    for (let i = 1; i <= targetCount; i++) {
-        const inputName = `${prefix}${i}`;
-        const exists = node.inputs?.some(inp => inp.name === inputName);
-        if (!exists) {
-            node.addInput(inputName, inputType);
+    if (!node.inputs) {
+        // No inputs yet, add the first empty slot
+        node.addInput(`${prefix}1`, inputType);
+        const computedSize = node.computeSize();
+        node.setSize([currentWidth, computedSize[1]]);
+        return;
+    }
+    
+    const graph = app.graph;
+    if (!graph) return;
+    
+    // Collect connection info for all connected inputs (save SOURCE node info, not link ID)
+    const connections = [];
+    for (const input of node.inputs) {
+        if (input.name && input.name.startsWith(prefix) && input.link != null) {
+            const linkInfo = graph.links[input.link];
+            if (linkInfo) {
+                connections.push({
+                    sourceNodeId: linkInfo.origin_id,
+                    sourceSlot: linkInfo.origin_slot
+                });
+            }
         }
     }
-
-    // Remove extra empty inputs beyond target (but keep connected ones)
-    for (let i = currentCount; i > targetCount; i--) {
-        const inputName = `${prefix}${i}`;
-        const input = node.inputs?.find(inp => inp.name === inputName);
-        // Only remove if not connected
-        if (input && input.link == null) {
-            const index = node.inputs.indexOf(input);
-            if (index >= 0) {
-                node.removeInput(index);
+    
+    // Calculate target count: connected count + 1 empty slot (up to max)
+    const connectedCount = connections.length;
+    let targetCount = Math.min(connectedCount + 1, maxInputs);
+    if (connectedCount >= maxInputs) {
+        targetCount = maxInputs;
+    }
+    
+    // Remove ALL existing inputs with this prefix
+    // Must iterate backwards to avoid index shifting
+    for (let i = node.inputs.length - 1; i >= 0; i--) {
+        if (node.inputs[i].name && node.inputs[i].name.startsWith(prefix)) {
+            node.removeInput(i);
+        }
+    }
+    
+    // Re-add inputs in compact order
+    for (let i = 1; i <= targetCount; i++) {
+        node.addInput(`${prefix}${i}`, inputType);
+    }
+    
+    // Reconnect using saved source node info
+    for (let i = 0; i < connections.length; i++) {
+        const conn = connections[i];
+        const sourceNode = graph.getNodeById(conn.sourceNodeId);
+        if (sourceNode) {
+            // Find the input slot index for this prefix+number
+            const inputName = `${prefix}${i + 1}`;
+            const inputIndex = node.inputs.findIndex(inp => inp.name === inputName);
+            if (inputIndex >= 0) {
+                sourceNode.connect(conn.sourceSlot, node, inputIndex);
             }
         }
     }

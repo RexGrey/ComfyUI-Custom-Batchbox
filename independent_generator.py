@@ -176,21 +176,25 @@ class IndependentGenerator:
             if upload_files:
                 params["_upload_files"] = upload_files
         
-        # Generate images
+        # Generate images in parallel
         successful_pil_images = []
         response_log = ""
         
-        for i in range(batch_count):
-            print(f"\n[IndependentGenerator] Batch {i+1}/{batch_count} - Model: {model}")
+        async def process_single_batch(batch_idx: int) -> Tuple[int, List[Image.Image], str]:
+            """Process a single batch and return (index, images, log)."""
+            print(f"\n[IndependentGenerator] Batch {batch_idx+1}/{batch_count} - Model: {model}")
             
             current_params = params.copy()
             if seed > 0:
-                current_params["seed"] = seed + i
+                current_params["seed"] = seed + batch_idx
             
-            # Run blocking API call in thread pool to avoid blocking event loop
+            # Run blocking API call in thread pool
             result = await asyncio.to_thread(
                 self.execute_with_failover, model, current_params, mode, endpoint_override
             )
+            
+            batch_images = []
+            batch_log = ""
             
             if result.success:
                 for img_bytes in result.images:
@@ -198,11 +202,26 @@ class IndependentGenerator:
                         pil_img = Image.open(BytesIO(img_bytes))
                         if pil_img.mode not in ("RGB", "RGBA"):
                             pil_img = pil_img.convert("RGB")
-                        successful_pil_images.append(pil_img)
+                        batch_images.append(pil_img)
                     except Exception as e:
-                        response_log += f"Image decode error: {e}\n"
+                        batch_log += f"Image decode error: {e}\n"
             else:
-                response_log += f"Batch {i+1} failed: {result.error_message}\n"
+                batch_log += f"Batch {batch_idx+1} failed: {result.error_message}\n"
+            
+            return (batch_idx, batch_images, batch_log)
+        
+        # Run all batches in parallel
+        tasks = [process_single_batch(i) for i in range(batch_count)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Collect results in order
+        for result in sorted(results, key=lambda x: x[0] if isinstance(x, tuple) else 999):
+            if isinstance(result, Exception):
+                response_log += f"Batch error: {result}\n"
+            else:
+                _, batch_images, batch_log = result
+                successful_pil_images.extend(batch_images)
+                response_log += batch_log
         
         if not successful_pil_images:
             return {

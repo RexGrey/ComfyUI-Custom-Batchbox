@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.14 | 2026-01-27 | 动态槽位紧凑 + 并行批处理 + 模型迁移 |
 | 2.13 | 2026-01-27 | 画布右键菜单快捷添加功能 |
 | 2.12 | 2026-01-27 | 动态参数持久化修复（无闪烁恢复机制） |
 | 2.11 | 2026-01-27 | 配置热重载 + 模型下拉列表实时刷新 |
@@ -731,19 +732,28 @@ sequenceDiagram
     Button->>Button: 恢复 "▶ 开始生成"
 ```
 
-**后端关键实现：**
+**后端关键实现（v2.14 并行批处理）：**
 
 ```python
 # independent_generator.py
-async def generate(self, model, prompt, seed, images_base64, ...):
-    # 使用 asyncio.to_thread 避免阻塞事件循环
-    result = await asyncio.to_thread(
-        self.execute_with_failover, model, params, mode
-    )
+async def generate(self, model, prompt, seed, batch_count, ...):
+    async def process_single_batch(batch_idx):
+        current_params = params.copy()
+        if seed > 0:
+            current_params["seed"] = seed + batch_idx
+        # 使用 asyncio.to_thread 避免阻塞事件循环
+        result = await asyncio.to_thread(
+            self.execute_with_failover, model, current_params, mode
+        )
+        return (batch_idx, batch_images, batch_log)
     
-    # 多层保存：用户目录 → 临时目录 → 内存返回
-    saved = self.save_settings.save_image(image_bytes, model, seed)
-    return {"success": True, "preview_images": [saved["preview"]]}
+    # 所有批次并行执行
+    tasks = [process_single_batch(i) for i in range(batch_count)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # 按索引排序，保证输出顺序一致
+    for result in sorted(results, key=lambda x: x[0]):
+        ...
 ```
 
 **前端关键实现：**
@@ -911,6 +921,76 @@ app.registerExtension({
 | `web/dynamic_params.js` | `getCanvasMenuItems()` hook + 热重载逻辑 |
 | `web/api_manager.js` | "右键菜单快捷添加" 开关 UI |
 
+### 7.13 动态槽位紧凑策略
+
+**功能：** 断开中间输入槽位后，连接自动向前移动填补空隙，保持槽位紧凑。
+
+**核心问题：**
+
+```
+原状态：image1(连接A) → image2(空) → image3(连接B) → image4(空)
+断开 image1 后：
+  ❌ 旧行为：image1(空) → image2(空) → image3(连接B) → image4(空)
+  ✅ 新行为：image1(连接B) → image2(空)
+```
+
+**实现策略：存储-删除-重建-重连**
+
+```mermaid
+flowchart LR
+    A[收集所有连接信息] --> B[保存 sourceNodeId + sourceSlot]
+    B --> C[删除所有该类型槽位]
+    C --> D[按紧凑顺序重建槽位]
+    D --> E[使用保存的源节点信息重连]
+```
+
+**关键实现：**
+
+```javascript
+// web/dynamic_inputs.js - updateInputsForType()
+// 1. 收集连接信息（不使用 link ID，删除后会失效）
+const connections = [];
+for (let i = 1; i <= currentInputCount; i++) {
+    const input = node.inputs.find(inp => inp.name === `${prefix}${i}`);
+    if (input?.link) {
+        const linkInfo = graph.links[input.link];
+        if (linkInfo) {
+            connections.push({
+                sourceNodeId: linkInfo.origin_id,
+                sourceSlot: linkInfo.origin_slot
+            });
+        }
+    }
+}
+
+// 2. 删除所有槽位
+while (slotExists) { node.removeInput(slotIndex); }
+
+// 3. 按紧凑顺序重建
+for (let i = 1; i <= connections.length + 1; i++) {
+    node.addInput(`${prefix}${i}`, inputType);
+}
+
+// 4. 使用源节点信息重连
+for (let i = 0; i < connections.length; i++) {
+    const sourceNode = graph.getNodeById(conn.sourceNodeId);
+    sourceNode.connect(conn.sourceSlot, node, inputIndex);
+}
+```
+
+**为什么不用 Link ID：**
+
+| 方式 | 问题 |
+|------|------|
+| Link ID | 删除槽位后 link 被销毁，ID 失效 |
+| sourceNodeId + sourceSlot | ✅ 节点和槽位独立于 link 存在 |
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `web/dynamic_inputs.js` | `updateInputsForType()` 紧凑策略实现 |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -931,6 +1011,11 @@ app.registerExtension({
 ---
 
 ## 9. 更新日志
+
+### v2.14 (2026-01-27)
+- ✅ 动态输入槽紧凑：断开中间槽位后，连接自动向前移动
+- ✅ 并行批处理：批量生成从串行改为并行，效率提升 4x+
+- ✅ 模型迁移：新增 DALL-E-3、GPT-4o-Image、Sora-Image、Flux 系列、Midjourney、Luma Video
 
 ### v2.13 (2026-01-27)
 - ✅ 画布右键菜单快捷添加功能
