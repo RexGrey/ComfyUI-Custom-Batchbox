@@ -146,13 +146,29 @@ function resizeNodePreservingWidth(node) {
  * @param {Object} node - ComfyUI node instance
  * @param {Object} paramDef - Parameter definition from schema
  * @param {Array} existingWidgets - List of existing widgets
+ * @param {Object} pendingParams - Optional saved params to restore (prevents flash)
  * @returns {Object|null} Created widget or existing widget
  */
-function createWidget(node, paramDef, existingWidgets) {
+function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
   const name = paramDef.name;
   const type = paramDef.type;
   const label = paramDef.label || name;
-  const defaultValue = paramDef.default;
+  
+  // Determine initial value: check pendingParams first (for restoration), then use default
+  // pendingParams uses api_name as key, so check both api_name and widget name
+  const apiName = paramDef.api_name;
+  let initialValue = paramDef.default;
+  
+  if (pendingParams) {
+    const paramKey = apiName || name;
+    if (paramKey in pendingParams) {
+      initialValue = pendingParams[paramKey];
+      console.log(`[DynamicParams] Creating ${name} with restored value: ${initialValue}`);
+    } else if (name in pendingParams) {
+      initialValue = pendingParams[name];
+      console.log(`[DynamicParams] Creating ${name} with restored value (legacy): ${initialValue}`);
+    }
+  }
 
   // Check if widget already exists
   const existingIdx = existingWidgets.findIndex((w) => w.name === name);
@@ -170,18 +186,23 @@ function createWidget(node, paramDef, existingWidgets) {
       widget = node.addWidget(
         "combo",
         name,
-        defaultValue || options[0],
+        initialValue || options[0],
         (v) => {},
         { values: options },
       );
       break;
 
     case "boolean":
-      widget = node.addWidget("toggle", name, defaultValue || false, (v) => {});
+      // Handle boolean: could be string "true"/"false" or actual boolean
+      let boolValue = initialValue;
+      if (typeof boolValue === "string") {
+        boolValue = boolValue === "true";
+      }
+      widget = node.addWidget("toggle", name, boolValue || false, (v) => {});
       break;
 
     case "number":
-      widget = node.addWidget("number", name, defaultValue || 0, (v) => {}, {
+      widget = node.addWidget("number", name, initialValue || 0, (v) => {}, {
         min: paramDef.min || 0,
         max: paramDef.max || 100,
         step: paramDef.step || 1,
@@ -191,11 +212,9 @@ function createWidget(node, paramDef, existingWidgets) {
 
     case "string":
       if (paramDef.multiline) {
-        // Multiline is typically handled as a required input, not widget
-        // But we can still create a simple text widget
-        widget = node.addWidget("text", name, defaultValue || "", (v) => {});
+        widget = node.addWidget("text", name, initialValue || "", (v) => {});
       } else {
-        widget = node.addWidget("text", name, defaultValue || "", (v) => {});
+        widget = node.addWidget("text", name, initialValue || "", (v) => {});
       }
       break;
 
@@ -203,7 +222,7 @@ function createWidget(node, paramDef, existingWidgets) {
       widget = node.addWidget(
         "slider",
         name,
-        defaultValue || paramDef.min || 0,
+        initialValue || paramDef.min || 0,
         (v) => {},
         {
           min: paramDef.min || 0,
@@ -217,7 +236,7 @@ function createWidget(node, paramDef, existingWidgets) {
       widget = node.addWidget(
         "text",
         name,
-        String(defaultValue || ""),
+        String(initialValue || ""),
         (v) => {},
       );
   }
@@ -291,12 +310,21 @@ class DynamicParameterManager {
 
     // Build options list: only actual endpoint names (no auto option in manual mode)
     const options = endpointOptions.map(ep => ep.name);
+    
+    // Check for pending endpoint state (set by onConfigure before widgets exist)
+    // This allows creating widgets with correct initial values, preventing UI flash
+    const pendingState = this.node._pendingEndpointState;
+    const initialManualEnabled = pendingState?.manualEnabled || false;
+    const initialEndpoint = pendingState?.selectedEndpoint || options[0];
+    
+    if (pendingState) {
+      console.log(`[DynamicParams] Creating endpoint widgets with restored state: manual=${initialManualEnabled}, endpoint=${initialEndpoint}`);
+      // Clear after consumption
+      delete this.node._pendingEndpointState;
+    }
 
-    // Add toggle for manual selection FIRST (so it appears before selector visually)
-    // CRITICAL: serialize=false to prevent ComfyUI index-based serialization issues
-    // NOTE: We keep these widgets at end of array - moving them to middle causes
-    // null placeholders in widgets_values which corrupts all widget indices
-    const toggleWidget = this.node.addWidget("toggle", "手动选择端点", false, (v) => {
+    // Add toggle for manual selection with correct initial value
+    const toggleWidget = this.node.addWidget("toggle", "手动选择端点", initialManualEnabled, (v) => {
       if (selectorWidget) {
         selectorWidget.hidden = !v;
       }
@@ -304,11 +332,11 @@ class DynamicParameterManager {
     });
     toggleWidget.serialize = false;  // Don't participate in widgets_values serialization
 
-    // Add endpoint selector widget (hidden initially)
-    const selectorWidget = this.node.addWidget("combo", "endpoint_selector", options[0], () => {}, {
+    // Add endpoint selector widget with correct initial value and visibility
+    const selectorWidget = this.node.addWidget("combo", "endpoint_selector", initialEndpoint, () => {}, {
       values: options
     });
-    selectorWidget.hidden = true;
+    selectorWidget.hidden = !initialManualEnabled;  // Show if manual was enabled
     selectorWidget.serialize = false;  // Don't participate in widgets_values serialization
     selectorWidget._endpointOptions = endpointOptions;
 
@@ -339,6 +367,15 @@ class DynamicParameterManager {
   updateWidgets(flatSchema) {
     // Remove old dynamic widgets
     this.removeDynamicWidgets();
+    
+    // Get pending params for restoration (set by onConfigure before widgets exist)
+    // This allows creating widgets with correct initial values, preventing "flash"
+    const pendingParams = this.node._pendingDynamicParams;
+    if (pendingParams) {
+      console.log('[DynamicParams] Found pending params to restore:', Object.keys(pendingParams));
+      // Clear after consumption to prevent re-use
+      delete this.node._pendingDynamicParams;
+    }
 
     // Group parameters
     const groups = {};
@@ -368,7 +405,8 @@ class DynamicParameterManager {
           // Will be handled by dependency system
         }
 
-        const widget = createWidget(this.node, param, this.node.widgets || []);
+        // Pass pendingParams to create widget with correct initial value
+        const widget = createWidget(this.node, param, this.node.widgets || [], pendingParams);
         if (widget && widget._dynamicParam) {
           // Apply initial hidden state for collapsed groups
           if (groupName !== "basic" && this.collapsedGroups.has(groupName)) {
@@ -972,6 +1010,11 @@ app.registerExtension({
           selectedEndpoint: selectorWidget?.value || ""
         };
       }
+      
+      // Save collapsed groups state (e.g., 高级设置 expanded/collapsed)
+      if (this._dynamicParamManager?.collapsedGroups) {
+        o.collapsedGroups = Array.from(this._dynamicParamManager.collapsedGroups);
+      }
     };
 
     // Deserialize dynamic params
@@ -981,34 +1024,25 @@ app.registerExtension({
         origOnConfigure.apply(this, arguments);
       }
 
-      // Restore dynamic params after model loads
-      if (o.dynamicParams && this._dynamicParamManager) {
-        setTimeout(() => {
-          for (const widget of this._dynamicParamManager.dynamicWidgets) {
-            if (widget.name in o.dynamicParams) {
-              widget.value = o.dynamicParams[widget.name];
-            }
-          }
-        }, 200);
+      // Store pending params for restoration when widgets are created
+      // The actual restoration happens in updateWidgets -> createWidget
+      // This elegant approach creates widgets with correct values, preventing UI flash
+      if (o.dynamicParams) {
+        this._pendingDynamicParams = o.dynamicParams;
+        console.log('[DynamicParams] Stored pending params for widget creation:', Object.keys(o.dynamicParams));
       }
       
-      // Restore endpoint selection state
+      // Store pending endpoint state for restoration when endpoint widgets are created
+      // The actual restoration happens in updateEndpointSelector
       if (o.endpointState) {
-        setTimeout(() => {
-          const toggleWidget = this.widgets?.find(w => w.name === "手动选择端点");
-          const selectorWidget = this.widgets?.find(w => w.name === "endpoint_selector");
-          
-          if (toggleWidget && o.endpointState.manualEnabled) {
-            toggleWidget.value = true;
-            if (selectorWidget) {
-              selectorWidget.hidden = false;
-              if (o.endpointState.selectedEndpoint) {
-                selectorWidget.value = o.endpointState.selectedEndpoint;
-              }
-            }
-            resizeNodePreservingWidth(this);
-          }
-        }, 300);  // Slightly after dynamicParams restore
+        this._pendingEndpointState = o.endpointState;
+        console.log('[DynamicParams] Stored pending endpoint state for widget creation');
+      }
+      
+      // Restore collapsed groups state (must happen before widgets are created)
+      if (o.collapsedGroups && this._dynamicParamManager) {
+        this._dynamicParamManager.collapsedGroups = new Set(o.collapsedGroups);
+        console.log('[DynamicParams] Restored collapsed groups:', o.collapsedGroups);
       }
     };
   },
