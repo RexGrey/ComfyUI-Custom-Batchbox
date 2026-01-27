@@ -252,6 +252,17 @@ ComfyUI-Custom-Batchbox/
 
 ---
 
+## 🎓 新手入门
+
+如果你是第一次使用 Batchbox，推荐阅读 **[新手使用指南](docs/BEGINNER_GUIDE.md)**，包含：
+
+- 5 分钟快速上手教程
+- 图文配置说明
+- 常见问题解答
+- 进阶技巧
+
+---
+
 ## ❓ 常见问题
 
 ### Q: 节点加载失败？
@@ -278,7 +289,7 @@ pip install pyyaml requests
 
 ## 📄 许可证
 
-MIT License
+[GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE)
 
 ## 🔗 相关链接
 
