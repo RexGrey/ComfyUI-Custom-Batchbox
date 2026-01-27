@@ -321,6 +321,53 @@ try:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    @server.PromptServer.instance.routes.post("/api/batchbox/generate-independent")
+    async def generate_independent(request):
+        """
+        Independent generation API - bypasses ComfyUI queue for concurrent execution.
+        
+        Expects JSON body:
+        {
+            "model": str,           # Model name
+            "prompt": str,          # Text prompt
+            "seed": int,            # Random seed (optional)
+            "batch_count": int,     # Number of images (optional, default 1)
+            "extra_params": dict,   # Dynamic parameters (optional)
+            "images_base64": list,  # Base64 images for img2img (optional)
+            "endpoint_override": str  # Manual endpoint selection (optional)
+        }
+        """
+        try:
+            from .independent_generator import IndependentGenerator
+            
+            data = await request.json()
+            
+            model = data.get("model")
+            prompt = data.get("prompt", "")
+            
+            if not model:
+                return web.json_response({"success": False, "error": "Model is required"}, status=400)
+            if not prompt:
+                return web.json_response({"success": False, "error": "Prompt is required"}, status=400)
+            
+            generator = IndependentGenerator()
+            result = await generator.generate(
+                model=model,
+                prompt=prompt,
+                seed=data.get("seed", 0),
+                batch_count=data.get("batch_count", 1),
+                extra_params=data.get("extra_params"),
+                images_base64=data.get("images_base64"),
+                endpoint_override=data.get("endpoint_override")
+            )
+            
+            return web.json_response(result)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
     print("[ComfyUI-Custom-Batchbox] API endpoints registered")
 
 except Exception as e:

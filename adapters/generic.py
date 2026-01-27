@@ -102,13 +102,10 @@ class GenericAPIAdapter(APIAdapter):
         
         # Merge extra_params from endpoint config (e.g., response_modalities)
         extra_params = self.endpoint.get("extra_params", {})
-        print(f"[GenericAdapter DEBUG] endpoint_config keys: {list(self.endpoint.keys())}")
-        print(f"[GenericAdapter DEBUG] extra_params from endpoint: {extra_params}")
         if extra_params and isinstance(extra_params, dict):
             for key, value in extra_params.items():
                 if key not in payload:  # Don't override existing values
                     payload[key] = value
-            print(f"[GenericAdapter DEBUG] Merged extra_params into payload")
             logger.debug(f"Merged extra_params: {extra_params}")
         
         request_info = {
@@ -120,7 +117,6 @@ class GenericAPIAdapter(APIAdapter):
         if content_type == "application/json":
             headers["Content-Type"] = "application/json"
             request_info["json"] = payload
-            print(f"[GenericAdapter DEBUG] JSON payload: {payload}")
         elif content_type == "multipart/form-data":
             # Don't set Content-Type, let requests handle it
             request_info["data"] = {k: v for k, v in payload.items() 
@@ -232,8 +228,6 @@ class GenericAPIAdapter(APIAdapter):
             "generationConfig": generation_config
         }
         
-        print(f"[GenericAdapter DEBUG] Gemini payload: {payload}")
-        
         return {
             "url": url,
             "method": "POST",
@@ -304,10 +298,6 @@ class GenericAPIAdapter(APIAdapter):
         # Handle sync response (returns images directly)
         response_path = self.mode_config.get("response_path", "data[0].url")
         
-        # Debug: log raw response for troubleshooting
-        print(f"[GenericAdapter DEBUG] Response path: {response_path}")
-        print(f"[GenericAdapter DEBUG] Raw response: {json.dumps(data, ensure_ascii=False)[:500]}")
-        
         # Parse response path to extract images
         images_data = self._extract_images_from_path(data, response_path)
         
@@ -336,8 +326,6 @@ class GenericAPIAdapter(APIAdapter):
         
         images = []
         image_urls = []
-        
-        print(f"[GenericAdapter DEBUG] Parsing Gemini response: {json.dumps(data, ensure_ascii=False)[:500]}")
         
         candidates = data.get("candidates", [])
         if not candidates:
@@ -385,7 +373,7 @@ class GenericAPIAdapter(APIAdapter):
                 raw_response=data
             )
         
-        print(f"[GenericAdapter DEBUG] Extracted {len(images)} images from Gemini response")
+        logger.debug(f"Extracted {len(images)} images from Gemini response")
         
         return APIResponse(
             success=True,

@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.9 | 2026-01-27 | 独立并发生成 + 图片恢复优化 |
 | 2.8 | 2026-01-26 | Queue Prompt 拦截开关 |
 | 2.7 | 2026-01-26 | "开始生成"按钮部分执行支持 |
 | 2.6 | 2026-01-26 | Gemini 原生 API 支持 + Prompt 前缀功能 |
@@ -691,6 +692,94 @@ api.queuePrompt = async function(number, workflowData) {
 this.config.node_settings = { ...this.config.node_settings, ...newSettings };
 ```
 
+### 7.9 独立并发生成机制
+
+**功能：** 节点通过独立 API 调用生成内容，完全绕过 ComfyUI 的 `queue prompt` 队列，实现多节点同时并发执行。
+
+**核心优势：**
+
+| 特性 | ComfyUI Queue | 独立生成 |
+|------|---------------|----------|
+| 并发性 | 串行执行 | **并行执行** |
+| 依赖管理 | 自动 | 手动解析 |
+| 图片恢复 | 内置 | 手动持久化 |
+
+**实现流程：**
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Button as 开始生成按钮
+    participant API as /api/batchbox/generate-independent
+    participant Generator as IndependentGenerator
+    participant External as 外部 AI API
+
+    User->>Button: 点击
+    Button->>Button: 显示 "⏳ 生成中..."
+    Button->>API: POST 请求 (model, prompt, seed...)
+    API->>Generator: generate()
+    Generator->>External: 调用 AI 模型 (asyncio.to_thread)
+    External-->>Generator: 返回图片
+    Generator->>Generator: 保存图片
+    Generator-->>API: 返回预览信息
+    API-->>Button: JSON 响应
+    Button->>Button: 更新节点预览
+    Button->>Button: 恢复 "▶ 开始生成"
+```
+
+**后端关键实现：**
+
+```python
+# independent_generator.py
+async def generate(self, model, prompt, seed, images_base64, ...):
+    # 使用 asyncio.to_thread 避免阻塞事件循环
+    result = await asyncio.to_thread(
+        self.execute_with_failover, model, params, mode
+    )
+    
+    # 多层保存：用户目录 → 临时目录 → 内存返回
+    saved = self.save_settings.save_image(image_bytes, model, seed)
+    return {"success": True, "preview_images": [saved["preview"]]}
+```
+
+**前端关键实现：**
+
+```javascript
+// 更新节点预览（保存尺寸避免恢复时跳动）
+function updateNodePreview(node, previewImages) {
+    node.imgs = previewImages.map(img => {
+        const imgEl = new Image();
+        imgEl.onload = () => {
+            node.setDirtyCanvas(true, true);  // 图片加载后触发重绘
+        };
+        imgEl.src = `/view?filename=${img.filename}&t=${Date.now()}`;
+        return imgEl;
+    });
+    
+    node.properties._last_images = JSON.stringify(previewImages);
+    node.properties._last_size = JSON.stringify(node.size);  // 保存尺寸
+}
+```
+
+**恢复时抑制跳动：**
+
+```javascript
+// loadedGraphNode 中使用 _isRestoring 标志
+node._isRestoring = true;  // 抑制中间重绘
+// ... 初始化代码 ...
+node._isRestoring = false;
+node.setDirtyCanvas(true, true);  // 最终一次性重绘
+```
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `independent_generator.py` | 后端独立生成逻辑、`asyncio.to_thread` 避免阻塞 |
+| `__init__.py` | 注册 `/api/batchbox/generate-independent` 端点 |
+| `web/dynamic_params.js` | 前端按钮触发、预览更新、尺寸保存 |
+| `web/dynamic_inputs.js` | 恢复逻辑、`_isRestoring` 抑制机制 |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -711,6 +800,13 @@ this.config.node_settings = { ...this.config.node_settings, ...newSettings };
 ---
 
 ## 9. 更新日志
+
+### v2.9 (2026-01-27)
+- ✅ 独立生成日志优化（移除冗余 base64 输出）
+- ✅ 修复事件循环阻塞问题（使用 asyncio.to_thread）
+- ✅ 图片实时显示优化（onload 回调触发重绘）
+- ✅ 重启后图片恢复（处理多种 _last_images 格式）
+- ⚠️ 布局跳动问题部分缓解（_isRestoring 抑制机制）
 
 ### v2.8 (2026-01-26)
 - ✅ Queue Prompt 拦截开关

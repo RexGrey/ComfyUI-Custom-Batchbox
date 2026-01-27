@@ -132,6 +132,10 @@ async function fetchModelSchema(modelName, forceRefresh = false) {
  * @param {Object} node - ComfyUI node instance
  */
 function resizeNodePreservingWidth(node) {
+  // Skip during restore to avoid intermediate layout changes
+  if (node._isRestoring) {
+    return;
+  }
   const currentWidth = node.size[0];
   const computedSize = node.computeSize();
   node.setSize([currentWidth, computedSize[1]]);
@@ -469,8 +473,303 @@ class DynamicParameterManager {
 }
 
 // ==========================================
-// Generate Button Helper
+// Generate Button Helper (Independent Generation)
 // ==========================================
+
+/**
+ * Set node generating state (button text and disabled state)
+ * @param {Object} node - ComfyUI node
+ * @param {boolean} isGenerating - Whether generation is in progress
+ */
+function setNodeGeneratingState(node, isGenerating) {
+  const btn = node.widgets?.find(w => w._isGenerateButton);
+  if (btn) {
+    btn.name = isGenerating ? "⏳ 生成中..." : "▶ 开始生成";
+    // Note: ComfyUI button widgets don't have a built-in disabled state
+    // We'll track this via a custom flag
+    btn._isGenerating = isGenerating;
+  }
+  node.setDirtyCanvas(true, true);
+}
+
+/**
+ * Get source node from a link ID
+ * @param {number} linkId - The link ID
+ * @returns {Object|null} Source node
+ */
+function getSourceNode(linkId) {
+  if (!linkId || !app.graph) return null;
+  const link = app.graph.links[linkId];
+  if (!link) return null;
+  return app.graph.getNodeById(link.origin_id);
+}
+
+/**
+ * Collect image inputs from connected nodes as base64
+ * Supports LoadImage nodes and nodes with cached preview images
+ * @param {Object} node - The node to collect images for
+ * @returns {Promise<Array<string>>} Array of base64-encoded images
+ */
+async function collectImageInputsBase64(node) {
+  const images = [];
+  
+  if (!node.inputs) return images;
+  
+  for (const input of node.inputs) {
+    // Only process IMAGE type inputs that are connected
+    if (!input.link || input.type !== "IMAGE") continue;
+    
+    const sourceNode = getSourceNode(input.link);
+    if (!sourceNode) continue;
+    
+    console.log(`[BatchBox] Checking source node: ${sourceNode.type} (${sourceNode.id})`);
+    
+    // Case 1: LoadImage node - fetch directly from ComfyUI
+    if (sourceNode.type === "LoadImage" || sourceNode.comfyClass === "LoadImage") {
+      const imageWidget = sourceNode.widgets?.find(w => w.name === "image");
+      if (imageWidget && imageWidget.value) {
+        try {
+          const filename = imageWidget.value;
+          const url = `/view?filename=${encodeURIComponent(filename)}&type=input`;
+          const response = await fetch(url);
+          if (response.ok) {
+            const blob = await response.blob();
+            const base64 = await blobToBase64(blob);
+            images.push(base64);
+            console.log(`[BatchBox] Loaded image from LoadImage node: ${filename}`);
+          }
+        } catch (e) {
+          console.error(`[BatchBox] Failed to load image from LoadImage:`, e);
+        }
+      }
+    }
+    // Case 2: Node has cached preview images (imgs array)
+    else if (sourceNode.imgs && sourceNode.imgs.length > 0) {
+      try {
+        const img = sourceNode.imgs[0];
+        const base64 = await imageElementToBase64(img);
+        images.push(base64);
+        console.log(`[BatchBox] Loaded cached image from node ${sourceNode.id}`);
+      } catch (e) {
+        console.error(`[BatchBox] Failed to get cached image:`, e);
+      }
+    }
+    // Case 3: Node has images property (from ComfyUI execution)
+    else if (sourceNode.images && sourceNode.images.length > 0) {
+      try {
+        const imgInfo = sourceNode.images[0];
+        const url = `/view?filename=${encodeURIComponent(imgInfo.filename)}&subfolder=${encodeURIComponent(imgInfo.subfolder || "")}&type=${imgInfo.type || "output"}`;
+        const response = await fetch(url);
+        if (response.ok) {
+          const blob = await response.blob();
+          const base64 = await blobToBase64(blob);
+          images.push(base64);
+          console.log(`[BatchBox] Loaded image from node output`);
+        }
+      } catch (e) {
+        console.error(`[BatchBox] Failed to load output image:`, e);
+      }
+    }
+    // Case 4: Cannot get image - throw error with guidance
+    else {
+      throw new Error(`无法获取节点 "${sourceNode.title || sourceNode.type}" 的图片。请先执行一次工作流，以缓存该节点的输出。`);
+    }
+  }
+  
+  return images;
+}
+
+/**
+ * Convert Blob to base64 data URL
+ */
+async function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Convert Image element to base64 data URL
+ */
+async function imageElementToBase64(img) {
+  return new Promise((resolve, reject) => {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const base64 = canvas.toDataURL("image/png");
+      resolve(base64);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+/**
+ * Collect all parameters from a node
+ * @param {Object} node - The node
+ * @returns {Object} Parameters object
+ */
+function collectNodeParams(node) {
+  const params = {};
+  
+  if (!node.widgets) return params;
+  
+  for (const widget of node.widgets) {
+    if (widget.name && !widget.name.startsWith("_")) {
+      params[widget.name] = widget.value;
+    }
+  }
+  
+  // Collect dynamic params if available
+  if (node._dynamicParamManager) {
+    params.dynamicParams = node._dynamicParamManager.collectDynamicParams();
+  }
+  
+  return params;
+}
+
+/**
+ * Update node preview with generated images
+ * @param {Object} node - The node
+ * @param {Array} previewImages - Array of preview image info objects
+ */
+function updateNodePreview(node, previewImages) {
+  if (!previewImages || previewImages.length === 0) return;
+  
+  console.log(`[BatchBox] Node ${node.id}: Loading ${previewImages.length} preview image(s)...`);
+  
+  // Set the images property (used by ComfyUI's OUTPUT_NODE mechanism)
+  node.images = previewImages;
+  node.imageIndex = 0;
+  
+  // Load images into imgs array for display
+  node.imgs = [];
+  let loadedCount = 0;
+  
+  previewImages.forEach((imgInfo, index) => {
+    const url = `/view?filename=${encodeURIComponent(imgInfo.filename)}&subfolder=${encodeURIComponent(imgInfo.subfolder || "")}&type=${imgInfo.type || "output"}&t=${Date.now()}`;
+    const img = new Image();
+    
+    img.onload = () => {
+      loadedCount++;
+      console.log(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
+      
+      // Force immediate redraw when image loads
+      node.setDirtyCanvas(true, true);
+      
+      // Also trigger global graph redraw
+      if (app.graph) {
+        app.graph.setDirtyCanvas(true, true);
+      }
+    };
+    
+    img.onerror = () => {
+      console.error(`[BatchBox] Node ${node.id}: Failed to load image ${index}`);
+    };
+    
+    img.src = url;
+    node.imgs.push(img);
+  });
+  
+  // Save to properties for persistence
+  if (!node.properties) {
+    node.properties = {};
+  }
+  node.properties._last_images = JSON.stringify(previewImages);
+  // Also save node size for proper restoration
+  node.properties._last_size = JSON.stringify(node.size);
+  
+  // Force immediate redraw (even before images fully load)
+  node.setDirtyCanvas(true, true);
+  if (app.graph) {
+    app.graph.setDirtyCanvas(true, true);
+  }
+  
+  console.log(`[BatchBox] Node ${node.id}: Preview update initiated`);
+}
+
+/**
+ * Independent generation - bypasses ComfyUI queue for concurrent execution
+ * @param {Object} node - The node to generate for
+ */
+async function executeIndependent(node) {
+  // Prevent double-click during generation
+  const btn = node.widgets?.find(w => w._isGenerateButton);
+  if (btn && btn._isGenerating) {
+    console.log("[BatchBox] Generation already in progress, ignoring click");
+    return;
+  }
+  
+  // Set generating state
+  setNodeGeneratingState(node, true);
+  
+  try {
+    // Collect parameters
+    const params = collectNodeParams(node);
+    
+    // Try to collect image inputs if any are connected
+    let imagesBase64 = [];
+    try {
+      imagesBase64 = await collectImageInputsBase64(node);
+    } catch (e) {
+      // Show error to user via alert (since we can't use ComfyUI's toast easily)
+      alert(e.message);
+      setNodeGeneratingState(node, false);
+      return;
+    }
+    
+    // Build request
+    const requestBody = {
+      model: params.model || params.preset,
+      prompt: params.prompt || "",
+      seed: params.seed || 0,
+      batch_count: params.batch_count || 1,
+      extra_params: params.dynamicParams || {},
+      images_base64: imagesBase64.length > 0 ? imagesBase64 : null,
+      endpoint_override: params.dynamicParams?.endpoint_override || null
+    };
+    
+    console.log("[BatchBox] Starting independent generation:", requestBody.model);
+    
+    // Call independent generation API
+    const response = await api.fetchApi("/api/batchbox/generate-independent", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      // Update node preview
+      updateNodePreview(node, result.preview_images);
+      console.log("[BatchBox] Generation complete:", result.response_info);
+    } else {
+      console.error("[BatchBox] Generation failed:", result.error);
+      alert(`生成失败: ${result.error}`);
+    }
+    
+  } catch (e) {
+    console.error("[BatchBox] Independent generation error:", e);
+    alert(`生成出错: ${e.message}`);
+  } finally {
+    // Reset generating state
+    setNodeGeneratingState(node, false);
+  }
+}
+
+/**
+ * Randomize seed and execute independent generation
+ * @param {Object} node - The node to execute
+ */
 function randomizeSeedAndExecute(node) {
   // Find the seed widget and set it to a random value
   const seedWidget = node.widgets?.find((w) => w.name === "seed");
@@ -483,7 +782,6 @@ function randomizeSeedAndExecute(node) {
   }
 
   // Find seed control widget (生成后控制) and set it to 'fixed'
-  // This widget may be named differently in different ComfyUI versions
   const seedControlNames = ["control_after_generate", "生成后控制"];
   for (const controlName of seedControlNames) {
     const controlWidget = node.widgets?.find((w) => w.name === controlName);
@@ -494,37 +792,18 @@ function randomizeSeedAndExecute(node) {
     }
   }
 
-  // Set flag to indicate this is a button-triggered execution
-  // This allows BatchBox nodes to be included in this execution
-  isButtonTriggeredExecution = true;
-  
-  // Trigger execution to this node using ComfyUI's partial execution
-  executeToNode(node);
+  // Use independent generation (bypasses ComfyUI queue)
+  executeIndependent(node);
 }
 
-/**
- * 递归收集节点及其所有上游依赖
- * @param {string} nodeId - 当前节点 ID
- * @param {Object} oldOutput - 原始的完整 prompt output
- * @param {Object} newOutput - 新的只包含需要执行节点的 output
- */
+// Legacy functions kept for compatibility but no longer used by main flow
 function recursiveAddNodes(nodeId, oldOutput, newOutput) {
   const currentId = String(nodeId);
   const currentNode = oldOutput[currentId];
-  
-  // 如果节点不存在或已经添加过，跳过
-  if (!currentNode || newOutput[currentId] != null) {
-    return;
-  }
-  
-  // 添加当前节点
+  if (!currentNode || newOutput[currentId] != null) return;
   newOutput[currentId] = currentNode;
-  
-  // 递归添加所有输入节点
   if (currentNode.inputs) {
     for (const inputValue of Object.values(currentNode.inputs)) {
-      // 如果输入是数组，说明是来自其他节点的连接
-      // 格式为 [upstream_node_id, output_slot]
       if (Array.isArray(inputValue)) {
         recursiveAddNodes(inputValue[0], oldOutput, newOutput);
       }
@@ -532,48 +811,30 @@ function recursiveAddNodes(nodeId, oldOutput, newOutput) {
   }
 }
 
-/**
- * 执行指定的输出节点（部分执行）
- * 只执行该节点及其上游依赖节点
- * @param {Object} node - 要执行的节点
- */
 async function executeToNode(node) {
+  // Legacy: uses ComfyUI queue, kept for potential fallback
   const nodeIds = [node.id];
   const originalQueuePrompt = api.queuePrompt;
   
-  // 临时替换 api.queuePrompt 以拦截和修改 prompt
   api.queuePrompt = async function(index, prompt) {
     if (nodeIds && nodeIds.length > 0 && prompt.output) {
       const oldOutput = prompt.output;
       const newOutput = {};
-      
-      // 为每个目标节点递归收集依赖
       for (const nodeId of nodeIds) {
         recursiveAddNodes(String(nodeId), oldOutput, newOutput);
       }
-      
-      // 替换 output 为只包含需要执行的节点
       prompt.output = newOutput;
-      
-      console.log("[BatchBox] Partial execution - original nodes:", Object.keys(oldOutput).length);
-      console.log("[BatchBox] Partial execution - executing nodes:", Object.keys(newOutput).length);
     }
-    
-    // 调用原始方法
     const result = await originalQueuePrompt.apply(api, [index, prompt]);
-    
-    // 立即恢复原始方法
     api.queuePrompt = originalQueuePrompt;
-    
     return result;
   };
   
   try {
-    // 触发队列提交
+    isButtonTriggeredExecution = true;
     await app.queuePrompt();
   } catch (error) {
     console.error("[BatchBox] Execution error:", error);
-    // 确保恢复原始方法
     api.queuePrompt = originalQueuePrompt;
   }
 }
@@ -584,12 +845,10 @@ function addGenerateButton(node) {
     return;
   }
 
-  // Add the generate button - use proper button widget API
-  // In ComfyUI, button widget: addWidget("button", name, label, callback)
-  // The 'name' is what shows on the button face
+  // Add the generate button
   const generateBtn = node.addWidget(
     "button",
-    "▶ 开始生成",  // This is the displayed text on button
+    "▶ 开始生成",
     null,
     () => {
       randomizeSeedAndExecute(node);
@@ -598,12 +857,12 @@ function addGenerateButton(node) {
 
   // Mark the button
   generateBtn._isGenerateButton = true;
+  generateBtn._isGenerating = false;
 
   // Move button to be after model/preset selector for better UX
   const widgets = node.widgets;
   const btnIndex = widgets.indexOf(generateBtn);
   if (btnIndex > 1) {
-    // Move to position 1 (after model selector)
     widgets.splice(btnIndex, 1);
     widgets.splice(1, 0, generateBtn);
   }

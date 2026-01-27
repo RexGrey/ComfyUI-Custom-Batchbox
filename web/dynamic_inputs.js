@@ -250,8 +250,8 @@ async function updateAllDynamicInputs(node) {
         updateInputsForType(node, prefix, inputType, maxInputs);
     }
 
-    // Trigger graph update
-    if (app.graph) {
+    // Trigger graph update (skip during restore to avoid intermediate renders)
+    if (app.graph && !node._isRestoring) {
         app.graph.setDirtyCanvas(true, true);
     }
 }
@@ -375,24 +375,75 @@ app.registerExtension({
             return;
         }
         
-        // This is a workflow load, not a fresh create - clear the flag
+        // This is a workflow load, not a fresh create
         node._batchbox_fresh_create = false;
         
-        // Save the width from the workflow (user's custom width)
-        const savedWidth = node.size[0];
+        // Mark as restoring - suppress intermediate canvas updates
+        node._isRestoring = true;
         
+        // Apply saved size IMMEDIATELY to prevent initial wrong size
+        const savedWidth = node.size[0];
+        if (node.properties?._last_size) {
+            try {
+                const savedSize = JSON.parse(node.properties._last_size);
+                node.size = [savedWidth, savedSize[1]];
+            } catch (e) {}
+        }
+        
+        // Pre-load images BEFORE setTimeout to start loading early
+        if (node.properties?._last_images) {
+            try {
+                const imagesData = node.properties._last_images;
+                const images = typeof imagesData === "string" ? JSON.parse(imagesData) : imagesData;
+                if (images && images.length > 0) {
+                    node.imageIndex = 0;
+                    node.images = images;
+                    node.imgs = images.map(img => {
+                        const url = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
+                        const imgEl = new Image();
+                        imgEl.src = url;
+                        return imgEl;
+                    });
+                }
+            } catch (e) {}
+        }
+        
+        // Now do async initialization
         setTimeout(async () => {
-            // Initialize dynamic inputs
+            // Initialize dynamic inputs (widgets etc)
             await initializeDynamicInputs(node);
             
-            // Restore the saved width after initialization
-            const computedSize = node.computeSize();
-            node.size = [savedWidth, computedSize[1]];
+            // Wait for images if any
+            if (node.imgs && node.imgs.length > 0) {
+                await Promise.all(node.imgs.map(img => {
+                    if (img.complete) return Promise.resolve();
+                    return new Promise(resolve => {
+                        img.onload = resolve;
+                        img.onerror = resolve;
+                    });
+                }));
+            }
             
-            // Restore preview from saved node.properties
-            restorePreviewFromProperties(node);
+            // Final size calculation
+            if (node.properties?._last_size) {
+                try {
+                    const savedSize = JSON.parse(node.properties._last_size);
+                    node.size = [savedWidth, savedSize[1]];
+                } catch (e) {
+                    const computedSize = node.computeSize();
+                    node.size = [savedWidth, computedSize[1]];
+                }
+            } else {
+                const computedSize = node.computeSize();
+                node.size = [savedWidth, computedSize[1]];
+            }
             
+            // Clear restoring flag and do single final render
+            node._isRestoring = false;
             node.setDirtyCanvas(true, true);
+            if (app.graph) {
+                app.graph.setDirtyCanvas(true, true);
+            }
         }, 100);
     }
 });
@@ -401,19 +452,41 @@ app.registerExtension({
  * Restore preview images from saved node.properties
  */
 function restorePreviewFromProperties(node) {
+    console.log(`[Batchbox] restorePreviewFromProperties called for node ${node.id}, type: ${node.comfyClass || node.type}`);
+    console.log(`[Batchbox] node.properties:`, node.properties);
+    
     // Read from node.properties (saved in workflow JSON)
-    const lastImagesJson = node.properties?._last_images;
-    if (!lastImagesJson) return;
+    const lastImagesData = node.properties?._last_images;
+    if (!lastImagesData) {
+        console.log(`[Batchbox] No _last_images found for node ${node.id}`);
+        return;
+    }
+    
+    console.log(`[Batchbox] _last_images data type: ${typeof lastImagesData}, value:`, lastImagesData);
     
     try {
-        const images = JSON.parse(lastImagesJson);
+        // Handle both formats:
+        // - String (from independent generation): JSON stringified array
+        // - Array/Object (from ComfyUI execution): direct array of image objects
+        let images;
+        if (typeof lastImagesData === "string") {
+            images = JSON.parse(lastImagesData);
+        } else if (Array.isArray(lastImagesData)) {
+            images = lastImagesData;
+        } else {
+            console.warn("[Batchbox] Unknown _last_images format:", typeof lastImagesData);
+            return;
+        }
+        
+        console.log(`[Batchbox] Parsed images:`, images);
+        
         if (images && images.length > 0) {
-            // Use the same mechanism as ComfyUI's OUTPUT_NODE for bottom preview
-            // This matches how the node displays images after generation
+            // Set image metadata - ComfyUI's OUTPUT_NODE mechanism
             node.imageIndex = 0;
             node.images = images;
             
-            // Set preview images using URL
+            // Pre-create Image objects for node.imgs
+            // ComfyUI uses node.imgs for actual rendering
             node.imgs = images.map(img => {
                 const url = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
                 const imgEl = new Image();
@@ -421,8 +494,6 @@ function restorePreviewFromProperties(node) {
                 return imgEl;
             });
             
-            // Update node size and trigger redraw
-            node.setDirtyCanvas(true, true);
             console.log(`[Batchbox] Restored ${images.length} preview image(s) for node ${node.id}`);
         }
     } catch (e) {
