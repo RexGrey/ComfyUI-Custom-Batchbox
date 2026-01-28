@@ -84,6 +84,7 @@ class DynamicImageNodeBase:
     
     CATEGORY = "ComfyUI-Custom-Batchbox"
     _endpoint_index = {}  # Class-level counter for round-robin: {model_name: index}
+    _image_cache = {}  # Class-level cache for loaded images: {cache_key: (tensor, preview_infos)}
     
     def __init__(self):
         self.timeout = 600
@@ -354,6 +355,119 @@ class DynamicImageNodeBase:
             last_url,
             all_pil_images
         )
+    
+    def _compute_params_hash(self, model: str, prompt: str, batch_count: int, kwargs: Dict) -> str:
+        """
+        Compute a hash of generation parameters to detect changes.
+        Used to skip API call when parameters haven't changed.
+        """
+        import hashlib
+        import json
+        
+        # Get extra_params (dynamic parameters from frontend)
+        extra_params_str = kwargs.get("extra_params", "{}")
+        seed = kwargs.get("seed", 0)
+        
+        # Parse extra_params and remove seed (we use kwargs.seed separately)
+        # This ensures consistent hashing between frontend and backend
+        try:
+            extra_params = json.loads(extra_params_str) if extra_params_str else {}
+            extra_params.pop("seed", None)  # Remove seed from extra_params
+            # Use separators without spaces to match JavaScript JSON.stringify
+            extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
+        except:
+            extra_params_normalized = extra_params_str
+        
+        # Build hash string from all relevant parameters
+        # Note: Seed is handled separately, not from extra_params
+        params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}"
+        result_hash = hashlib.md5(params_str.encode()).hexdigest()
+        print(f"[DEBUG] Hash input: {params_str}")
+        print(f"[DEBUG] Computed hash: {result_hash}")
+        return result_hash
+    
+    def _load_persisted_images(self, last_images_json: str) -> Tuple[Optional[torch.Tensor], List[Dict]]:
+        """
+        Load images from persisted file paths stored in _last_images.
+        Uses in-memory cache to avoid repeated disk reads.
+        
+        Args:
+            last_images_json: JSON string of image info list (from node.properties._last_images)
+            
+        Returns:
+            Tuple of (images_tensor, preview_results) or (None, []) if loading fails
+        """
+        if not last_images_json:
+            return None, []
+        
+        # Check in-memory cache first (use JSON string as cache key)
+        cache_key = last_images_json
+        if cache_key in DynamicImageNodeBase._image_cache:
+            tensor, preview_infos = DynamicImageNodeBase._image_cache[cache_key]
+            print(f"[SmartCache] Returning {len(preview_infos)} image(s) from memory cache")
+            return tensor, preview_infos
+        
+        try:
+            image_infos = json.loads(last_images_json)
+            if not image_infos or not isinstance(image_infos, list):
+                return None, []
+            
+            tensors = []
+            valid_infos = []
+            
+            for info in image_infos:
+                # Get file path based on type
+                img_type = info.get("type", "output")
+                subfolder = info.get("subfolder", "")
+                filename = info.get("filename", "")
+                
+                if not filename:
+                    continue
+                
+                # Resolve full path
+                if img_type == "output":
+                    base_dir = folder_paths.get_output_directory()
+                elif img_type == "temp":
+                    base_dir = folder_paths.get_temp_directory()
+                else:
+                    base_dir = folder_paths.get_input_directory()
+                
+                if subfolder:
+                    filepath = os.path.join(base_dir, subfolder, filename)
+                else:
+                    filepath = os.path.join(base_dir, filename)
+                
+                # Check if file exists
+                if not os.path.exists(filepath):
+                    print(f"[SmartCache] File not found: {filepath}")
+                    continue
+                
+                # Load image
+                try:
+                    img = Image.open(filepath)
+                    img, _ = prepare_for_comfyui(img, preserve_alpha=True)
+                    tensor = pil_to_tensor_rgba(img)
+                    tensors.append(tensor)
+                    valid_infos.append(info)
+                except Exception as e:
+                    print(f"[SmartCache] Failed to load {filepath}: {e}")
+                    continue
+            
+            if not tensors:
+                return None, []
+            
+            # Save to in-memory cache before returning
+            result_tensor = torch.cat(tensors, dim=0)
+            DynamicImageNodeBase._image_cache[cache_key] = (result_tensor, valid_infos)
+            print(f"[SmartCache] Loaded {len(valid_infos)} image(s) from disk (cached for next time)")
+            return result_tensor, valid_infos
+            
+        except json.JSONDecodeError as e:
+            print(f"[SmartCache] JSON parse error: {e}")
+            return None, []
+        except Exception as e:
+            print(f"[SmartCache] Unexpected error: {e}")
+            return None, []
 
 
 # ==========================================
@@ -392,6 +506,12 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 "extra_params": ("STRING", {"default": "{}"}),
                 # Last generated images for preview persistence
                 "_last_images": ("STRING", {"default": ""}),
+                # Hash of parameters when last generated (for smart skip)
+                "_cached_hash": ("STRING", {"default": ""}),
+                # Force generation flag (set by button trigger)
+                "_force_generate": ("STRING", {"default": "false"}),
+                # Skip hash check flag (based on setting)
+                "_skip_hash_check": ("STRING", {"default": "false"}),
             }
         }
     
@@ -403,6 +523,57 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
     
     def generate(self, model: str, prompt: str, batch_count: int, **kwargs) -> Dict:
         """Generate images using selected model"""
+        
+        # ==========================================
+        # SMART CACHE: Check if API call is needed
+        # ==========================================
+        last_images_json = kwargs.get("_last_images", "")
+        force_generate = kwargs.get("_force_generate", "false") == "true"
+        cached_hash = kwargs.get("_cached_hash", "")
+        extra_params_str = kwargs.get("extra_params", "{}")
+        skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        
+        # Edge case: If extra_params is empty "{}" but we have cache,
+        # it means dynamic params aren't loaded yet after restart.
+        # Trust the cache in this case - don't try to compute/compare hash.
+        params_not_loaded = (extra_params_str == "{}" and last_images_json and cached_hash)
+        
+        if params_not_loaded or skip_hash_check:
+            # Either params not loaded yet OR hash check disabled in settings
+            # Just check if we have cache and not forced
+            need_api_call = force_generate or not last_images_json
+            reason = "params not loaded" if params_not_loaded else "hash check disabled"
+            print(f"[SmartCache] {reason}, has_cache={bool(last_images_json)}, force={force_generate}")
+        else:
+            # Normal case: compute hash and compare
+            current_hash = self._compute_params_hash(model, prompt, batch_count, kwargs)
+            need_api_call = (
+                force_generate or
+                not last_images_json or
+                (cached_hash and current_hash != cached_hash)
+            )
+            print(f"[SmartCache] force={force_generate}, has_cache={bool(last_images_json)}, hash_match={current_hash == cached_hash if cached_hash else 'N/A'}")
+        
+        print(f"[SmartCache] need_api_call={need_api_call}")
+        
+        if not need_api_call:
+            # Try to load from persisted images (with in-memory caching)
+            images_tensor, preview_results = self._load_persisted_images(last_images_json)
+            if images_tensor is not None:
+                return {
+                    "ui": {
+                        "images": preview_results,
+                        "_last_images": [last_images_json],
+                        "_cached_hash": [cached_hash],  # Preserve the cached hash
+                    },
+                    "result": (images_tensor, "Loaded from cache (no API call)", "")
+                }
+            # If loading failed, fall through to API call
+            print(f"[SmartCache] Cache file not found, falling back to API")
+        
+        # ==========================================
+        # NORMAL GENERATION: Call API
+        # ==========================================
         
         # Determine mode
         has_image = any(
@@ -489,7 +660,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         return {
             "ui": {
                 "images": preview_results,
-                "_last_images": [last_images_json]  # Will be saved to widget by frontend
+                "_last_images": [last_images_json],  # Will be saved to widget by frontend
+                "_cached_hash": [current_hash],  # Save hash for smart cache comparison
             },
             "result": (images_tensor, response_info, last_url)
         }

@@ -323,6 +323,15 @@ async function initializeDynamicInputs(node) {
             this.properties._last_images = message._last_images[0];
             console.log("[Batchbox] Saved preview info to properties");
         }
+        
+        // Save _cached_hash for smart cache comparison
+        if (message && message._cached_hash && message._cached_hash[0]) {
+            if (!this.properties) {
+                this.properties = {};
+            }
+            this.properties._cached_hash = message._cached_hash[0];
+            console.log("[Batchbox] Saved params hash to properties:", message._cached_hash[0]);
+        }
     };
 
     // Store original onConnectionsChange

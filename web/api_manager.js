@@ -1518,6 +1518,14 @@ class BatchboxManager {
                 <div class="batchbox-input-hint">开启后，在画布空白处右键可直接添加 BatchBox 节点</div>
             </div>
             
+            <div class="batchbox-form-group">
+                <label class="batchbox-checkbox-label">
+                    <input type="checkbox" id="node-hash-check" ${nodeSettings.smart_cache_hash_check !== false ? 'checked' : ''}>
+                    <span>参数变化检测</span>
+                </label>
+                <div class="batchbox-input-hint">开启后，修改节点参数会触发重新生成；关闭后仅按钮触发生成</div>
+            </div>
+            
             <div class="batchbox-form-actions">
                 <button class="batchbox-btn btn-primary" id="save-node-settings-btn">💾 保存节点设置</button>
             </div>
@@ -1539,10 +1547,12 @@ class BatchboxManager {
             const newWidth = parseInt(widthInput.value) || 500;
             const bypassQueuePrompt = container.querySelector("#node-bypass-queue").checked;
             const showInCanvasMenu = container.querySelector("#node-canvas-menu").checked;
+            const smartCacheHashCheck = container.querySelector("#node-hash-check").checked;
             const newNodeSettings = { 
                 default_width: newWidth,
                 bypass_queue_prompt: bypassQueuePrompt,
-                show_in_canvas_menu: showInCanvasMenu
+                show_in_canvas_menu: showInCanvasMenu,
+                smart_cache_hash_check: smartCacheHashCheck
             };
             try {
                 const resp = await api.fetchApi("/api/batchbox/node-settings", {

@@ -744,6 +744,7 @@ class ConfigManager:
         defaults = {
             "default_width": 500,  # Default node width in pixels
             "bypass_queue_prompt": True,  # Whether to exclude BatchBox nodes from global Queue Prompt
+            "smart_cache_hash_check": True,  # Whether to check param hash for cache invalidation
         }
         node_settings = self._config.get("node_settings", {})
         # Merge with defaults

@@ -34,6 +34,24 @@ class IndependentGenerator:
     def __init__(self):
         self.timeout = 600
     
+    def _compute_params_hash(self, model: str, prompt: str, batch_count: int, 
+                              seed: int, extra_params: Optional[Dict]) -> str:
+        """
+        Compute a hash of generation parameters.
+        Uses the same logic as nodes.py to ensure consistency.
+        """
+        import hashlib
+        
+        # Remove seed from extra_params (we use it separately)
+        params_for_hash = dict(extra_params) if extra_params else {}
+        params_for_hash.pop("seed", None)
+        
+        # Use separators without spaces to match JavaScript JSON.stringify
+        extra_params_normalized = json.dumps(params_for_hash, sort_keys=True, separators=(',', ':'))
+        
+        params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}"
+        return hashlib.md5(params_str.encode()).hexdigest()
+    
     def get_adapter(self, model_name: str, mode: str = "text2img",
                     endpoint_override: Optional[str] = None) -> Optional[GenericAPIAdapter]:
         """
@@ -235,10 +253,14 @@ class IndependentGenerator:
                 "preview_images": []
             }
         
+        # Compute hash using the same logic as nodes.py for consistency
+        params_hash = self._compute_params_hash(model, prompt, batch_count, seed, extra_params)
+        
         return {
             "success": True,
             "preview_images": all_previews,
-            "response_info": response_log if response_log else "Success"
+            "response_info": response_log if response_log else "Success",
+            "params_hash": params_hash  # Backend-computed hash for cache matching
         }
     
     def _save_single_image(self, pil_img: Image.Image, model: str, params: Dict, batch_idx: int) -> Optional[Dict]:

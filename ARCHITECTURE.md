@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.16 | 2026-01-28 | 智能缓存：节点作为图片来源 |
 | 2.15 | 2026-01-27 | 即时保存 + Gemini imageConfig 格式修复 |
 | 2.14 | 2026-01-27 | 动态槽位紧凑 + 并行批处理 + 模型迁移 |
 | 2.13 | 2026-01-27 | 画布右键菜单快捷添加功能 |
@@ -992,6 +993,117 @@ for (let i = 0; i < connections.length; i++) {
 |------|------|
 | `web/dynamic_inputs.js` | `updateInputsForType()` 紧凑策略实现 |
 
+### 7.14 智能缓存：节点作为图片来源
+
+**功能：** 让 BatchBox 节点在已生成图片后，行为类似 Load Image 节点：
+- 已生成图片的节点在 Queue Prompt 时**不调用 API**，直接返回缓存图片
+- 下游节点能正常接收到这些图片
+- 即使重启 ComfyUI 也能恢复
+
+**适用场景：**
+- **开启"拦截全局 Queue Prompt"**：节点不执行，但下游节点仍能接收到之前生成的图片
+- **关闭"拦截全局 Queue Prompt"**：如果参数未变，直接返回缓存图片
+
+**问题背景：**
+
+独立生成（"开始生成"按钮）和 Queue Prompt 之间无法正确共享缓存：
+- 独立生成后点击 Queue Prompt 会重复调用 API
+- 原因：前端和后端分别计算哈希，结果不一致
+
+**核心问题：**
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| JSON 格式差异 | Python 默认 `{"key": "value"}`，JS 默认 `{"key":"value"}` | Python 使用 `separators=(',', ':')` |
+| 前后端分别计算 | 细微差异导致哈希不匹配 | 统一由后端计算 |
+| extra_params 包含 seed | 与独立 seed 字段冲突 | 哈希计算时排除 seed |
+
+**实现流程：**
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端
+    participant IG as IndependentGenerator
+    participant N as nodes.py
+    
+    Note over U,N: 独立生成流程
+    U->>F: 点击"开始生成"
+    F->>IG: /api/batchbox/generate-independent
+    IG->>IG: 生成图片 + _compute_params_hash()
+    IG-->>F: {preview_images, params_hash}
+    F->>F: 保存 params_hash 到 node.properties._cached_hash
+    
+    Note over U,N: Queue Prompt 流程
+    U->>F: 点击 Queue Prompt
+    F->>F: 注入 _cached_hash 到 workflow
+    F->>N: 执行节点
+    N->>N: _compute_params_hash() (相同逻辑)
+    N->>N: 比较 hash → 匹配！
+    N-->>F: 使用缓存图片（跳过 API 调用）
+```
+
+**后端关键实现：**
+
+```python
+# independent_generator.py
+def _compute_params_hash(self, model, prompt, batch_count, seed, extra_params):
+    """与 nodes.py 使用完全相同的逻辑"""
+    params_for_hash = dict(extra_params) if extra_params else {}
+    params_for_hash.pop("seed", None)  # 排除 seed
+    
+    # 紧凑格式匹配 JavaScript
+    extra_params_normalized = json.dumps(params_for_hash, sort_keys=True, separators=(',', ':'))
+    
+    params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}"
+    return hashlib.md5(params_str.encode()).hexdigest()
+
+async def generate(self, ...):
+    # ... 生成图片 ...
+    params_hash = self._compute_params_hash(model, prompt, batch_count, seed, extra_params)
+    return {
+        "success": True,
+        "preview_images": all_previews,
+        "params_hash": params_hash  # 返回后端计算的哈希
+    }
+```
+
+**前端关键实现：**
+
+```javascript
+// dynamic_params.js - executeIndependent()
+const result = await response.json();
+if (result.success) {
+    // 直接使用后端返回的哈希，不再前端计算
+    const paramsHash = result.params_hash;
+    updateNodePreview(node, result.preview_images, paramsHash);
+}
+```
+
+**"参数变化检测"设置：**
+
+| 状态 | 行为 |
+|------|------|
+| 开启（默认） | 修改参数后 Queue Prompt 会重新生成 |
+| 关闭 | 忽略参数变化，仅按钮触发生成 |
+
+**配置存储：**
+
+```yaml
+node_settings:
+  smart_cache_hash_check: true  # true=检测参数变化, false=仅按钮触发
+```
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `config_manager.py` | 添加 `smart_cache_hash_check` 默认设置 |
+| `api_manager.js` | 添加设置 UI 复选框 |
+| `dynamic_params.js` | 读取设置、注入参数、使用后端哈希 |
+| `nodes.py` | 添加 `_skip_hash_check` 输入，修复 JSON 格式 |
+| `independent_generator.py` | 添加 `_compute_params_hash()` 并返回哈希 |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -1012,6 +1124,12 @@ for (let i = 0; i < connections.length; i++) {
 ---
 
 ## 9. 更新日志
+
+### v2.16 (2026-01-28)
+- ✅ 智能缓存：节点作为图片来源，已生成图片后 Queue Prompt 不再调用 API
+- ✅ 统一后端哈希：独立生成和 Queue Prompt 缓存状态协同
+- ✅ 新增"参数变化检测"开关（API Manager → 节点显示设置）
+- ✅ 修复跨平台 JSON 序列化差异
 
 ### v2.15 (2026-01-27)
 - ✅ 即时保存：每张图片收到后立即写入磁盘，防止断电丢失

@@ -27,6 +27,121 @@ const schemaCache = new Map();
 const CACHE_TTL_MS = 60000; // 60 seconds
 let lastConfigMtime = 0;
 
+/**
+ * Compute MD5 hash of a string (for cache key matching with backend)
+ * Uses a simple MD5 implementation since Web Crypto doesn't support MD5
+ */
+async function computeMD5Hash(str) {
+  // Simple MD5 implementation for browser
+  function md5cycle(x, k) {
+    var a = x[0], b = x[1], c = x[2], d = x[3];
+    a = ff(a, b, c, d, k[0], 7, -680876936);
+    d = ff(d, a, b, c, k[1], 12, -389564586);
+    c = ff(c, d, a, b, k[2], 17, 606105819);
+    b = ff(b, c, d, a, k[3], 22, -1044525330);
+    a = ff(a, b, c, d, k[4], 7, -176418897);
+    d = ff(d, a, b, c, k[5], 12, 1200080426);
+    c = ff(c, d, a, b, k[6], 17, -1473231341);
+    b = ff(b, c, d, a, k[7], 22, -45705983);
+    a = ff(a, b, c, d, k[8], 7, 1770035416);
+    d = ff(d, a, b, c, k[9], 12, -1958414417);
+    c = ff(c, d, a, b, k[10], 17, -42063);
+    b = ff(b, c, d, a, k[11], 22, -1990404162);
+    a = ff(a, b, c, d, k[12], 7, 1804603682);
+    d = ff(d, a, b, c, k[13], 12, -40341101);
+    c = ff(c, d, a, b, k[14], 17, -1502002290);
+    b = ff(b, c, d, a, k[15], 22, 1236535329);
+    a = gg(a, b, c, d, k[1], 5, -165796510);
+    d = gg(d, a, b, c, k[6], 9, -1069501632);
+    c = gg(c, d, a, b, k[11], 14, 643717713);
+    b = gg(b, c, d, a, k[0], 20, -373897302);
+    a = gg(a, b, c, d, k[5], 5, -701558691);
+    d = gg(d, a, b, c, k[10], 9, 38016083);
+    c = gg(c, d, a, b, k[15], 14, -660478335);
+    b = gg(b, c, d, a, k[4], 20, -405537848);
+    a = gg(a, b, c, d, k[9], 5, 568446438);
+    d = gg(d, a, b, c, k[14], 9, -1019803690);
+    c = gg(c, d, a, b, k[3], 14, -187363961);
+    b = gg(b, c, d, a, k[8], 20, 1163531501);
+    a = gg(a, b, c, d, k[13], 5, -1444681467);
+    d = gg(d, a, b, c, k[2], 9, -51403784);
+    c = gg(c, d, a, b, k[7], 14, 1735328473);
+    b = gg(b, c, d, a, k[12], 20, -1926607734);
+    a = hh(a, b, c, d, k[5], 4, -378558);
+    d = hh(d, a, b, c, k[8], 11, -2022574463);
+    c = hh(c, d, a, b, k[11], 16, 1839030562);
+    b = hh(b, c, d, a, k[14], 23, -35309556);
+    a = hh(a, b, c, d, k[1], 4, -1530992060);
+    d = hh(d, a, b, c, k[4], 11, 1272893353);
+    c = hh(c, d, a, b, k[7], 16, -155497632);
+    b = hh(b, c, d, a, k[10], 23, -1094730640);
+    a = hh(a, b, c, d, k[13], 4, 681279174);
+    d = hh(d, a, b, c, k[0], 11, -358537222);
+    c = hh(c, d, a, b, k[3], 16, -722521979);
+    b = hh(b, c, d, a, k[6], 23, 76029189);
+    a = hh(a, b, c, d, k[9], 4, -640364487);
+    d = hh(d, a, b, c, k[12], 11, -421815835);
+    c = hh(c, d, a, b, k[15], 16, 530742520);
+    b = hh(b, c, d, a, k[2], 23, -995338651);
+    a = ii(a, b, c, d, k[0], 6, -198630844);
+    d = ii(d, a, b, c, k[7], 10, 1126891415);
+    c = ii(c, d, a, b, k[14], 15, -1416354905);
+    b = ii(b, c, d, a, k[5], 21, -57434055);
+    a = ii(a, b, c, d, k[12], 6, 1700485571);
+    d = ii(d, a, b, c, k[3], 10, -1894986606);
+    c = ii(c, d, a, b, k[10], 15, -1051523);
+    b = ii(b, c, d, a, k[1], 21, -2054922799);
+    a = ii(a, b, c, d, k[8], 6, 1873313359);
+    d = ii(d, a, b, c, k[15], 10, -30611744);
+    c = ii(c, d, a, b, k[6], 15, -1560198380);
+    b = ii(b, c, d, a, k[13], 21, 1309151649);
+    a = ii(a, b, c, d, k[4], 6, -145523070);
+    d = ii(d, a, b, c, k[11], 10, -1120210379);
+    c = ii(c, d, a, b, k[2], 15, 718787259);
+    b = ii(b, c, d, a, k[9], 21, -343485551);
+    x[0] = add32(a, x[0]);
+    x[1] = add32(b, x[1]);
+    x[2] = add32(c, x[2]);
+    x[3] = add32(d, x[3]);
+  }
+  function cmn(q, a, b, x, s, t) {
+    a = add32(add32(a, q), add32(x, t));
+    return add32((a << s) | (a >>> (32 - s)), b);
+  }
+  function ff(a, b, c, d, x, s, t) { return cmn((b & c) | ((~b) & d), a, b, x, s, t); }
+  function gg(a, b, c, d, x, s, t) { return cmn((b & d) | (c & (~d)), a, b, x, s, t); }
+  function hh(a, b, c, d, x, s, t) { return cmn(b ^ c ^ d, a, b, x, s, t); }
+  function ii(a, b, c, d, x, s, t) { return cmn(c ^ (b | (~d)), a, b, x, s, t); }
+  function md51(s) {
+    var n = s.length, state = [1732584193, -271733879, -1732584194, 271733878], i;
+    for (i = 64; i <= n; i += 64) { md5cycle(state, md5blk(s.substring(i - 64, i))); }
+    s = s.substring(i - 64);
+    var tail = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+    for (i = 0; i < s.length; i++) { tail[i >> 2] |= s.charCodeAt(i) << ((i % 4) << 3); }
+    tail[i >> 2] |= 0x80 << ((i % 4) << 3);
+    if (i > 55) { md5cycle(state, tail); tail = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]; }
+    tail[14] = n * 8;
+    md5cycle(state, tail);
+    return state;
+  }
+  function md5blk(s) {
+    var md5blks = [], i;
+    for (i = 0; i < 64; i += 4) {
+      md5blks[i >> 2] = s.charCodeAt(i) + (s.charCodeAt(i + 1) << 8) + (s.charCodeAt(i + 2) << 16) + (s.charCodeAt(i + 3) << 24);
+    }
+    return md5blks;
+  }
+  var hex_chr = '0123456789abcdef'.split('');
+  function rhex(n) {
+    var s = '', j = 0;
+    for (; j < 4; j++) { s += hex_chr[(n >> (j * 8 + 4)) & 0x0F] + hex_chr[(n >> (j * 8)) & 0x0F]; }
+    return s;
+  }
+  function hex(x) { for (var i = 0; i < x.length; i++) { x[i] = rhex(x[i]); } return x.join(''); }
+  function add32(a, b) { return (a + b) & 0xFFFFFFFF; }
+  return hex(md51(str));
+}
+
 // Flag to distinguish button-triggered execution from global Queue Prompt
 // When true, BatchBox nodes are included in execution
 // When false (default), BatchBox nodes are excluded from global Queue Prompt
@@ -35,6 +150,7 @@ let isButtonTriggeredExecution = false;
 // Setting cache for bypass behavior (loaded from backend)
 let bypassQueuePromptEnabled = true; // Default: enabled
 let showInCanvasMenuEnabled = true; // Default: enabled (show BatchBox nodes in canvas right-click menu)
+let smartCacheHashCheckEnabled = true; // Default: enabled (check param hash for cache invalidation)
 
 // Fetch node settings from backend
 async function fetchNodeSettings() {
@@ -44,7 +160,8 @@ async function fetchNodeSettings() {
       const data = await resp.json();
       bypassQueuePromptEnabled = data.node_settings?.bypass_queue_prompt !== false;
       showInCanvasMenuEnabled = data.node_settings?.show_in_canvas_menu !== false;
-      console.log(`[DynamicParams] bypass_queue_prompt: ${bypassQueuePromptEnabled}, show_in_canvas_menu: ${showInCanvasMenuEnabled}`);
+      smartCacheHashCheckEnabled = data.node_settings?.smart_cache_hash_check !== false;
+      console.log(`[DynamicParams] bypass_queue_prompt: ${bypassQueuePromptEnabled}, smart_cache_hash_check: ${smartCacheHashCheckEnabled}`);
     }
   } catch (e) {
     console.warn('[DynamicParams] Failed to fetch node settings:', e);
@@ -680,7 +797,7 @@ function collectNodeParams(node) {
  * @param {Object} node - The node
  * @param {Array} previewImages - Array of preview image info objects
  */
-function updateNodePreview(node, previewImages) {
+function updateNodePreview(node, previewImages, paramsHash = null) {
   if (!previewImages || previewImages.length === 0) return;
   
   console.log(`[BatchBox] Node ${node.id}: Loading ${previewImages.length} preview image(s)...`);
@@ -689,8 +806,8 @@ function updateNodePreview(node, previewImages) {
   node.images = previewImages;
   node.imageIndex = 0;
   
-  // Load images into imgs array for display
-  node.imgs = [];
+  // Pre-allocate imgs array with nulls, fill in as images load
+  node.imgs = new Array(previewImages.length).fill(null);
   let loadedCount = 0;
   
   previewImages.forEach((imgInfo, index) => {
@@ -698,6 +815,8 @@ function updateNodePreview(node, previewImages) {
     const img = new Image();
     
     img.onload = () => {
+      // Store loaded image at correct index
+      node.imgs[index] = img;
       loadedCount++;
       console.log(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
       
@@ -708,14 +827,24 @@ function updateNodePreview(node, previewImages) {
       if (app.graph) {
         app.graph.setDirtyCanvas(true, true);
       }
+      
+      // Try to trigger a canvas refresh via requestAnimationFrame
+      if (loadedCount === previewImages.length) {
+        requestAnimationFrame(() => {
+          node.setDirtyCanvas(true, true);
+          if (app.canvas) {
+            app.canvas.draw(true, true);
+          }
+        });
+      }
     };
     
-    img.onerror = () => {
-      console.error(`[BatchBox] Node ${node.id}: Failed to load image ${index}`);
+    img.onerror = (e) => {
+      console.error(`[BatchBox] Node ${node.id}: Failed to load image ${index}`, url, e);
     };
     
+    console.log(`[BatchBox] Node ${node.id}: Loading image ${index}: ${url}`);
     img.src = url;
-    node.imgs.push(img);
   });
   
   // Save to properties for persistence
@@ -725,6 +854,12 @@ function updateNodePreview(node, previewImages) {
   node.properties._last_images = JSON.stringify(previewImages);
   // Also save node size for proper restoration
   node.properties._last_size = JSON.stringify(node.size);
+  
+  // Save params hash for smart cache (if provided)
+  if (paramsHash) {
+    node.properties._cached_hash = paramsHash;
+    console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
+  }
   
   // Force immediate redraw (even before images fully load)
   node.setDirtyCanvas(true, true);
@@ -790,8 +925,16 @@ async function executeIndependent(node) {
     const result = await response.json();
     
     if (result.success) {
-      // Update node preview
-      updateNodePreview(node, result.preview_images);
+      // Debug: log result
+      console.log("[BatchBox] result.preview_images:", JSON.stringify(result.preview_images, null, 2));
+      console.log("[BatchBox] Backend params_hash:", result.params_hash);
+      
+      // Use the hash computed by backend for consistency
+      // This ensures the hash matches what nodes.py computes during Queue Prompt
+      const paramsHash = result.params_hash;
+      
+      // Update node preview with the backend-computed hash
+      updateNodePreview(node, result.preview_images, paramsHash);
       console.log("[BatchBox] Generation complete:", result.response_info);
     } else {
       console.error("[BatchBox] Generation failed:", result.error);
@@ -1086,11 +1229,15 @@ app.registerExtension({
 });
 
 // ==========================================
-// Intercept queuePrompt to update extra_params and handle BatchBox exclusion
+// Intercept queuePrompt to update extra_params and inject cache state
 // ==========================================
 const origQueuePrompt = api.queuePrompt;
 api.queuePrompt = async function(number, workflowData) {
-  // Collect BatchBox node IDs for potential exclusion
+  // Capture and reset the flag immediately
+  const wasButtonTriggered = isButtonTriggeredExecution;
+  isButtonTriggeredExecution = false;
+  
+  // Collect BatchBox node IDs
   const batchboxNodeIds = new Set();
   
   // Update extra_params for all dynamic nodes before sending to backend
@@ -1100,9 +1247,19 @@ api.queuePrompt = async function(number, workflowData) {
         // Track BatchBox nodes
         batchboxNodeIds.add(String(node.id));
         
+        // Update extra_params widget
+        // IMPORTANT: If widgets aren't restored yet (after restart), use pending params
         const extraParamsWidget = node.widgets.find(w => w.name === "extra_params");
         if (extraParamsWidget) {
-          const dynamicParams = node._dynamicParamManager.collectDynamicParams();
+          let dynamicParams = node._dynamicParamManager.collectDynamicParams();
+          
+          // If collected params are empty but we have pending params (saved in workflow),
+          // use those instead. This fixes the "first execution after restart" issue.
+          if (Object.keys(dynamicParams).length === 0 && node._pendingDynamicParams) {
+            dynamicParams = node._pendingDynamicParams;
+            console.log(`[DynamicParams] node ${node.id}: Using pending params (widgets not ready yet)`);
+          }
+          
           extraParamsWidget.value = JSON.stringify(dynamicParams);
           console.log(`[DynamicParams] node ${node.id} extra_params:`, extraParamsWidget.value);
         }
@@ -1110,27 +1267,45 @@ api.queuePrompt = async function(number, workflowData) {
     }
   }
   
-  // Capture and reset the flag immediately
-  const wasButtonTriggered = isButtonTriggeredExecution;
-  isButtonTriggeredExecution = false;
-  
-  // If bypass is enabled AND NOT button-triggered (i.e., global Queue Prompt), exclude BatchBox nodes
-  if (bypassQueuePromptEnabled && !wasButtonTriggered && batchboxNodeIds.size > 0 && workflowData?.output) {
-    console.log(`[BatchBox] Global Queue Prompt detected, excluding ${batchboxNodeIds.size} BatchBox node(s)`);
-    
-    // Remove BatchBox nodes from the prompt output
-    for (const nodeId of batchboxNodeIds) {
-      if (workflowData.output[nodeId]) {
-        delete workflowData.output[nodeId];
-        console.log(`[BatchBox] Excluded node ${nodeId} from execution`);
+  // === SMART CACHE: Inject hidden inputs directly into workflowData ===
+  // This is more reliable than widgets for hidden inputs
+  if (workflowData?.output && app.graph && app.graph._nodes) {
+    for (const node of app.graph._nodes) {
+      if (node._dynamicParamManager) {
+        const nodeId = String(node.id);
+        const nodeData = workflowData.output[nodeId];
+        
+        if (nodeData && nodeData.inputs) {
+          // === CRITICAL: Also sync extra_params to workflowData ===
+          // The widget update alone doesn't update workflowData, we need to do it explicitly
+          let dynamicParams = node._dynamicParamManager.collectDynamicParams();
+          if (Object.keys(dynamicParams).length === 0 && node._pendingDynamicParams) {
+            dynamicParams = node._pendingDynamicParams;
+          }
+          nodeData.inputs.extra_params = JSON.stringify(dynamicParams);
+          
+          // Inject _force_generate
+          nodeData.inputs._force_generate = wasButtonTriggered ? "true" : "false";
+          
+          // Inject _cached_hash from properties (persisted from last generation)
+          nodeData.inputs._cached_hash = node.properties?._cached_hash || "";
+          
+          // Inject _last_images from properties (persisted from last generation)
+          nodeData.inputs._last_images = node.properties?._last_images || "";
+          
+          // Inject _skip_hash_check based on setting (when disabled, skip hash comparison)
+          nodeData.inputs._skip_hash_check = smartCacheHashCheckEnabled ? "false" : "true";
+          
+          console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
+        }
       }
     }
-    
-    // Check if any nodes remain
-    if (Object.keys(workflowData.output).length === 0) {
-      console.log(`[BatchBox] No nodes left to execute after exclusion`);
-      return { error: "No nodes to execute (BatchBox nodes are only triggered by their Generate button)" };
-    }
+  }
+  
+  // If bypass is enabled AND NOT button-triggered, BatchBox nodes will still execute
+  // but the backend will skip API call and return cached images
+  if (bypassQueuePromptEnabled && !wasButtonTriggered && batchboxNodeIds.size > 0) {
+    console.log(`[BatchBox] Bypass mode: ${batchboxNodeIds.size} BatchBox node(s) will return cached images`);
   }
   
   // Call original queuePrompt
