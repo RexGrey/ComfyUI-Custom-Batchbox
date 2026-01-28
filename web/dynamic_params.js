@@ -806,8 +806,9 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
   node.images = previewImages;
   node.imageIndex = 0;
   
-  // Pre-allocate imgs array with nulls, fill in as images load
-  node.imgs = new Array(previewImages.length).fill(null);
+  // Use a temporary array for loading - don't expose nulls to ComfyUI
+  // This prevents "Cannot read properties of null (reading 'naturalWidth')" errors
+  const loadingImgs = new Array(previewImages.length).fill(null);
   let loadedCount = 0;
   
   previewImages.forEach((imgInfo, index) => {
@@ -815,21 +816,26 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
     const img = new Image();
     
     img.onload = () => {
-      // Store loaded image at correct index
-      node.imgs[index] = img;
+      // Store loaded image in temporary array
+      loadingImgs[index] = img;
       loadedCount++;
       console.log(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
       
-      // Force immediate redraw when image loads
-      node.setDirtyCanvas(true, true);
-      
-      // Also trigger global graph redraw
-      if (app.graph) {
-        app.graph.setDirtyCanvas(true, true);
-      }
-      
-      // Try to trigger a canvas refresh via requestAnimationFrame
+      // Only update node.imgs when ALL images are loaded
+      // This prevents ComfyUI from trying to render null elements
       if (loadedCount === previewImages.length) {
+        // Filter out any failed loads (null values)
+        const validImgs = loadingImgs.filter(i => i !== null);
+        if (validImgs.length > 0) {
+          node.imgs = validImgs;
+        }
+        
+        // Force immediate redraw
+        node.setDirtyCanvas(true, true);
+        if (app.graph) {
+          app.graph.setDirtyCanvas(true, true);
+        }
+        
         requestAnimationFrame(() => {
           node.setDirtyCanvas(true, true);
           if (app.canvas) {
@@ -841,6 +847,17 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
     
     img.onerror = (e) => {
       console.error(`[BatchBox] Node ${node.id}: Failed to load image ${index}`, url, e);
+      // Mark as "failed" by incrementing count but not setting the img
+      loadedCount++;
+      
+      // Check if all loads are done (including failures)
+      if (loadedCount === previewImages.length) {
+        const validImgs = loadingImgs.filter(i => i !== null);
+        if (validImgs.length > 0) {
+          node.imgs = validImgs;
+          node.setDirtyCanvas(true, true);
+        }
+      }
     };
     
     console.log(`[BatchBox] Node ${node.id}: Loading image ${index}: ${url}`);
@@ -871,11 +888,8 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
     console.log(`[BatchBox] Node ${node.id}: New generation - selection reset to 0`);
   }
   
-  // Force immediate redraw (even before images fully load)
-  node.setDirtyCanvas(true, true);
-  if (app.graph) {
-    app.graph.setDirtyCanvas(true, true);
-  }
+  // Note: We don't force redraw here since imgs aren't set yet
+  // The redraw will happen in the onload callback when all images are ready
   
   console.log(`[BatchBox] Node ${node.id}: Preview update initiated`);
 }
