@@ -272,7 +272,7 @@ async function updateAllDynamicInputs(node) {
     }
 
     const config = modelName ? await getDynamicInputsConfig(modelName) : {};
-    console.log(`[DynamicInputs] Model: ${modelName}, config:`, config);
+    // Debug logging removed to avoid console spam
 
     // Process each configured input type
     for (const [key, typeConfig] of Object.entries(config)) {
@@ -322,6 +322,31 @@ async function initializeDynamicInputs(node) {
             }
             this.properties._last_images = message._last_images[0];
             console.log("[Batchbox] Saved preview info to properties");
+            
+            // === IMAGE SELECTION: Reset selection on new generation ===
+            // Parse images to check if we have multiple
+            try {
+                const images = JSON.parse(message._last_images[0]);
+                if (images && images.length > 1) {
+                    // For new generation (force_generate), reset to first image
+                    // For cache hit, maintain current selection
+                    const isNewGeneration = this._forceGenerateFlag || false;
+                    if (isNewGeneration) {
+                        this._selectedImageIndex = 0;
+                        this.properties._selected_image_index = 0;
+                        console.log("[Batchbox] New generation: reset selection to 0");
+                    }
+                    
+                    // Set imageIndex to show the selected image (not thumbnails)
+                    // Our setter will block null values from ComfyUI's useNodeImage.ts
+                    const selectedIdx = this._selectedImageIndex || 0;
+                    this._ignoreImageIndexChanges = true;
+                    this.imageIndex = selectedIdx;
+                    console.log(`[Batchbox] Set imageIndex to selected: ${selectedIdx}`);
+                }
+            } catch (e) {
+                console.warn("[Batchbox] Failed to parse images for selection:", e);
+            }
         }
         
         // Save _cached_hash for smart cache comparison
@@ -332,6 +357,14 @@ async function initializeDynamicInputs(node) {
             this.properties._cached_hash = message._cached_hash[0];
             console.log("[Batchbox] Saved params hash to properties:", message._cached_hash[0]);
         }
+        
+        // Clear force generate flag
+        this._forceGenerateFlag = false;
+        
+        // Re-enable imageIndex tracking after a short delay
+        setTimeout(() => {
+            this._ignoreImageIndexChanges = false;
+        }, 100);  // 100ms is enough for ComfyUI to render the image
     };
 
     // Store original onConnectionsChange
@@ -446,6 +479,13 @@ app.registerExtension({
                         imgEl.src = url;
                         return imgEl;
                     });
+                    
+                    // === IMAGE SELECTION: Restore selection state early ===
+                    if (node.properties?._selected_image_index !== undefined) {
+                        node._selectedImageIndex = parseInt(node.properties._selected_image_index) || 0;
+                        node.imageIndex = node._selectedImageIndex;
+                        console.log(`[Batchbox] Pre-restored image selection: index=${node._selectedImageIndex}`);
+                    }
                 }
             } catch (e) {}
         }

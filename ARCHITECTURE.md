@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.17 | 2026-01-28 | 选中图片放大显示：执行后保持选中图片放大，不回到缩略图 |
 | 2.16 | 2026-01-28 | 智能缓存：节点作为图片来源 |
 | 2.15 | 2026-01-27 | 即时保存 + Gemini imageConfig 格式修复 |
 | 2.14 | 2026-01-27 | 动态槽位紧凑 + 并行批处理 + 模型迁移 |
@@ -1104,6 +1105,183 @@ node_settings:
 | `nodes.py` | 添加 `_skip_hash_check` 输入，修复 JSON 格式 |
 | `independent_generator.py` | 添加 `_compute_params_hash()` 并返回哈希 |
 
+### 7.15 选中图片放大显示
+
+**功能：** 生成多张图后，节点自动放大显示选中的图片（默认第一张），并在执行后保持放大状态：
+
+| 场景 | 行为 |
+|------|------|
+| 生成完成后 | 默认第一张放大显示，输出给下游 |
+| 点击 X 按钮 | 回到缩略图模式 |
+| 点击缩略图 | 该图片放大显示 |
+| Queue Prompt | 保持放大显示，输出选中图片 |
+| 重启恢复 | 选中图片信息持久化，依旧放大显示 |
+
+**问题背景：**
+
+ComfyUI 的渲染循环在每一帧都会调用 `imageIndex = null`，这会覆盖用户的选择，导致执行后闪回缩略图。
+
+**核心解决方案：Property Interception + Execution Window Guard**
+
+```javascript
+// dynamic_params.js - 拦截 imageIndex setter
+Object.defineProperty(this, 'imageIndex', {
+  set: function(value) {
+    // 仅在执行窗口期间阻止 null
+    if ((value === null) && selfNode._ignoreImageIndexChanges) {
+      selfNode._imageIndexInternal = selfNode._selectedImageIndex || 0;
+      return;  // 阻止
+    }
+    selfNode._imageIndexInternal = value;  // 其他时候允许
+  }
+});
+```
+
+**时间窗口控制：**
+
+```javascript
+// dynamic_inputs.js - onExecuted
+this._ignoreImageIndexChanges = true;
+this.imageIndex = selectedIdx;
+
+setTimeout(() => {
+    this._ignoreImageIndexChanges = false;
+}, 100);  // 100ms 足够 ComfyUI 渲染完成
+```
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `web/dynamic_params.js` | imageIndex setter 拦截，阻止执行期间的 null |
+| `web/dynamic_inputs.js` | onExecuted 中设置选中索引，100ms 后恢复 |
+
+**用户交互流程（简版）：**
+
+```mermaid
+flowchart TD
+    A[生成完成] --> B[默认选择第一张]
+    B --> C[放大显示选中图片]
+    C --> D{用户操作}
+    
+    D -->|点击 X 按钮| E[返回缩略图模式]
+    E --> F[显示所有缩略图]
+    F --> G{点击缩略图}
+    G --> H[选中该图片]
+    H --> C
+    
+    D -->|点击 Queue Prompt| I[同步 _selected_image_index]
+    I --> J[后端根据索引切片 tensor]
+    J --> K[输出选中图片给下游]
+    K --> C
+    
+    D -->|重启 ComfyUI| L[从 properties 读取索引]
+    L --> C
+```
+
+**用户交互流程（含技术实现细节）：**
+
+```mermaid
+flowchart TD
+    A[生成完成] --> B[默认选择第一张]
+    B --> C[放大显示选中图片]
+    C --> D{用户操作}
+    
+    D -->|点击 X 按钮| E[返回缩略图模式]
+    E --> F[显示所有缩略图]
+    F --> G{点击缩略图}
+    G --> H[选中该图片]
+    H --> C
+    
+    D -->|点击 Queue Prompt| I[同步 _selected_image_index]
+    I --> J[后端根据索引切片 tensor]
+    J --> K[输出选中图片给下游]
+    K --> C
+    
+    D -->|重启 ComfyUI| L[从 properties 读取索引]
+    L --> C
+    
+    subgraph 技术细节_生成完成
+        A1["onExecuted()"]
+        A2["_ignoreImageIndexChanges = true"]
+        A3["imageIndex = 0"]
+        A4["setTimeout(100ms) 解除保护"]
+    end
+    A -.-> A1 --> A2 --> A3 --> A4
+    
+    subgraph 技术细节_选择同步
+        I1["queuePrompt 拦截"]
+        I2["workflowData.output[nodeId]._selected_image_index"]
+        I3["注入到 prompt 数据"]
+    end
+    I -.-> I1 --> I2 --> I3
+    
+    subgraph 技术细节_后端切片
+        J1["nodes.py: generate()"]
+        J2["selected_tensor = images_tensor[idx:idx+1]"]
+        J3["return selected_tensor, all_images"]
+    end
+    J -.-> J1 --> J2 --> J3
+    
+    subgraph 技术细节_持久化
+        L1["动态_inputs.js: loadedGraphNode"]
+        L2["node.properties._selected_image_index"]
+        L3["node.imageIndex = savedIdx"]
+    end
+    L -.-> L1 --> L2 --> L3
+```
+
+**行为与实现对照表：**
+
+| 用户行为 | 技术实现 | 文件位置 |
+|----------|----------|----------|
+| 生成完成后放大 | `onExecuted()` 设置 `imageIndex = 0` + 100ms null 阻止 | `dynamic_inputs.js` |
+| 点击 X 回缩略图 | ComfyUI 原生设置 `imageIndex = null` | ComfyUI 核心 |
+| 点击缩略图放大 | setter 保存 `_selectedImageIndex` | `dynamic_params.js` |
+| Queue Prompt 输出 | 注入 `_selected_image_index` → 后端 tensor 切片 | `dynamic_params.js` → `nodes.py` |
+| 重启恢复选择 | 从 `properties._selected_image_index` 读取 | `dynamic_inputs.js` |
+
+**设计决策：**
+
+| 选项 | 选择 | 原因 |
+|------|------|------|
+| 阻塞模式 vs 非阻塞 | ✅ 非阻塞 | 无需等待用户选择，立即输出第一张 |
+| onMouseDown + setTimeout | ✅ Object.defineProperty | 更可靠，无时序竞争 |
+| 自定义 X 按钮 | ✅ 使用 ComfyUI 原生 | 更简洁，利用现有 UI |
+
+**技术实现时序：**
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant C as ComfyUI 渲染循环
+    participant S as imageIndex Setter
+    participant N as Node 状态
+    
+    Note over U,N: 执行期间（100ms 窗口内）
+    U->>N: Queue Prompt
+    N->>N: _ignoreImageIndexChanges = true
+    N->>S: imageIndex = selectedIdx
+    S->>N: 保存到 _imageIndexInternal
+    
+    loop 每帧渲染
+        C->>S: imageIndex = null
+        S--xS: 阻止（guard = true）
+        S->>N: 保持 _selectedImageIndex
+    end
+    
+    Note over N: 100ms 后
+    N->>N: _ignoreImageIndexChanges = false
+    
+    Note over U,N: 正常状态
+    U->>S: 点击 X（设置 null）
+    S->>N: 允许，显示缩略图
+    
+    U->>S: 点击图片（设置 index）
+    S->>N: 允许，放大显示
+    S->>N: 保存 _selectedImageIndex
+```
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -1124,6 +1302,14 @@ node_settings:
 ---
 
 ## 9. 更新日志
+
+### v2.17 (2026-01-28)
+
+- ✅ 选中图片放大显示：生成多张图后默认第一张放大呈现并输出给下游
+- ✅ 缩略图切换：点击 X 回到缩略图模式，点击任意缩略图重新放大
+- ✅ 执行后保持放大：Queue Prompt 后选中图片依旧放大，不闪回缩略图
+- ✅ 重启恢复：被选图片信息持久化，重启后依旧放大显示
+- ⚙️ 技术：Property Interception + 100ms Execution Window Guard
 
 ### v2.16 (2026-01-28)
 - ✅ 智能缓存：节点作为图片来源，已生成图片后 Queue Prompt 不再调用 API

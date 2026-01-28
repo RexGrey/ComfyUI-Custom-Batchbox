@@ -512,11 +512,13 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 "_force_generate": ("STRING", {"default": "false"}),
                 # Skip hash check flag (based on setting)
                 "_skip_hash_check": ("STRING", {"default": "false"}),
+                # Selected image index for batch output (0-based)
+                "_selected_image_index": ("INT", {"default": 0}),
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("images", "response_info", "last_image_url")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("selected_image", "all_images", "response_info", "last_image_url")
     FUNCTION = "generate"
     CATEGORY = "ComfyUI-Custom-Batchbox"
     OUTPUT_NODE = True  # Required for standalone execution
@@ -560,13 +562,29 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
             # Try to load from persisted images (with in-memory caching)
             images_tensor, preview_results = self._load_persisted_images(last_images_json)
             if images_tensor is not None:
+                # Slice tensor based on selected image index
+                selected_index = kwargs.get("_selected_image_index", 0)
+                print(f"[SmartCache] Received _selected_image_index from frontend: {selected_index}")
+                try:
+                    selected_index = int(selected_index)
+                except (ValueError, TypeError):
+                    selected_index = 0
+                
+                if images_tensor.shape[0] > 1:
+                    selected_index = max(0, min(selected_index, images_tensor.shape[0] - 1))
+                    selected_tensor = images_tensor[selected_index:selected_index+1]
+                else:
+                    selected_tensor = images_tensor
+                
+                print(f"[SmartCache] Returning selected image {selected_index} of {images_tensor.shape[0]}")
+                
                 return {
                     "ui": {
                         "images": preview_results,
                         "_last_images": [last_images_json],
                         "_cached_hash": [cached_hash],  # Preserve the cached hash
                     },
-                    "result": (images_tensor, "Loaded from cache (no API call)", "")
+                    "result": (selected_tensor, images_tensor, "Loaded from cache (no API call)", "")
                 }
             # If loading failed, fall through to API call
             print(f"[SmartCache] Cache file not found, falling back to API")
@@ -656,6 +674,21 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         # Serialize preview info for persistence (frontend will save to widget)
         last_images_json = json.dumps(preview_results) if preview_results else ""
         
+        # Slice tensor based on selected image index (default to 0 for new generation)
+        selected_index = kwargs.get("_selected_image_index", 0)
+        try:
+            selected_index = int(selected_index)
+        except (ValueError, TypeError):
+            selected_index = 0
+        
+        if images_tensor.shape[0] > 1:
+            selected_index = max(0, min(selected_index, images_tensor.shape[0] - 1))
+            selected_tensor = images_tensor[selected_index:selected_index+1]
+        else:
+            selected_tensor = images_tensor
+        
+        print(f"[Generate] Returning selected image {selected_index} of {images_tensor.shape[0]}")
+        
         # Return dict with both result tuple and UI data
         return {
             "ui": {
@@ -663,7 +696,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 "_last_images": [last_images_json],  # Will be saved to widget by frontend
                 "_cached_hash": [current_hash],  # Save hash for smart cache comparison
             },
-            "result": (images_tensor, response_info, last_url)
+            "result": (selected_tensor, images_tensor, response_info, last_url)
         }
 
 

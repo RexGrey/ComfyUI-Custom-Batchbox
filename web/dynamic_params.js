@@ -861,6 +861,16 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
     console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
   }
   
+  // === IMAGE SELECTION: Set default selection after generation ===
+  // For independent generation, always reset to first image (index 0)
+  // This is a NEW generation, so we start fresh
+  node._selectedImageIndex = 0;
+  if (previewImages.length > 1) {
+    node.imageIndex = 0;
+    node.properties._selected_image_index = 0;
+    console.log(`[BatchBox] Node ${node.id}: New generation - selection reset to 0`);
+  }
+  
   // Force immediate redraw (even before images fully load)
   node.setDirtyCanvas(true, true);
   if (app.graph) {
@@ -1166,6 +1176,47 @@ app.registerExtension({
         }
       };
       
+      // === IMAGE SELECTION: Track user's image selection ===
+      // Intercept imageIndex setter to capture when ComfyUI changes it
+      // This gives us an immediate signal without delays
+      this._selectedImageIndex = 0;
+      this._ignoreImageIndexChanges = false;  // Flag to pause tracking during/after execution
+      this._imageIndexInternal = 0;  // Internal storage for imageIndex
+      
+      // Store reference to node for the getter/setter
+      const selfNode = this;
+      
+      // Use Object.defineProperty to intercept imageIndex changes
+      Object.defineProperty(this, 'imageIndex', {
+        get: function() {
+          return selfNode._imageIndexInternal;
+        },
+        set: function(value) {
+          // Block null during execution window, allow at all other times
+          if ((value === null || value === undefined) && selfNode._ignoreImageIndexChanges) {
+            selfNode._imageIndexInternal = selfNode._selectedImageIndex || 0;
+            return;
+          }
+          
+          selfNode._imageIndexInternal = value;
+          
+          // Track user selections (valid indices only)
+          if (!selfNode._ignoreImageIndexChanges && value !== null && value !== undefined) {
+            if (selfNode.imgs && selfNode.imgs.length > 1 && value >= 0 && value < selfNode.imgs.length) {
+              selfNode._selectedImageIndex = value;
+              
+              // Save to properties
+              if (!selfNode.properties) selfNode.properties = {};
+              selfNode.properties._selected_image_index = value;
+              
+              console.log(`[BatchBox] Node ${selfNode.id}: Selection saved: ${value}`);
+            }
+          }
+        },
+        configurable: true,
+        enumerable: true
+      });
+      
       console.log('[DynamicParams] onNodeCreated END, prompt value:', this.widgets?.find(w => w.name === "prompt")?.value);
     };
 
@@ -1194,6 +1245,11 @@ app.registerExtension({
       if (this._dynamicParamManager?.collapsedGroups) {
         o.collapsedGroups = Array.from(this._dynamicParamManager.collapsedGroups);
       }
+      
+      // === IMAGE SELECTION: Save selection state ===
+      o.imageSelectionState = {
+        selectedIndex: this._selectedImageIndex || this.properties?._selected_image_index || 0
+      };
     };
 
     // Deserialize dynamic params
@@ -1222,6 +1278,20 @@ app.registerExtension({
       if (o.collapsedGroups && this._dynamicParamManager) {
         this._dynamicParamManager.collapsedGroups = new Set(o.collapsedGroups);
         console.log('[DynamicParams] Restored collapsed groups:', o.collapsedGroups);
+      }
+      
+      // === IMAGE SELECTION: Restore selection state ===
+      if (o.imageSelectionState) {
+        this._selectedImageIndex = o.imageSelectionState.selectedIndex || 0;
+        // Ensure imageIndex matches for display
+        if (this.imgs && this.imgs.length > 0) {
+          this.imageIndex = this._selectedImageIndex;
+        }
+        console.log(`[DynamicParams] Restored image selection: index=${this._selectedImageIndex}`);
+      } else if (this.properties?._selected_image_index !== undefined) {
+        // Fallback: restore from properties
+        this._selectedImageIndex = parseInt(this.properties._selected_image_index) || 0;
+        console.log(`[DynamicParams] Restored image selection from properties: index=${this._selectedImageIndex}`);
       }
     };
   },
@@ -1287,6 +1357,14 @@ api.queuePrompt = async function(number, workflowData) {
           // Inject _force_generate
           nodeData.inputs._force_generate = wasButtonTriggered ? "true" : "false";
           
+          // Set flag for onExecuted to know if this is a new generation
+          // (used to decide whether to reset selection to 0)
+          node._forceGenerateFlag = wasButtonTriggered;
+          
+          // === IMAGE SELECTION: Pause tracking during execution ===
+          // This prevents ComfyUI's automatic imageIndex resets from being tracked
+          node._ignoreImageIndexChanges = true;
+          
           // Inject _cached_hash from properties (persisted from last generation)
           nodeData.inputs._cached_hash = node.properties?._cached_hash || "";
           
@@ -1296,7 +1374,11 @@ api.queuePrompt = async function(number, workflowData) {
           // Inject _skip_hash_check based on setting (when disabled, skip hash comparison)
           nodeData.inputs._skip_hash_check = smartCacheHashCheckEnabled ? "false" : "true";
           
-          console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
+          // === IMAGE SELECTION: Inject _selected_image_index ===
+          const selectedIndex = node._selectedImageIndex || node.properties?._selected_image_index || 0;
+          nodeData.inputs._selected_image_index = parseInt(selectedIndex) || 0;
+          
+          console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, selectedIdx=${nodeData.inputs._selected_image_index}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
         }
       }
     }
