@@ -349,6 +349,26 @@ class DynamicImageNodeBase:
                 [placeholder]
             )
         
+        # Normalize tensor dimensions before concatenation
+        # All tensors must have same H,W dimensions to concatenate on dim=0
+        # Use the LARGEST dimensions in the batch to avoid quality loss
+        if len(all_tensors) > 1:
+            max_h = max(t.shape[1] for t in all_tensors)
+            max_w = max(t.shape[2] for t in all_tensors)
+            
+            normalized_tensors = []
+            for i, tensor in enumerate(all_tensors):
+                if tensor.shape[1] != max_h or tensor.shape[2] != max_w:
+                    # Resize tensor to match max dimensions
+                    print(f"[Batch] Resizing image {i} from {tensor.shape[1]}x{tensor.shape[2]} to {max_h}x{max_w}")
+                    img_np = (tensor.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
+                    pil_img = Image.fromarray(img_np)
+                    pil_img = pil_img.resize((max_w, max_h), Image.Resampling.LANCZOS)
+                    normalized_tensors.append(pil_to_tensor_rgba(pil_img))
+                else:
+                    normalized_tensors.append(tensor)
+            all_tensors = normalized_tensors
+        
         return (
             torch.cat(all_tensors, dim=0),
             response_log if response_log else "Success",
