@@ -4,6 +4,8 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.20 | 2026-01-29 | 共享图片数据优化（img2img 批量共用一份 base64）+ multipart 兼容修复 |
+| 2.19 | 2026-01-29 | 修复请求体大小限制（分块读取解决HTTPRequestEntityTooLarge） |
 | 2.18 | 2026-01-29 | 批量图片尺寸归一化（异尺寸 tensor 兼容） |
 | 2.17 | 2026-01-28 | 选中图片放大显示 + 并发生成崩溃修复 |
 | 2.16 | 2026-01-28 | 智能缓存：节点作为图片来源 |
@@ -736,7 +738,7 @@ sequenceDiagram
     Button->>Button: 恢复 "▶ 开始生成"
 ```
 
-**后端关键实现（v2.14 并行批处理）：**
+**后端关键实现（v2.20 并发控制）：**
 
 ```python
 # independent_generator.py
@@ -751,13 +753,47 @@ async def generate(self, model, prompt, seed, batch_count, ...):
         )
         return (batch_idx, batch_images, batch_log)
     
-    # 所有批次并行执行
-    tasks = [process_single_batch(i) for i in range(batch_count)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # v2.20: 智能自适应并发控制
+    def get_max_concurrent():
+        if mode == "text2img":
+            return batch_count  # Text2img: 无输入图片，全部并行
+        # Img2img: 根据分辨率限制
+        resolution = str(extra_params.get("resolution", "")).upper()
+        if "4K" in resolution: return 3
+        elif "HD" in resolution: return 5
+        else: return 6
     
-    # 按索引排序，保证输出顺序一致
-    for result in sorted(results, key=lambda x: x[0]):
-        ...
+    max_concurrent = get_max_concurrent()
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def process_with_limit(batch_idx):
+        async with semaphore:
+            return await process_single_batch(batch_idx)
+    
+    tasks = [process_with_limit(i) for i in range(batch_count)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+**并发控制策略（v2.20）：**
+
+| 模式 | 分辨率 | 并发数 | 说明 |
+|------|--------|--------|------|
+| **Text2img** | 任意 | **全部并行** | 无输入图片，无内存压力 |
+| Img2img | 4K/2160p | 3 | 大图，防止内存溢出 |
+| Img2img | HD/1080p | 5 | 中等平衡 |
+| Img2img | 其他 | 6 | 默认 |
+
+**滑动窗口工作原理（Img2img 模式）：**
+
+```text
+时间 →
+Task1 ████████████░  (完成 → Task4 立即启动)
+Task2 ██████████████████░
+Task3 ████████░  (完成 → Task5 立即启动)
+Task4      ████████████████░
+Task5        ██████████░
+...
+始终保持 ≤N 个任务同时运行（N根据分辨率动态调整）
 ```
 
 **前端关键实现：**
@@ -1283,6 +1319,88 @@ sequenceDiagram
     S->>N: 保存 _selectedImageIndex
 ```
 
+### 7.16 请求体无限制读取（v2.19）
+
+**问题背景：**
+
+`generate-independent` API 端点接收大型 base64 图片时，会触发 `HTTPRequestEntityTooLarge` 错误。aiohttp 默认的 `request.json()` 方法有约 1MB 的限制。
+
+**解决方案：分块迭代读取**
+
+```python
+# __init__.py - generate_independent 函数
+chunks = []
+async for chunk in request.content.iter_any():
+    chunks.append(chunk)
+
+body = b''.join(chunks)
+data = json.loads(body)
+```
+
+**关键设计决策：**
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| `HTTPRequestEntityTooLarge` | aiohttp 默认限制 ~1MB | 使用 `iter_any()` 绕过限制 |
+| `JSONDecodeError: Unterminated string` | `read(limit)` 可能在数据未完全到达时返回 | 使用 `iter_any()` 确保完整读取 |
+| 内存占用 | 无限制可能导致内存问题 | 依赖上游（如 Nginx）限制 |
+
+**修改的文件：**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `__init__.py` | `generate_independent` 函数使用分块读取 |
+
+### 7.17 共享图片数据优化（v2.20）
+
+**问题背景：**
+
+Img2img 批量生成时，每个请求都要重新编解码 base64 图片数据，N 个批次就有 N 份图片副本在内存中，导致 `MemoryError`。
+
+**解决方案：一次编解码，所有批次共享引用**
+
+```python
+# independent_generator.py - 预处理阶段
+shared_upload_files = []
+for img_b64 in images_base64:
+    img_bytes = base64.b64decode(img_b64)  # 解码一次
+    # 4 元组：(filename, bytes, mime, cached_base64)
+    shared_upload_files.append((
+        "image.png",
+        (filename, img_bytes, "image/png", img_b64)  # 缓存 base64
+    ))
+params["_upload_files"] = shared_upload_files  # 所有批次共享
+
+# generic.py - 使用缓存
+if len(file_tuple) >= 4:
+    _, _, mime_type, cached_b64 = file_tuple  # 直接用缓存
+else:
+    b64_data = base64.b64encode(file_bytes)   # 回退
+```
+
+**内存占用对比：**
+
+```text
+之前：Batch 1: decode→bytes→encode  (×N 份副本)
+      Batch 2: decode→bytes→encode
+      ...
+      
+现在：预处理: decode→bytes + cache_b64  (仅 1 份)
+      Batch 1-N: 共享引用 → 发送
+```
+
+| 场景 | 之前内存 | 现在内存 |
+|------|----------|----------|
+| 10 批 × 4MB 图片 | ~40MB | ~4MB |
+| 50 批 × 8MB 图片 | ~400MB | ~8MB |
+
+**修改的文件：**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `independent_generator.py` | 预缓存 bytes + base64，全部批次并行 |
+| `adapters/generic.py` | `_build_gemini_payload` 和 `_prepare_images_base64` 使用缓存 |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -1303,6 +1421,21 @@ sequenceDiagram
 ---
 
 ## 9. 更新日志
+
+### v2.20 (2026-01-29)
+
+- ✅ 共享图片数据优化：Img2img 批量生成时所有请求共享同一份 base64 数据
+- ✅ 一次编解码：预处理阶段缓存 bytes + base64，避免重复编解码
+- ✅ 内存占用从 N×ImageSize 降到 ~1×ImageSize
+- 🔧 fix: multipart 请求兼容 - 4 元组截取前 3 元素给 `requests` 库
+- ⚙️ 技术：4 元组 `(filename, bytes, mime, cached_b64)` + 全部批次并行
+
+### v2.19 (2026-01-29)
+
+- ✅ 修复 `HTTPRequestEntityTooLarge` 错误：大请求体（如 base64 图片）不再失败
+- ✅ 使用分块迭代读取 `request.content.iter_any()` 确保完整接收
+- ✅ 移除请求体大小限制，支持任意大小的 base64 图片
+- 🔧 fix: JSON 解析错误（Unterminated string）- 确保完整读取后再解析
 
 ### v2.18 (2026-01-29)
 

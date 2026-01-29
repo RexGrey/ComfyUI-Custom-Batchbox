@@ -140,21 +140,25 @@ class GenericAPIAdapter(APIAdapter):
             upload_files = params.get("_upload_files", [])
             renamed_files = []
             for i, (original_name, file_tuple) in enumerate(upload_files):
+                # Extract only first 3 elements for multipart (ignore cached base64 if present)
+                # file_tuple may be 3-tuple (filename, bytes, mime) or 4-tuple (+ cached_b64)
+                multipart_tuple = file_tuple[:3] if len(file_tuple) > 3 else file_tuple
+                
                 if file_format == "same_name":
                     # ('image', f1), ('image', f2)
-                    renamed_files.append((file_field, file_tuple))
+                    renamed_files.append((file_field, multipart_tuple))
                 elif file_format == "indexed":
                     # ('image[0]', f1), ('image[1]', f2)
-                    renamed_files.append((f"{file_field}[{i}]", file_tuple))
+                    renamed_files.append((f"{file_field}[{i}]", multipart_tuple))
                 elif file_format == "array":
                     # ('images[]', f1), ('images[]', f2)
-                    renamed_files.append((f"{file_field}[]", file_tuple))
+                    renamed_files.append((f"{file_field}[]", multipart_tuple))
                 elif file_format == "numbered":
                     # ('image1', f1), ('image2', f2)
-                    renamed_files.append((f"{file_field}{i+1}", file_tuple))
+                    renamed_files.append((f"{file_field}{i+1}", multipart_tuple))
                 else:
                     # Fallback to same_name
-                    renamed_files.append((file_field, file_tuple))
+                    renamed_files.append((file_field, multipart_tuple))
             
             request_info["files"] = renamed_files
             logger.debug(f"Multipart: {len(renamed_files)} file(s), format={file_format}, field={file_field}")
@@ -197,8 +201,16 @@ class GenericAPIAdapter(APIAdapter):
         # Add images if present (for img2img mode)
         upload_files = params.get("_upload_files", [])
         for field_name, file_tuple in upload_files:
-            filename, file_bytes, mime_type = file_tuple
-            b64_data = base64.b64encode(file_bytes).decode('utf-8')
+            # file_tuple can be 3-element (filename, bytes, mime) or 4-element (+ cached base64)
+            if len(file_tuple) >= 4:
+                # Use pre-cached base64 to avoid re-encoding per request
+                filename, file_bytes, mime_type, cached_b64 = file_tuple
+                b64_data = cached_b64
+            else:
+                # Fallback: encode on the fly
+                filename, file_bytes, mime_type = file_tuple
+                b64_data = base64.b64encode(file_bytes).decode('utf-8')
+            
             parts.append({
                 "inline_data": {
                     "mime_type": mime_type,
@@ -266,11 +278,14 @@ class GenericAPIAdapter(APIAdapter):
         
         upload_files = params.get("_upload_files", [])
         for field_name, file_tuple in upload_files:
-            # file_tuple is (filename, file_bytes, mime_type)
-            filename, file_bytes, mime_type = file_tuple
+            # file_tuple can be 3-element or 4-element (with cached base64)
+            if len(file_tuple) >= 4:
+                filename, file_bytes, mime_type, cached_b64 = file_tuple
+                b64_data = cached_b64
+            else:
+                filename, file_bytes, mime_type = file_tuple
+                b64_data = base64.b64encode(file_bytes).decode('utf-8')
             
-            # Convert to base64 data URL
-            b64_data = base64.b64encode(file_bytes).decode('utf-8')
             data_url = f"data:{mime_type};base64,{b64_data}"
             images_base64.append(data_url)
         

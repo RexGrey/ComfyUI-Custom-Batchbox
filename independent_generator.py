@@ -178,21 +178,32 @@ class IndependentGenerator:
             params.update(extra_params)
         
         # Handle image inputs for img2img
+        # MEMORY OPTIMIZATION: Decode once, encode once, share across all batch requests
+        shared_upload_files = None
         if mode == "img2img" and images_base64:
-            upload_files = []
+            shared_upload_files = []
             for i, img_b64 in enumerate(images_base64):
                 try:
                     # Remove data URL prefix if present
                     if "," in img_b64:
                         img_b64 = img_b64.split(",", 1)[1]
                     
+                    # Decode ONCE - this bytes object is shared by all batches
                     img_bytes = base64.b64decode(img_b64)
-                    upload_files.append((f"image{i+1}", (f"image{i+1}.png", img_bytes, "image/png")))
+                    
+                    # Store BOTH bytes (for multipart) and pre-encoded base64 (for JSON APIs like Gemini)
+                    # The 4th element is cached base64 to avoid re-encoding per request
+                    shared_upload_files.append((
+                        f"image{i+1}", 
+                        (f"image{i+1}.png", img_bytes, "image/png", img_b64)  # 4th: cached base64
+                    ))
                 except Exception as e:
                     print(f"[IndependentGenerator] Failed to decode image {i}: {e}")
             
-            if upload_files:
-                params["_upload_files"] = upload_files
+            if shared_upload_files:
+                # Store reference - all batches use the same list (shallow copy shares reference)
+                params["_upload_files"] = shared_upload_files
+                print(f"[IndependentGenerator] Shared {len(shared_upload_files)} image(s) across {batch_count} batches (cached base64)")
         
         # Generate images in parallel with immediate saving
         response_log = ""
@@ -232,7 +243,8 @@ class IndependentGenerator:
             
             return (batch_idx, batch_previews, batch_log)
         
-        # Run all batches in parallel
+        # All batches run in parallel - memory is shared via cached image data
+        print(f"[IndependentGenerator] Running all {batch_count} batches in parallel (shared image data)")
         tasks = [process_single_batch(i) for i in range(batch_count)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
