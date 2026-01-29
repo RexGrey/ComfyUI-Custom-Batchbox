@@ -339,8 +339,15 @@ try:
         """
         try:
             from .independent_generator import IndependentGenerator
+            import json
             
-            data = await request.json()
+            # Read full body using chunked reading to ensure complete body is received
+            chunks = []
+            async for chunk in request.content.iter_any():
+                chunks.append(chunk)
+            
+            body = b''.join(chunks)
+            data = json.loads(body)
             
             model = data.get("model")
             prompt = data.get("prompt", "")
