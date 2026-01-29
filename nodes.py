@@ -406,45 +406,41 @@ class DynamicImageNodeBase:
         print(f"[DEBUG] Computed hash: {result_hash}")
         return result_hash
     
-    def _load_persisted_images(self, last_images_json: str) -> Tuple[Optional[torch.Tensor], List[Dict]]:
+    def _load_persisted_images(self, last_images_json: str, selected_index: int = 0, load_all: bool = False) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], List[Dict]]:
         """
-        Load images from persisted file paths stored in _last_images.
-        Uses in-memory cache to avoid repeated disk reads.
+        Load images from persisted file paths based on connection status.
+        
+        Memory optimization: Only loads all images if all_images output is connected.
+        For 4K images (2688x6336), each takes ~195MB as float32 tensor.
         
         Args:
-            last_images_json: JSON string of image info list (from node.properties._last_images)
+            last_images_json: JSON string of image info list
+            selected_index: Index of the image to load (0-based)
+            load_all: If True, load all images (when all_images output is connected)
             
         Returns:
-            Tuple of (images_tensor, preview_results) or (None, []) if loading fails
+            Tuple of (selected_tensor, all_tensors, preview_infos) or (None, None, []) if fails
         """
         if not last_images_json:
-            return None, []
-        
-        # Check in-memory cache first (use JSON string as cache key)
-        cache_key = last_images_json
-        if cache_key in DynamicImageNodeBase._image_cache:
-            tensor, preview_infos = DynamicImageNodeBase._image_cache[cache_key]
-            print(f"[SmartCache] Returning {len(preview_infos)} image(s) from memory cache")
-            return tensor, preview_infos
+            return None, None, []
         
         try:
             image_infos = json.loads(last_images_json)
             if not image_infos or not isinstance(image_infos, list):
-                return None, []
+                return None, None, []
             
-            tensors = []
-            valid_infos = []
+            # Clamp index to valid range
+            selected_index = max(0, min(selected_index, len(image_infos) - 1))
             
-            for info in image_infos:
-                # Get file path based on type
+            def load_single_image(info):
+                """Helper to load a single image from info dict"""
                 img_type = info.get("type", "output")
                 subfolder = info.get("subfolder", "")
                 filename = info.get("filename", "")
                 
                 if not filename:
-                    continue
+                    return None
                 
-                # Resolve full path
                 if img_type == "output":
                     base_dir = folder_paths.get_output_directory()
                 elif img_type == "temp":
@@ -457,37 +453,48 @@ class DynamicImageNodeBase:
                 else:
                     filepath = os.path.join(base_dir, filename)
                 
-                # Check if file exists
                 if not os.path.exists(filepath):
                     print(f"[SmartCache] File not found: {filepath}")
-                    continue
+                    return None
                 
-                # Load image
                 try:
                     img = Image.open(filepath)
                     img, _ = prepare_for_comfyui(img, preserve_alpha=True)
-                    tensor = pil_to_tensor_rgba(img)
-                    tensors.append(tensor)
-                    valid_infos.append(info)
+                    return pil_to_tensor_rgba(img)
                 except Exception as e:
                     print(f"[SmartCache] Failed to load {filepath}: {e}")
-                    continue
+                    return None
             
-            if not tensors:
-                return None, []
-            
-            # Save to in-memory cache before returning
-            result_tensor = torch.cat(tensors, dim=0)
-            DynamicImageNodeBase._image_cache[cache_key] = (result_tensor, valid_infos)
-            print(f"[SmartCache] Loaded {len(valid_infos)} image(s) from disk (cached for next time)")
-            return result_tensor, valid_infos
+            if load_all:
+                # Load all images (all_images output is connected)
+                tensors = []
+                for i, info in enumerate(image_infos):
+                    tensor = load_single_image(info)
+                    if tensor is not None:
+                        tensors.append(tensor)
+                
+                if not tensors:
+                    return None, None, []
+                
+                all_tensor = torch.cat(tensors, dim=0)
+                selected_tensor = tensors[selected_index] if selected_index < len(tensors) else tensors[0]
+                print(f"[SmartCache] Loaded all {len(tensors)} images (all_images connected)")
+                return selected_tensor, all_tensor, image_infos
+            else:
+                # Load only selected image (memory optimization)
+                tensor = load_single_image(image_infos[selected_index])
+                if tensor is None:
+                    return None, None, []
+                
+                print(f"[SmartCache] Loaded image {selected_index+1}/{len(image_infos)} (memory optimized)")
+                return tensor, tensor, image_infos  # Same tensor for both outputs
             
         except json.JSONDecodeError as e:
             print(f"[SmartCache] JSON parse error: {e}")
-            return None, []
+            return None, None, []
         except Exception as e:
             print(f"[SmartCache] Unexpected error: {e}")
-            return None, []
+            return None, None, []
 
 
 # ==========================================
@@ -534,6 +541,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 "_skip_hash_check": ("STRING", {"default": "false"}),
                 # Selected image index for batch output (0-based)
                 "_selected_image_index": ("INT", {"default": 0}),
+                # Whether all_images output is connected (for lazy loading)
+                "_all_images_connected": ("STRING", {"default": "false"}),
             }
         }
     
@@ -579,24 +588,21 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         print(f"[SmartCache] need_api_call={need_api_call}")
         
         if not need_api_call:
-            # Try to load from persisted images (with in-memory caching)
-            images_tensor, preview_results = self._load_persisted_images(last_images_json)
-            if images_tensor is not None:
-                # Slice tensor based on selected image index
-                selected_index = kwargs.get("_selected_image_index", 0)
-                print(f"[SmartCache] Received _selected_image_index from frontend: {selected_index}")
-                try:
-                    selected_index = int(selected_index)
-                except (ValueError, TypeError):
-                    selected_index = 0
-                
-                if images_tensor.shape[0] > 1:
-                    selected_index = max(0, min(selected_index, images_tensor.shape[0] - 1))
-                    selected_tensor = images_tensor[selected_index:selected_index+1]
-                else:
-                    selected_tensor = images_tensor
-                
-                print(f"[SmartCache] Returning selected image {selected_index} of {images_tensor.shape[0]}")
+            # Parse selected index and connection status BEFORE loading
+            selected_index = kwargs.get("_selected_image_index", 0)
+            all_images_connected = kwargs.get("_all_images_connected", "false") == "true"
+            print(f"[SmartCache] _selected_image_index={selected_index}, _all_images_connected={all_images_connected}")
+            try:
+                selected_index = int(selected_index)
+            except (ValueError, TypeError):
+                selected_index = 0
+            
+            # Dynamic loading: load all only if all_images output is connected
+            selected_tensor, all_tensor, preview_results = self._load_persisted_images(
+                last_images_json, selected_index, load_all=all_images_connected
+            )
+            if selected_tensor is not None:
+                print(f"[SmartCache] Returning image(s) from cache")
                 
                 return {
                     "ui": {
@@ -604,7 +610,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                         "_last_images": [last_images_json],
                         "_cached_hash": [cached_hash],  # Preserve the cached hash
                     },
-                    "result": (selected_tensor, images_tensor, "Loaded from cache (no API call)", "")
+                    "result": (selected_tensor, all_tensor, "Loaded from cache (no API call)", "")
                 }
             # If loading failed, fall through to API call
             print(f"[SmartCache] Cache file not found, falling back to API")

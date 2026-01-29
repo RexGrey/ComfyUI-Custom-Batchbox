@@ -1392,7 +1392,14 @@ api.queuePrompt = async function(number, workflowData) {
           const selectedIndex = node._selectedImageIndex || node.properties?._selected_image_index || 0;
           nodeData.inputs._selected_image_index = parseInt(selectedIndex) || 0;
           
-          console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, selectedIdx=${nodeData.inputs._selected_image_index}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
+          // === DYNAMIC LOADING: Check if all_images output is connected ===
+          // Output slot 1 is "all_images" (0: selected_image, 1: all_images)
+          const allImagesConnected = node.outputs && node.outputs[1] && 
+                                     node.outputs[1].links && 
+                                     node.outputs[1].links.length > 0;
+          nodeData.inputs._all_images_connected = allImagesConnected ? "true" : "false";
+          
+          console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, selectedIdx=${nodeData.inputs._selected_image_index}, allImagesConnected=${allImagesConnected}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
         }
       }
     }

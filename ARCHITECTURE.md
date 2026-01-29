@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.21 | 2026-01-29 | 动态缓存加载（根据输出端口连接状态按需加载图片） |
 | 2.20 | 2026-01-29 | 共享图片数据优化（img2img 批量共用一份 base64）+ multipart 兼容修复 |
 | 2.19 | 2026-01-29 | 修复请求体大小限制（分块读取解决HTTPRequestEntityTooLarge） |
 | 2.18 | 2026-01-29 | 批量图片尺寸归一化（异尺寸 tensor 兼容） |
@@ -1401,6 +1402,46 @@ else:
 | `independent_generator.py` | 预缓存 bytes + base64，全部批次并行 |
 | `adapters/generic.py` | `_build_gemini_payload` 和 `_prepare_images_base64` 使用缓存 |
 
+### 7.18 动态缓存加载优化（v2.21）
+
+**问题背景：**
+
+从缓存加载 4K 图片时，每张图片作为 float32 tensor 需要 ~195MB 内存。加载 6 张 4K 图就需要 ~1.2GB，导致 `MemoryError`。
+
+**解决方案：根据输出端口连接状态动态决定加载策略**
+
+```python
+# 前端检测 all_images 输出端口是否连接
+const allImagesConnected = node.outputs[1]?.links?.length > 0;
+nodeData.inputs._all_images_connected = allImagesConnected ? "true" : "false";
+
+# 后端根据连接状态加载
+def _load_persisted_images(self, json, selected_index, load_all=False):
+    if load_all:
+        # 加载全部图片（all_images 已连接）
+        for info in image_infos:
+            tensors.append(load_single_image(info))
+        return selected_tensor, torch.cat(tensors), infos
+    else:
+        # 只加载选中的（内存优化）
+        tensor = load_single_image(image_infos[selected_index])
+        return tensor, tensor, infos
+```
+
+**内存占用对比（6 张 4K 图片）：**
+
+| 输出连接状态 | 加载策略 | 内存占用 |
+|-------------|---------|----------|
+| 只连 `selected_image` | 加载 1 张 | ~195 MB |
+| 连了 `all_images` | 加载全部 | ~1.2 GB |
+
+**修改的文件：**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `nodes.py` | 添加 `_all_images_connected` hidden input，`_load_persisted_images` 支持 `load_all` 参数 |
+| `web/dynamic_params.js` | 检测 `node.outputs[1].links` 并注入连接状态 |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -1421,6 +1462,13 @@ else:
 ---
 
 ## 9. 更新日志
+
+### v2.21 (2026-01-29)
+
+- ✅ 动态缓存加载：根据 `all_images` 输出端口连接状态决定加载策略
+- ✅ 未连接时只加载选中的 1 张图片（~195MB），连接时加载全部
+- ✅ 前端检测 `node.outputs[1].links` 传递给后端
+- ⚙️ 技术：`_all_images_connected` hidden input + `load_all` 参数
 
 ### v2.20 (2026-01-29)
 
