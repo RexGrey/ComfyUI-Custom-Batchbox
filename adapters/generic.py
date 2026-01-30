@@ -233,15 +233,23 @@ class GenericAPIAdapter(APIAdapter):
             generation_config["seed"] = int(params["seed"])
         
         # Build imageConfig for Gemini image generation (nested under generationConfig)
+        # Valid Gemini imageSize values: unknown, need to test
+        # Valid Gemini aspectRatio values: "1:1", "16:9", "9:16", "4:3", "3:4" (not "auto")
         image_config = {}
         logger.debug(f"[Gemini] params keys: {list(params.keys())}")
         logger.debug(f"[Gemini] image_size={params.get('image_size')}, aspect_ratio={params.get('aspect_ratio')}")
-        if "image_size" in params and params["image_size"]:
-            image_config["imageSize"] = params["image_size"]
-            logger.info(f"[Gemini] Added imageConfig.imageSize: {params['image_size']}")
-        if "aspect_ratio" in params and params["aspect_ratio"]:
-            image_config["aspectRatio"] = params["aspect_ratio"]
-            logger.info(f"[Gemini] Added imageConfig.aspectRatio: {params['aspect_ratio']}")
+        
+        # Skip invalid imageSize values (1K, 2K, 4K, auto are not valid Gemini values)
+        image_size = params.get("image_size", "")
+        if image_size and image_size.lower() not in ("auto", "1k", "2k", "4k"):
+            image_config["imageSize"] = image_size
+            logger.info(f"[Gemini] Added imageConfig.imageSize: {image_size}")
+        
+        # Skip "auto" for aspectRatio - Gemini requires specific ratio like "1:1"
+        aspect_ratio = params.get("aspect_ratio", "")
+        if aspect_ratio and aspect_ratio.lower() != "auto":
+            image_config["aspectRatio"] = aspect_ratio
+            logger.info(f"[Gemini] Added imageConfig.aspectRatio: {aspect_ratio}")
         
         # Add imageConfig to generationConfig if not empty
         if image_config:

@@ -1,0 +1,53 @@
+/**
+ * Image Panel CSS
+ * Supplementary styles for DOM overlays (if needed).
+ * Note: Most styling is done via canvas drawing in image_panel.js
+ */
+
+/* Tooltip overlay for hover states */
+.batchbox-panel-tooltip {
+  position: absolute;
+  background: rgba(26, 26, 46, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 6px 12px;
+  color: #fff;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  pointer-events: none;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(4px);
+}
+
+/* Dropdown menu for model/resolution selection */
+.batchbox-panel-dropdown {
+  position: absolute;
+  background: linear-gradient(180deg, #252545 0%, #1a1a2e 100%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 150px;
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 1001;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.batchbox-panel-dropdown-item {
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.batchbox-panel-dropdown-item:hover {
+  background: rgba(76, 175, 80, 0.2);
+}
+
+.batchbox-panel-dropdown-item.selected {
+  background: rgba(76, 175, 80, 0.3);
+  font-weight: 500;
+}

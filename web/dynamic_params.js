@@ -18,6 +18,7 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { setupCustomPanel } from "./image_panel.js";
 
 // ================================================================
 // SECTION 1: SCHEMA CACHE WITH TTL
@@ -1189,6 +1190,9 @@ app.registerExtension({
           }
         }
       };
+      
+      // Setup custom image panel with horizontal toolbar
+      setupCustomPanel(this);
       
       // === IMAGE SELECTION: Track user's image selection ===
       // Intercept imageIndex setter to capture when ComfyUI changes it

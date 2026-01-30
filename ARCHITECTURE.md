@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.22 | 2026-01-30 | DOM Overlay UI 实验性分支（现代化卡片式界面） |
 | 2.21 | 2026-01-29 | 动态缓存加载（根据输出端口连接状态按需加载图片） |
 | 2.20 | 2026-01-29 | 共享图片数据优化（img2img 批量共用一份 base64）+ multipart 兼容修复 |
 | 2.19 | 2026-01-29 | 修复请求体大小限制（分块读取解决HTTPRequestEntityTooLarge） |
@@ -1442,7 +1443,246 @@ def _load_persisted_images(self, json, selected_index, load_all=False):
 | `nodes.py` | 添加 `_all_images_connected` hidden input，`_load_persisted_images` 支持 `load_all` 参数 |
 | `web/dynamic_params.js` | 检测 `node.outputs[1].links` 并注入连接状态 |
 
+### 7.19 DOM Overlay UI（v2.22 实验性）
+
+**功能：** 基于 DOM 的现代化节点界面，替代传统 Canvas 绘制方式，解决 LiteGraph z-order 冲突。
+
+> ⚠️ **实验性分支**: `feature/dom-overlay-ui`
+
+---
+
+#### 7.19.1 核心问题：Canvas z-order 冲突
+
+LiteGraph 的原生 widget 通过内部渲染循环绘制，始终覆盖 `onDrawForeground` 的自定义绘制。DOM overlay 通过将 UI 元素放在独立的 DOM 层解决此问题。
+
+#### 7.19.2 Portal Container 模式
+
+在 `document.body` 注入全局容器，避免父元素裁剪：
+
+```javascript
+function getOverlayContainer() {
+    let container = document.getElementById("batchbox-overlay-container");
+    if (!container) {
+        container = document.createElement("div");
+        container.id = "batchbox-overlay-container";
+        container.style.cssText = `
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;  /* 点击穿透到 Canvas */
+            z-index: 100;
+        `;
+        document.body.appendChild(container);
+    }
+    return container;
+}
+```
+
+#### 7.19.3 主题配置（THEME）
+
+集中管理颜色、尺寸、字体：
+
+```javascript
+const THEME = {
+    // 颜色
+    bgPrimary: "#1e1e2e",     // 主背景
+    bgSecondary: "#181825",   // 次级背景
+    accent: "#4CAF50",        // 强调色（生成按钮）
+    text: "#cdd6f4",          // 文字
+    textMuted: "#6c7086",     // 次级文字
+    border: "rgba(255,255,255,0.1)",
+    
+    // 尺寸
+    toolbarHeight: 44,
+    buttonHeight: 32,
+    buttonRadius: 6,
+    promptHeight: 100,
+    
+    // 字体
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    fontSize: 13,
+};
+```
+
+#### 7.19.4 组件架构
+
+```mermaid
+graph TD
+    A[NodeOverlay 类] --> B[Overlay Container]
+    B --> P[Image Preview 图片预览区]
+    B --> C[Prompt Textarea 提示词输入]
+    B --> D[Toolbar 工具栏]
+    B --> E[Advanced Panel 高级设置]
+    
+    D --> D1[🍌 Model - 模型切换]
+    D --> D2[🎨 风格 - 风格循环]
+    D --> D3[📐 分辨率 - 分辨率循环]
+    D --> D4[📏 比例 - 比例循环]
+    D --> D5[🔢 批量 - 1-8 循环]
+    D --> D6[⚙️ 更多 - 展开高级]
+    D --> D7[▶ 生成 - 触发执行]
+```
+
+#### 7.19.5 比例缩放同步
+
+使用 CSS `transform: scale()` 确保 DOM 与 Canvas 缩放一致：
+
+```javascript
+updatePosition() {
+    const canvas = app.canvas;
+    const scale = canvas.ds?.scale || 1;
+    const offset = canvas.ds?.offset || [0, 0];
+    
+    // 1. 计算节点的屏幕坐标
+    const nodeX = (this.node.pos[0] + offset[0]) * scale;
+    const nodeY = (this.node.pos[1] + offset[1]) * scale;
+    const nodeW = this.node.size[0] * scale;
+    
+    // 2. 定位容器
+    this.container.style.left = `${nodeX}px`;
+    this.container.style.top = `${nodeY + 30 * scale}px`;  // 跳过标题栏
+    this.container.style.width = `${nodeW - 20}px`;
+    
+    // 3. CSS 缩放保持比例
+    this.container.style.transform = `scale(${scale})`;
+    this.container.style.transformOrigin = "top left";
+}
+```
+
+#### 7.19.6 高性能同步桥接
+
+三重触发机制确保平滑跟随：
+
+```javascript
+attachToCanvas() {
+    const update = () => this.updatePosition();
+    
+    // 1. Canvas Mouse 事件
+    const canvasEl = document.querySelector("canvas.graphcanvas");
+    canvasEl?.addEventListener("wheel", update, { passive: true });
+    canvasEl?.addEventListener("mousemove", update, { passive: true });
+    
+    // 2. requestAnimationFrame 循环
+    let lastScale = 0, lastOffsetX = 0, lastOffsetY = 0;
+    const loop = () => {
+        if (!this.container) return;
+        const ds = app.canvas?.ds;
+        if (ds && (ds.scale !== lastScale || 
+                   ds.offset[0] !== lastOffsetX || 
+                   ds.offset[1] !== lastOffsetY)) {
+            lastScale = ds.scale;
+            lastOffsetX = ds.offset[0];
+            lastOffsetY = ds.offset[1];
+            update();
+        }
+        requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+}
+```
+
+#### 7.19.7 Widget 发现与同步
+
+动态参数通过 `api_name` 模式匹配定位：
+
+```javascript
+findDynamicWidget(apiNamePattern) {
+    return this.node._dynamicParamManager?.dynamicWidgets?.find(
+        w => w._paramDef?.api_name?.toLowerCase().includes(apiNamePattern)
+    );
+}
+
+// 循环切换值
+onStyleClick() {
+    const widget = this.findDynamicWidget("style");
+    if (widget?.options?.values) {
+        const values = widget.options.values;
+        const currentIdx = values.indexOf(widget.value);
+        const nextIdx = (currentIdx + 1) % values.length;
+        widget.value = values[nextIdx];
+        this.updateButtonLabels();
+    }
+}
+```
+
+#### 7.19.8 图片监听器
+
+轮询节点的图片属性并更新预览：
+
+```javascript
+startImageWatcher() {
+    this._imageWatcher = setInterval(() => {
+        this.updateImagePreview();
+    }, 500);
+}
+
+updateImagePreview() {
+    // 发现栈：检查多个可能的图片属性
+    const images = this.node._cachedImages || 
+                   this.node._previewImages ||
+                   this.node.imgs ||
+                   this.node.images;
+    
+    if (images?.length > 0) {
+        const selectedIdx = this.node._selectedImageIndex || 0;
+        const image = images[selectedIdx];
+        
+        // 解析 URL（支持字符串、HTMLImageElement、metadata 对象）
+        let url = typeof image === "string" ? image :
+                  image.src || image.url ||
+                  `/view?filename=${image.filename}&type=temp`;
+        
+        if (url && this.previewImg.src !== url) {
+            this.previewImg.src = url;
+            this.placeholder.style.display = "none";
+            this.previewImg.style.display = "block";
+        }
+    }
+}
+```
+
+#### 7.19.9 初始化流程
+
+```javascript
+// dynamic_params.js 中初始化
+import { NodeOverlay } from "./image_panel.js";
+
+app.registerExtension({
+    name: "Comfy.Custom.DynamicParams",
+    async nodeCreated(node) {
+        if (isBatchboxNode(node)) {
+            // 隐藏原生 widgets
+            node.widgets?.forEach(w => w.element?.style.display = "none");
+            
+            // 创建 DOM overlay
+            node._overlay = new NodeOverlay(node);
+        }
+    }
+});
+```
+
+---
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `web/image_panel.js` | NodeOverlay 类（~800行）：主题、容器、组件、同步、交互 |
+| `web/image_panel.css` | 样式文件 |
+| `web/dynamic_params.js` | 导入并在 nodeCreated 中初始化 overlay |
+
+**待完成功能：**
+
+| 功能 | 状态 |
+|------|------|
+| 图片预览显示 | 🟡 watcher 已实现，待调试 |
+| 缩略图画廊 | ⚪ 未开始 |
+| 生成按钮 loading 动画 | ⚪ 未开始 |
+| Canvas 缩放抖动优化 | 🟡 基本实现 |
+
 ## 8. 维护指南
+
+
 
 ### 8.1 添加新 API
 
@@ -1462,6 +1702,14 @@ def _load_persisted_images(self, json, selected_index, load_all=False):
 ---
 
 ## 9. 更新日志
+
+### v2.22 (2026-01-30) - 实验性分支
+
+- 🧪 DOM Overlay UI：基于 DOM 的现代化节点界面（`feature/dom-overlay-ui` 分支）
+- ⚪ 新增 `image_panel.js` + `image_panel.css`：NodeOverlay 类实现
+- ⚪ 7 个工具栏按钮：Model/Style/Resolution/Ratio/Batch/More/Generate
+- ⚪ 图片预览区 + 提示词输入框 + 高级设置面板
+- ⚠️ 待完成：图片预览显示、Canvas 缩放同步优化
 
 ### v2.21 (2026-01-29)
 
