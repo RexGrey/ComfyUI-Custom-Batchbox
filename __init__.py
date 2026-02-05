@@ -90,10 +90,20 @@ try:
 
     @server.PromptServer.instance.routes.post("/api/batchbox/config")
     async def save_config(request):
-        """Save full configuration"""
+        """Save full configuration, providers go to secrets.yaml"""
         try:
             data = await request.json()
+            
+            # Save providers to secrets.yaml
+            if "providers" in data:
+                config_manager.save_providers(data["providers"])
+            
+            # Save rest of config to api_config.yaml (providers auto-excluded)
             config_manager.save_config_data(data)
+            
+            # Reload to merge providers back into memory
+            config_manager.force_reload()
+            
             return web.json_response({"status": "success"})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
