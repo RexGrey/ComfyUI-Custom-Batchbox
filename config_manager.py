@@ -71,6 +71,7 @@ class ConfigManager:
         self._config: Dict = {}
         self._last_mtime: float = 0
         self._last_file_check: float = 0
+        self._secrets_mtime: float = 0  # Track secrets file modification time
         
         # TTL-based caches
         self._providers_cache: Dict[str, CacheEntry] = {}
@@ -78,12 +79,14 @@ class ConfigManager:
         self._schema_cache: Dict[str, CacheEntry] = {}
         
         self.config_path = os.path.join(os.path.dirname(__file__), "api_config.yaml")
+        self.secrets_path = os.path.join(os.path.dirname(__file__), "secrets.yaml")
         self.load_config()
 
     def load_config(self, force: bool = False) -> bool:
         """
         Loads or reloads the configuration if file changed.
         Uses throttled file checking to reduce I/O overhead.
+        Also loads and merges secrets from secrets.yaml if available.
         
         Args:
             force: If True, bypass the file check interval throttle
@@ -98,20 +101,53 @@ class ConfigManager:
             return False
         
         self._last_file_check = current_time
+        config_reloaded = False
 
         try:
+            # Check main config file
             mtime = os.path.getmtime(self.config_path)
-            if mtime > self._last_mtime:
+            secrets_mtime = os.path.getmtime(self.secrets_path) if os.path.exists(self.secrets_path) else 0
+            
+            # Reload if either file changed
+            if mtime > self._last_mtime or secrets_mtime > self._secrets_mtime:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     self._config = yaml.safe_load(f) or {}
                 self._last_mtime = mtime
+                
+                # Merge secrets if available
+                self._merge_secrets()
+                self._secrets_mtime = secrets_mtime
+                
                 self._invalidate_caches()
                 print(f"[ConfigManager] Loaded configuration from {self.config_path}")
-                return True
+                config_reloaded = True
         except Exception as e:
             print(f"[ConfigManager] Error loading config: {e}")
             return False
-        return False
+        return config_reloaded
+    
+    def _merge_secrets(self):
+        """
+        Merge providers from secrets.yaml into the main config.
+        The entire providers section is stored in secrets.yaml to keep
+        sensitive data (API keys, base URLs) together and out of version control.
+        """
+        if not os.path.exists(self.secrets_path):
+            print(f"[ConfigManager] Warning: secrets.yaml not found at {self.secrets_path}")
+            print(f"[ConfigManager] Please copy secrets.yaml.example to secrets.yaml and add your providers")
+            return
+        
+        try:
+            with open(self.secrets_path, 'r', encoding='utf-8') as f:
+                secrets = yaml.safe_load(f) or {}
+            
+            # Merge entire providers section from secrets.yaml
+            if "providers" in secrets:
+                self._config["providers"] = secrets["providers"]
+            
+            print(f"[ConfigManager] Merged providers from {self.secrets_path}")
+        except Exception as e:
+            print(f"[ConfigManager] Error loading secrets: {e}")
 
     def _invalidate_caches(self):
         """Clear all cached data after config reload"""
@@ -160,10 +196,6 @@ class ConfigManager:
                 errors.append(f"Provider '{name}': missing 'base_url'")
             elif not url_pattern.match(base_url):
                 errors.append(f"Provider '{name}': invalid URL format '{base_url}'")
-            
-            # Required: api_key (can be empty for some providers)
-            if "api_key" not in config:
-                errors.append(f"Provider '{name}': missing 'api_key' field")
         
         # Validate models
         models = self._config.get("models", {})
@@ -604,12 +636,23 @@ class ConfigManager:
         return self._config
     
     def save_config_data(self, new_config: Dict) -> bool:
-        """Saves the configuration dictionary to the file"""
+        """
+        Saves the configuration dictionary to api_config.yaml.
+        Providers are excluded as they are stored in secrets.yaml.
+        """
         try:
+            # Create a deep copy to avoid modifying the original config
+            import copy
+            config_to_save = copy.deepcopy(new_config)
+            
+            # Remove entire providers section (stored in secrets.yaml)
+            if "providers" in config_to_save:
+                del config_to_save["providers"]
+            
             with open(self.config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(new_config, f, default_flow_style=False, 
+                yaml.dump(config_to_save, f, default_flow_style=False, 
                          allow_unicode=True, sort_keys=False)
-            self._config = new_config
+            self._config = new_config  # Keep the full config with providers in memory
             self._last_mtime = os.path.getmtime(self.config_path)
             self._invalidate_caches()
             print(f"[ConfigManager] Configuration saved to {self.config_path}")
@@ -619,13 +662,52 @@ class ConfigManager:
             raise e
     
     def update_provider(self, provider_name: str, config: Dict) -> bool:
-        """Update a specific provider's configuration"""
+        """
+        Update a specific provider's configuration.
+        Separates sensitive data (api_key) to secrets.yaml and 
+        non-sensitive data to api_config.yaml.
+        """
         self.load_config()
         if "providers" not in self._config:
             self._config["providers"] = {}
         
+        # Separate api_key from other config
+        api_key = config.pop("api_key", None)
+        
+        # Save non-sensitive config to api_config.yaml
         self._config["providers"][provider_name] = config
-        return self.save_config_data(self._config)
+        self.save_config_data(self._config)
+        
+        # Save api_key to secrets.yaml if provided
+        if api_key is not None:
+            self._save_provider_secret(provider_name, api_key)
+        
+        # Reload to merge secrets back into memory
+        self.force_reload()
+        return True
+    
+    def save_providers(self, providers: Dict) -> bool:
+        """
+        Save entire providers section to secrets.yaml.
+        This keeps all provider info (including API keys) out of version control.
+        """
+        try:
+            with open(self.secrets_path, 'w', encoding='utf-8') as f:
+                # Add header comment
+                f.write("# =============================================================================\n")
+                f.write("# 🔐 供应商配置文件 (包含 API 密钥 - 请勿上传到 GitHub!)\n")
+                f.write("# =============================================================================\n")
+                f.write("# 此文件包含所有 API 供应商的配置信息\n")
+                f.write("# 请复制 secrets.yaml.example 并重命名为 secrets.yaml\n")
+                f.write("# =============================================================================\n\n")
+                yaml.dump({"providers": providers}, f, default_flow_style=False, 
+                         allow_unicode=True, sort_keys=False)
+            
+            print(f"[ConfigManager] Saved {len(providers)} providers to {self.secrets_path}")
+            return True
+        except Exception as e:
+            print(f"[ConfigManager] Error saving providers: {e}")
+            return False
     
     def update_model(self, model_name: str, config: Dict) -> bool:
         """Update a specific model's configuration"""

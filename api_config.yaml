@@ -1,0 +1,473 @@
+node_categories:
+  text:
+    display_name: 📝 文本生成
+    description: 脚本、广告词、品牌文案
+    enabled: true
+  image:
+    display_name: 🖼️ 图片生成
+    description: AI绘图、图片编辑
+    enabled: true
+  video:
+    display_name: 🎬 视频生成
+    description: 文生视频、图生视频
+    enabled: true
+  audio:
+    display_name: 🎵 音频生成
+    description: 语音合成、音乐生成
+    enabled: true
+    beta: true
+  image_editor:
+    display_name: 🔧 图片编辑器
+    description: 高清放大、背景替换
+    enabled: true
+models:
+  dalle3:
+    display_name: 🖼️ DALL-E-3 (兼容性王)
+    category: image
+    description: 最稳定的生图模型
+    show_seed_widget: true
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        size:
+          type: select
+          default: 1024x1024
+          options:
+          - value: 1024x1024
+            label: 1024x1024
+          - value: 1792x1024
+            label: 1792x1024 (横版)
+          - value: 1024x1792
+            label: 1024x1792 (竖版)
+        quality:
+          type: select
+          default: standard
+          options:
+          - value: standard
+            label: 标准
+          - value: hd
+            label: 高清
+      advanced:
+        style:
+          type: select
+          default: vivid
+          options:
+          - value: vivid
+            label: 鲜艳
+          - value: natural
+            label: 自然
+    api_endpoints:
+    - display_name: ''
+      provider: bltcy_ai
+      priority: 1
+      model_name: dall-e-3
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+  gpt4o_image:
+    display_name: 🖼️ GPT-4o-Image (创意生图)
+    category: image
+    description: GPT-4o 强大的图片生成能力
+    show_seed_widget: true
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        size:
+          type: select
+          default: 1024x1024
+          options:
+          - value: 1024x1024
+            label: 1024x1024
+          - value: 1792x1024
+            label: 1792x1024
+          - value: 1024x1792
+            label: 1024x1792
+      advanced: {}
+    api_endpoints:
+    - provider: bltcy_ai
+      priority: 1
+      model_name: gpt-4o-image
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+  sora_image:
+    display_name: 🖼️ Sora-Image (视觉先锋)
+    category: image
+    description: OpenAI Sora 图片生成
+    show_seed_widget: true
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        size:
+          type: select
+          default: 1024x1024
+          options:
+          - value: 1024x1024
+            label: 1024x1024
+          - value: 1792x1024
+            label: 1792x1024
+          - value: 1024x1792
+            label: 1024x1792
+      advanced: {}
+    api_endpoints:
+    - provider: bltcy_ai
+      priority: 1
+      model_name: sora_image
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+  flux_schnell:
+    display_name: 🖼️ Flux-Schnell (快速版)
+    category: image
+    description: Flux 快速生图模型，响应迅速
+    show_seed_widget: true
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        size:
+          type: select
+          default: 1024x1024
+          options:
+          - value: 1024x1024
+            label: 1024x1024
+          - value: 1792x1024
+            label: 1792x1024
+          - value: 1024x1792
+            label: 1024x1792
+      advanced: {}
+    api_endpoints:
+    - provider: bltcy_ai
+      priority: 1
+      model_name: flux-schnell
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+  flux_dev:
+    display_name: 🖼️ Flux-Dev (开发版)
+    category: image
+    description: Flux 开发版，高质量图片
+    show_seed_widget: true
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        size:
+          type: select
+          default: 1024x1024
+          options:
+          - value: 1024x1024
+            label: 1024x1024
+          - value: 1792x1024
+            label: 1792x1024
+          - value: 1024x1792
+            label: 1024x1792
+      advanced: {}
+    api_endpoints:
+    - provider: bltcy_ai
+      priority: 1
+      model_name: flux-dev
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+  midjourney:
+    display_name: 🖼️ Midjourney (旗舰艺术)
+    category: image
+    description: MJ 专用代理接口
+    show_seed_widget: false
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        aspect_ratio:
+          type: select
+          default: '1:1'
+          options:
+          - value: '1:1'
+            label: '1:1'
+          - value: '16:9'
+            label: '16:9'
+          - value: '9:16'
+            label: '9:16'
+          - value: '4:3'
+            label: '4:3'
+          - value: '3:4'
+            label: '3:4'
+      advanced:
+        版本:
+          type: select
+          default: v6
+          api_name: version
+          options:
+          - value: v5
+            label: V5
+          - value: v5.2
+            label: V5.2
+          - value: v6
+            label: V6
+        风格化:
+          type: number
+          default: '100'
+          api_name: stylize
+    api_endpoints:
+    - provider: bltcy_ai
+      priority: 1
+      model_name: midjourney
+      modes:
+        text2img:
+          endpoint: /mj/submit/imagine
+          method: POST
+          content_type: application/json
+          response_type: async
+          task_id_path: task_id
+          polling_endpoint: /mj/task/{{task_id}}/fetch
+          status_path: status
+          success_value: SUCCESS
+          response_path: imageUrl
+  luma_video:
+    display_name: 🎥 Luma Video (光影效果✓)
+    category: video
+    description: Luma AI 视频生成，光影效果佳
+    show_seed_widget: false
+    dynamic_inputs:
+      image:
+        max: 2
+        type: IMAGE
+        label: 图片
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        duration:
+          type: select
+          default: '5'
+          options:
+          - value: '5'
+            label: 5秒
+          - value: '10'
+            label: 10秒
+        aspect_ratio:
+          type: select
+          default: '16:9'
+          options:
+          - value: '16:9'
+            label: '16:9'
+          - value: '9:16'
+            label: '9:16'
+          - value: '1:1'
+            label: '1:1'
+      advanced: {}
+    api_endpoints:
+    - provider: bltcy_ai
+      priority: 1
+      model_name: luma_video_api
+      modes:
+        text2video:
+          endpoint: /v1/video/generations
+          method: POST
+          content_type: application/json
+          response_type: async
+          task_id_path: task_id
+          polling_endpoint: /v1/video/tasks/{{task_id}}
+          status_path: status
+          success_value: SUCCESS
+          response_path: video_url
+        img2video:
+          endpoint: /v1/video/generations
+          method: POST
+          content_type: multipart/form-data
+          response_type: async
+          task_id_path: task_id
+          polling_endpoint: /v1/video/tasks/{{task_id}}
+          status_path: status
+          success_value: SUCCESS
+          response_path: video_url
+  Nano Banana Pro:
+    display_name: 🖼️ Nano Banana Pro
+    category: image
+    description: 高质量图片生成，支持多种风格
+    show_seed_widget: false
+    dynamic_inputs:
+      image:
+        max: 14
+        type: IMAGE
+        label: 图片
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        风格:
+          type: select
+          default: realistic
+          api_name: style
+          options:
+          - value: realistic
+            label: 写实
+          - value: anime
+            label: 动漫
+          - value: oil_painting
+            label: 油画
+          - value: watercolor
+            label: 水彩
+          - value: 3d
+            label: 3D
+        分辨率:
+          type: select
+          default: 2K
+          api_name: image_size
+          options:
+          - value: auto
+            label: 自适应
+          - value: 1K
+            label: 1K
+          - value: 2K
+            label: 2K
+          - value: 4K
+            label: 4K
+        比例:
+          type: select
+          default: auto
+          api_name: aspect_ratio
+          options:
+          - value: '1:1'
+            label: '1:1'
+          - value: '2:3'
+            label: '2:3'
+          - value: '3:2'
+            label: '3:2'
+          - value: '3:4'
+            label: '3:4'
+          - value: '4:3'
+            label: '4:3'
+          - value: '4:5'
+            label: '4:5'
+          - value: '5:4'
+            label: '5:4'
+          - value: '9:16'
+            label: '9:16'
+          - value: '16:9'
+            label: '16:9'
+          - value: '21:9'
+            label: '21:9'
+          - value: auto
+            label: 自适应
+      advanced:
+        镜头控制:
+          type: boolean
+          default: 'false'
+          api_name: camera_control
+        种子:
+          type: number
+          default: '0'
+          api_name: seed
+    api_endpoints:
+    - display_name: 柏拉图Chat
+      provider: bltcy_ai
+      priority: 1
+      model_name: gemini-3-pro-image-preview
+      modes:
+        text2img:
+          endpoint: /v1beta/models/{{model}}:generateContent
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /v1beta/models/{{model}}:generateContent
+          method: POST
+          content_type: application/json
+          response_type: sync
+      api_format: gemini
+      prompt_prefix: 生成一张图片：
+      extra_params:
+        responseModalities:
+        - Image
+    - display_name: 柏拉图
+      provider: bltcy_ai
+      priority: 1
+      model_name: nano-banana-2
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+        img2img:
+          endpoint: /v1/images/edits
+          method: POST
+          content_type: multipart/form-data
+          response_type: sync
+          response_path: data[0].url
+    - display_name: Comfly
+      provider: comfly_chat
+      priority: 2
+      model_name: ''
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+settings:
+  default_timeout: 600
+  max_retries: 3
+  auto_failover: true
+  log_level: INFO
+  retry_delay: 1
+  retry_on:
+  - 429
+  - 502
+  - 503
+  - 504
+save_settings:
+  enabled: true
+  output_dir: batchbox
+  format: png
+  quality: 95
+  naming_pattern: '{model}_{timestamp}_{seed}'
+  create_date_subfolder: true
+  include_prompt: false
+  prompt_max_length: 50
+  fallback_format: png
+model_order:
+  image:
+  - Nano Banana Pro
+  - grok2_image
+  - tapnow_flash
+node_settings:
+  default_width: 480
+  bypass_queue_prompt: true
+  show_in_canvas_menu: true
+  smart_cache_hash_check: true
