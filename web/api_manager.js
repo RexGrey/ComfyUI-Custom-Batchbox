@@ -31,14 +31,17 @@ import { api } from "../../scripts/api.js";
 
 /**
  * Inject the API Manager CSS stylesheet into the document head.
- * Prevents duplicate injection by checking for existing link.
+ * Uses import.meta.url to compute the correct absolute path,
+ * ensuring it works regardless of how ComfyUI is accessed (reverse proxy, subpath, etc.).
+ * Prevents duplicate injection by checking for a unique element ID.
  */
 function injectCSS() {
-    if (document.querySelector('link[href*="api_manager.css"]')) return;
+    if (document.getElementById("batchbox-api-manager-css")) return;
     const link = document.createElement("link");
+    link.id = "batchbox-api-manager-css";
     link.rel = "stylesheet";
     link.type = "text/css";
-    link.href = "extensions/ComfyUI-Custom-Batchbox/api_manager.css";
+    link.href = new URL("api_manager.css", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -76,13 +79,13 @@ class BatchboxManager {
                 body: JSON.stringify(this.config)
             });
             if (resp.status !== 200) throw new Error("Save failed");
-            
+
             // Trigger backend reload to update mtime
             await api.fetchApi("/api/batchbox/reload", { method: "POST" });
-            
+
             // Dispatch event to notify canvas nodes to refresh
             window.dispatchEvent(new CustomEvent("batchbox:config-changed"));
-            
+
             this.showToast("配置已保存！画布节点将自动刷新。", "success");
         } catch (e) {
             this.showToast("保存失败: " + e.message, "error");
@@ -161,7 +164,7 @@ class BatchboxManager {
         // Footer
         const footer = document.createElement("div");
         footer.className = "batchbox-footer";
-        
+
         // Refresh button
         const refreshBtn = document.createElement("button");
         refreshBtn.className = "batchbox-btn btn-secondary";
@@ -183,7 +186,7 @@ class BatchboxManager {
             refreshBtn.innerText = "🔄 刷新配置";
         };
         footer.appendChild(refreshBtn);
-        
+
         const saveBtn = document.createElement("button");
         saveBtn.className = "batchbox-btn btn-primary";
         saveBtn.innerText = "💾 保存所有更改";
@@ -217,7 +220,7 @@ class BatchboxManager {
     // ================================================================
     // 2.1 PROVIDERS
     // ================================================================
-    
+
     /**
      * Render the providers management panel.
      * @param {HTMLElement} container - Target container element
@@ -285,9 +288,9 @@ class BatchboxManager {
                 { name: "base_url", label: "Base URL", value: existing.base_url || "", placeholder: "https://api.example.com", required: true },
                 { name: "api_key", label: "API Key", value: existing.api_key || "", placeholder: "sk-xxxxxx", type: "password" },
                 { name: "divider1", type: "divider", label: "高级设置 (可选)" },
-                { 
-                    name: "file_format", 
-                    label: "文件格式", 
+                {
+                    name: "file_format",
+                    label: "文件格式",
                     type: "select",
                     value: existing.file_format || "",
                     options: [
@@ -316,7 +319,7 @@ class BatchboxManager {
                 // Only add file settings if specified
                 if (data.file_format) providerConfig.file_format = data.file_format;
                 if (data.file_field) providerConfig.file_field = data.file_field;
-                
+
                 this.config.providers[data.name] = providerConfig;
                 if (isEdit && data.name !== editName) {
                     delete this.config.providers[editName];
@@ -331,7 +334,7 @@ class BatchboxManager {
     // ================================================================
     // 2.2 MODELS
     // ================================================================
-    
+
     /**
      * Render the models management panel.
      * @param {HTMLElement} container - Target container element
@@ -434,7 +437,7 @@ class BatchboxManager {
                 <td><span class="batchbox-badge">${paramCount}</span></td>
                 <td class="batchbox-action-cell"></td>
             `;
-            
+
             // Drag events
             tr.ondragstart = (e) => this.handleDragStart(e, name);
             tr.ondragover = (e) => this.handleDragOver(e);
@@ -442,7 +445,7 @@ class BatchboxManager {
             tr.ondragleave = (e) => this.handleDragLeave(e);
             tr.ondrop = (e) => this.handleDrop(e, category, container);
             tr.ondragend = (e) => this.handleDragEnd(e);
-            
+
             // Action buttons cell
             const actionCell = tr.querySelector(".batchbox-action-cell");
 
@@ -501,37 +504,37 @@ class BatchboxManager {
         e.preventDefault();
         const targetRow = e.target.closest(".batchbox-sortable-row");
         if (!targetRow) return;
-        
+
         const targetModel = targetRow.dataset.modelName;
         if (targetModel === this.draggedModel) return;
-        
+
         targetRow.classList.remove("drag-over");
-        
+
         // Reorder
         const models = this.config.models || {};
-        let categoryModels = Object.keys(models).filter(name => 
+        let categoryModels = Object.keys(models).filter(name =>
             models[name].category === category
         );
-        
+
         let order = this.config.model_order?.[category] || [...categoryModels];
         categoryModels.forEach(name => {
             if (!order.includes(name)) order.push(name);
         });
         order = order.filter(name => categoryModels.includes(name));
-        
+
         const dragIndex = order.indexOf(this.draggedModel);
         const dropIndex = order.indexOf(targetModel);
-        
+
         if (dragIndex === -1 || dropIndex === -1) return;
-        
+
         // Remove dragged item and insert at new position
         order.splice(dragIndex, 1);
         order.splice(dropIndex, 0, this.draggedModel);
-        
+
         // Save
         if (!this.config.model_order) this.config.model_order = {};
         this.config.model_order[category] = order;
-        
+
         try {
             await fetch(`/api/batchbox/model-order/${encodeURIComponent(category)}`, {
                 method: "POST",
@@ -542,7 +545,7 @@ class BatchboxManager {
         } catch (e) {
             console.error("Failed to save model order:", e);
         }
-        
+
         this.renderModelList(container, category);
     }
 
@@ -852,7 +855,7 @@ class BatchboxManager {
                     currentEndpoints.splice(idx, 1);
                     renderEndpoints();
                 };
-                
+
                 // Toggle advanced settings
                 const advToggle = card.querySelector(".ep-advanced-toggle");
                 const advContent = card.querySelector(".ep-advanced-content");
@@ -990,7 +993,7 @@ class BatchboxManager {
                     const fileField = card.querySelector(".ep-file-field")?.value.trim();
                     if (fileFormat) img2imgConfig.file_format = fileFormat;
                     if (fileField) img2imgConfig.file_field = fileField;
-                    
+
                     modes.img2img = img2imgConfig;
                 }
 
@@ -1015,19 +1018,19 @@ class BatchboxManager {
                     model_name: card.querySelector(".ep-model-name").value.trim(),
                     modes: modes
                 };
-                
+
                 // Add api_format if not default (openai)
                 const apiFormat = card.querySelector(".ep-api-format")?.value;
                 if (apiFormat && apiFormat !== "openai") {
                     endpointData.api_format = apiFormat;
                 }
-                
+
                 // Add prompt_prefix if provided
                 const promptPrefix = card.querySelector(".ep-prompt-prefix")?.value.trim();
                 if (promptPrefix) {
                     endpointData.prompt_prefix = promptPrefix;
                 }
-                
+
                 if (extraParams) {
                     endpointData.extra_params = extraParams;
                 }
@@ -1474,12 +1477,12 @@ class BatchboxManager {
     // ==================== SAVE SETTINGS ====================
     async renderSaveSettings(container) {
         container.innerHTML = "";
-        
+
         // ========== Node Display Settings Section ==========
         const nodeSection = document.createElement("div");
         nodeSection.className = "batchbox-settings-section";
         nodeSection.innerHTML = `<h3>📐 节点显示设置</h3><p style="color: #aaa;">配置节点的默认显示样式。</p>`;
-        
+
         // Load node settings
         let nodeSettings = { default_width: 500 };
         try {
@@ -1489,7 +1492,7 @@ class BatchboxManager {
         } catch (e) {
             console.error("Failed to load node settings:", e);
         }
-        
+
         const nodeForm = document.createElement("div");
         nodeForm.className = "batchbox-node-settings-form";
         nodeForm.innerHTML = `
@@ -1532,23 +1535,23 @@ class BatchboxManager {
         `;
         nodeSection.appendChild(nodeForm);
         container.appendChild(nodeSection);
-        
+
         // Sync slider and input
         const widthSlider = container.querySelector("#node-width-slider");
         const widthInput = container.querySelector("#node-width-input");
         widthSlider.oninput = () => { widthInput.value = widthSlider.value; };
-        widthInput.oninput = () => { 
+        widthInput.oninput = () => {
             const val = Math.min(1200, Math.max(300, parseInt(widthInput.value) || 500));
             widthSlider.value = val;
         };
-        
+
         // Save node settings button
         container.querySelector("#save-node-settings-btn").onclick = async () => {
             const newWidth = parseInt(widthInput.value) || 500;
             const bypassQueuePrompt = container.querySelector("#node-bypass-queue").checked;
             const showInCanvasMenu = container.querySelector("#node-canvas-menu").checked;
             const smartCacheHashCheck = container.querySelector("#node-hash-check").checked;
-            const newNodeSettings = { 
+            const newNodeSettings = {
                 default_width: newWidth,
                 bypass_queue_prompt: bypassQueuePrompt,
                 show_in_canvas_menu: showInCanvasMenu,
@@ -1573,12 +1576,12 @@ class BatchboxManager {
                 this.showToast("保存失败: " + e.message, "error");
             }
         };
-        
+
         // ========== Divider ==========
         const divider = document.createElement("hr");
         divider.style.cssText = "margin: 30px 0; border: none; border-top: 1px solid #444;";
         container.appendChild(divider);
-        
+
         // ========== Auto Save Settings Section ==========
         const saveSection = document.createElement("div");
         saveSection.className = "batchbox-settings-section";
