@@ -116,10 +116,10 @@ async function computeMD5Hash(str) {
     var n = s.length, state = [1732584193, -271733879, -1732584194, 271733878], i;
     for (i = 64; i <= n; i += 64) { md5cycle(state, md5blk(s.substring(i - 64, i))); }
     s = s.substring(i - 64);
-    var tail = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+    var tail = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     for (i = 0; i < s.length; i++) { tail[i >> 2] |= s.charCodeAt(i) << ((i % 4) << 3); }
     tail[i >> 2] |= 0x80 << ((i % 4) << 3);
-    if (i > 55) { md5cycle(state, tail); tail = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]; }
+    if (i > 55) { md5cycle(state, tail); tail = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; }
     tail[14] = n * 8;
     md5cycle(state, tail);
     return state;
@@ -175,7 +175,7 @@ fetchNodeSettings();
 function getCachedSchema(modelName) {
   const entry = schemaCache.get(modelName);
   if (!entry) return null;
-  
+
   // Check TTL
   if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
     schemaCache.delete(modelName);
@@ -217,7 +217,7 @@ async function checkConfigChanged() {
 async function fetchModelSchema(modelName, forceRefresh = false) {
   // Check if config changed on server (lightweight check)
   await checkConfigChanged();
-  
+
   if (!forceRefresh) {
     const cached = getCachedSchema(modelName);
     if (cached) {
@@ -251,8 +251,10 @@ async function fetchModelSchema(modelName, forceRefresh = false) {
  * @param {Object} node - ComfyUI node instance
  */
 function resizeNodePreservingWidth(node) {
-  // Skip during restore to avoid intermediate layout changes
+  // During restore, mark that a resize is needed but don't execute yet
+  // This prevents the resize from being permanently lost
   if (node._isRestoring) {
+    node._needsPostRestoreResize = true;
     return;
   }
   const currentWidth = node.size[0];
@@ -272,12 +274,12 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
   const name = paramDef.name;
   const type = paramDef.type;
   const label = paramDef.label || name;
-  
+
   // Determine initial value: check pendingParams first (for restoration), then use default
   // pendingParams uses api_name as key, so check both api_name and widget name
   const apiName = paramDef.api_name;
   let initialValue = paramDef.default;
-  
+
   if (pendingParams) {
     const paramKey = apiName || name;
     if (paramKey in pendingParams) {
@@ -306,7 +308,7 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
         "combo",
         name,
         initialValue || options[0],
-        (v) => {},
+        (v) => { },
         { values: options },
       );
       break;
@@ -317,11 +319,11 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
       if (typeof boolValue === "string") {
         boolValue = boolValue === "true";
       }
-      widget = node.addWidget("toggle", name, boolValue || false, (v) => {});
+      widget = node.addWidget("toggle", name, boolValue || false, (v) => { });
       break;
 
     case "number":
-      widget = node.addWidget("number", name, initialValue || 0, (v) => {}, {
+      widget = node.addWidget("number", name, initialValue || 0, (v) => { }, {
         min: paramDef.min || 0,
         max: paramDef.max || 100,
         step: paramDef.step || 1,
@@ -331,9 +333,9 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
 
     case "string":
       if (paramDef.multiline) {
-        widget = node.addWidget("text", name, initialValue || "", (v) => {});
+        widget = node.addWidget("text", name, initialValue || "", (v) => { });
       } else {
-        widget = node.addWidget("text", name, initialValue || "", (v) => {});
+        widget = node.addWidget("text", name, initialValue || "", (v) => { });
       }
       break;
 
@@ -342,7 +344,7 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
         "slider",
         name,
         initialValue || paramDef.min || 0,
-        (v) => {},
+        (v) => { },
         {
           min: paramDef.min || 0,
           max: paramDef.max || 100,
@@ -356,7 +358,7 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
         "text",
         name,
         String(initialValue || ""),
-        (v) => {},
+        (v) => { },
       );
   }
 
@@ -412,7 +414,7 @@ class DynamicParameterManager {
     // Remove existing endpoint widgets if they exist
     const existingManual = this.node.widgets?.find(w => w.name === "手动选择端点");
     const existingSelector = this.node.widgets?.find(w => w.name === "endpoint_selector");
-    
+
     if (existingManual) {
       const idx = this.node.widgets.indexOf(existingManual);
       if (idx >= 0) this.node.widgets.splice(idx, 1);
@@ -429,13 +431,13 @@ class DynamicParameterManager {
 
     // Build options list: only actual endpoint names (no auto option in manual mode)
     const options = endpointOptions.map(ep => ep.name);
-    
+
     // Check for pending endpoint state (set by onConfigure before widgets exist)
     // This allows creating widgets with correct initial values, preventing UI flash
     const pendingState = this.node._pendingEndpointState;
     const initialManualEnabled = pendingState?.manualEnabled || false;
     const initialEndpoint = pendingState?.selectedEndpoint || options[0];
-    
+
     if (pendingState) {
       console.log(`[DynamicParams] Creating endpoint widgets with restored state: manual=${initialManualEnabled}, endpoint=${initialEndpoint}`);
       // Clear after consumption
@@ -452,7 +454,7 @@ class DynamicParameterManager {
     toggleWidget.serialize = false;  // Don't participate in widgets_values serialization
 
     // Add endpoint selector widget with correct initial value and visibility
-    const selectorWidget = this.node.addWidget("combo", "endpoint_selector", initialEndpoint, () => {}, {
+    const selectorWidget = this.node.addWidget("combo", "endpoint_selector", initialEndpoint, () => { }, {
       values: options
     });
     selectorWidget.hidden = !initialManualEnabled;  // Show if manual was enabled
@@ -471,14 +473,14 @@ class DynamicParameterManager {
   updateSeedWidgetVisibility(visible) {
     // Find and update seed-related widgets
     const seedWidgetNames = ["seed", "control_after_generate", "生成后控制"];
-    
+
     for (const widget of this.node.widgets || []) {
       if (seedWidgetNames.includes(widget.name)) {
         widget.hidden = !visible;
         console.log(`[DynamicParams] ${widget.name} visibility: ${visible}`);
       }
     }
-    
+
     // Force node resize while preserving width
     resizeNodePreservingWidth(this.node);
   }
@@ -486,7 +488,7 @@ class DynamicParameterManager {
   updateWidgets(flatSchema) {
     // Remove old dynamic widgets
     this.removeDynamicWidgets();
-    
+
     // Get pending params for restoration (set by onConfigure before widgets exist)
     // This allows creating widgets with correct initial values, preventing "flash"
     const pendingParams = this.node._pendingDynamicParams;
@@ -546,7 +548,7 @@ class DynamicParameterManager {
     const prefix = isCollapsed ? "▶" : "▼";
     const label = groupName === "advanced" ? "高级设置" : groupName;
     const displayName = `${prefix} ${label}`;
-    
+
     // In ComfyUI button widget, the second parameter (name) is what displays on the button
     const separator = this.node.addWidget(
       "button",
@@ -618,14 +620,14 @@ class DynamicParameterManager {
         params[paramKey] = widget.value;
       }
     }
-    
+
     // Include endpoint_override if manual selection is enabled
     const toggleWidget = this.node.widgets?.find(w => w.name === "手动选择端点");
     const selectorWidget = this.node.widgets?.find(w => w.name === "endpoint_selector");
     if (toggleWidget?.value && selectorWidget) {
       params["endpoint_override"] = selectorWidget.value;
     }
-    
+
     return params;
   }
 }
@@ -670,18 +672,18 @@ function getSourceNode(linkId) {
  */
 async function collectImageInputsBase64(node) {
   const images = [];
-  
+
   if (!node.inputs) return images;
-  
+
   for (const input of node.inputs) {
     // Only process IMAGE type inputs that are connected
     if (!input.link || input.type !== "IMAGE") continue;
-    
+
     const sourceNode = getSourceNode(input.link);
     if (!sourceNode) continue;
-    
+
     console.log(`[BatchBox] Checking source node: ${sourceNode.type} (${sourceNode.id})`);
-    
+
     // Case 1: LoadImage node - fetch directly from ComfyUI
     if (sourceNode.type === "LoadImage" || sourceNode.comfyClass === "LoadImage") {
       const imageWidget = sourceNode.widgets?.find(w => w.name === "image");
@@ -733,7 +735,7 @@ async function collectImageInputsBase64(node) {
       throw new Error(`无法获取节点 "${sourceNode.title || sourceNode.type}" 的图片。请先执行一次工作流，以缓存该节点的输出。`);
     }
   }
-  
+
   return images;
 }
 
@@ -775,20 +777,20 @@ async function imageElementToBase64(img) {
  */
 function collectNodeParams(node) {
   const params = {};
-  
+
   if (!node.widgets) return params;
-  
+
   for (const widget of node.widgets) {
     if (widget.name && !widget.name.startsWith("_")) {
       params[widget.name] = widget.value;
     }
   }
-  
+
   // Collect dynamic params if available
   if (node._dynamicParamManager) {
     params.dynamicParams = node._dynamicParamManager.collectDynamicParams();
   }
-  
+
   return params;
 }
 
@@ -799,28 +801,28 @@ function collectNodeParams(node) {
  */
 function updateNodePreview(node, previewImages, paramsHash = null) {
   if (!previewImages || previewImages.length === 0) return;
-  
+
   console.log(`[BatchBox] Node ${node.id}: Loading ${previewImages.length} preview image(s)...`);
-  
+
   // Set the images property (used by ComfyUI's OUTPUT_NODE mechanism)
   node.images = previewImages;
   node.imageIndex = 0;
-  
+
   // Use a temporary array for loading - don't expose nulls to ComfyUI
   // This prevents "Cannot read properties of null (reading 'naturalWidth')" errors
   const loadingImgs = new Array(previewImages.length).fill(null);
   let loadedCount = 0;
-  
+
   previewImages.forEach((imgInfo, index) => {
     const url = `/view?filename=${encodeURIComponent(imgInfo.filename)}&subfolder=${encodeURIComponent(imgInfo.subfolder || "")}&type=${imgInfo.type || "output"}&t=${Date.now()}`;
     const img = new Image();
-    
+
     img.onload = () => {
       // Store loaded image in temporary array
       loadingImgs[index] = img;
       loadedCount++;
       console.log(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
-      
+
       // Only update node.imgs when ALL images are loaded
       // This prevents ComfyUI from trying to render null elements
       if (loadedCount === previewImages.length) {
@@ -829,13 +831,13 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
         if (validImgs.length > 0) {
           node.imgs = validImgs;
         }
-        
+
         // Force immediate redraw
         node.setDirtyCanvas(true, true);
         if (app.graph) {
           app.graph.setDirtyCanvas(true, true);
         }
-        
+
         requestAnimationFrame(() => {
           node.setDirtyCanvas(true, true);
           if (app.canvas) {
@@ -844,12 +846,12 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
         });
       }
     };
-    
+
     img.onerror = (e) => {
       console.error(`[BatchBox] Node ${node.id}: Failed to load image ${index}`, url, e);
       // Mark as "failed" by incrementing count but not setting the img
       loadedCount++;
-      
+
       // Check if all loads are done (including failures)
       if (loadedCount === previewImages.length) {
         const validImgs = loadingImgs.filter(i => i !== null);
@@ -859,11 +861,11 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
         }
       }
     };
-    
+
     console.log(`[BatchBox] Node ${node.id}: Loading image ${index}: ${url}`);
     img.src = url;
   });
-  
+
   // Save to properties for persistence
   if (!node.properties) {
     node.properties = {};
@@ -871,13 +873,13 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
   node.properties._last_images = JSON.stringify(previewImages);
   // Also save node size for proper restoration
   node.properties._last_size = JSON.stringify(node.size);
-  
+
   // Save params hash for smart cache (if provided)
   if (paramsHash) {
     node.properties._cached_hash = paramsHash;
     console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
   }
-  
+
   // === IMAGE SELECTION: Set default selection after generation ===
   // For independent generation, always reset to first image (index 0)
   // This is a NEW generation, so we start fresh
@@ -887,10 +889,10 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
     node.properties._selected_image_index = 0;
     console.log(`[BatchBox] Node ${node.id}: New generation - selection reset to 0`);
   }
-  
+
   // Note: We don't force redraw here since imgs aren't set yet
   // The redraw will happen in the onload callback when all images are ready
-  
+
   console.log(`[BatchBox] Node ${node.id}: Preview update initiated`);
 }
 
@@ -905,14 +907,14 @@ async function executeIndependent(node) {
     console.log("[BatchBox] Generation already in progress, ignoring click");
     return;
   }
-  
+
   // Set generating state
   setNodeGeneratingState(node, true);
-  
+
   try {
     // Collect parameters
     const params = collectNodeParams(node);
-    
+
     // Try to collect image inputs if any are connected
     let imagesBase64 = [];
     try {
@@ -923,7 +925,7 @@ async function executeIndependent(node) {
       setNodeGeneratingState(node, false);
       return;
     }
-    
+
     // Build request
     const requestBody = {
       model: params.model || params.preset,
@@ -934,9 +936,9 @@ async function executeIndependent(node) {
       images_base64: imagesBase64.length > 0 ? imagesBase64 : null,
       endpoint_override: params.dynamicParams?.endpoint_override || null
     };
-    
+
     console.log("[BatchBox] Starting independent generation:", requestBody.model);
-    
+
     // Call independent generation API
     const response = await api.fetchApi("/api/batchbox/generate-independent", {
       method: "POST",
@@ -945,18 +947,18 @@ async function executeIndependent(node) {
       },
       body: JSON.stringify(requestBody)
     });
-    
+
     const result = await response.json();
-    
+
     if (result.success) {
       // Debug: log result
       console.log("[BatchBox] result.preview_images:", JSON.stringify(result.preview_images, null, 2));
       console.log("[BatchBox] Backend params_hash:", result.params_hash);
-      
+
       // Use the hash computed by backend for consistency
       // This ensures the hash matches what nodes.py computes during Queue Prompt
       const paramsHash = result.params_hash;
-      
+
       // Update node preview with the backend-computed hash
       updateNodePreview(node, result.preview_images, paramsHash);
       console.log("[BatchBox] Generation complete:", result.response_info);
@@ -964,7 +966,7 @@ async function executeIndependent(node) {
       console.error("[BatchBox] Generation failed:", result.error);
       alert(`生成失败: ${result.error}`);
     }
-    
+
   } catch (e) {
     console.error("[BatchBox] Independent generation error:", e);
     alert(`生成出错: ${e.message}`);
@@ -1023,8 +1025,8 @@ async function executeToNode(node) {
   // Legacy: uses ComfyUI queue, kept for potential fallback
   const nodeIds = [node.id];
   const originalQueuePrompt = api.queuePrompt;
-  
-  api.queuePrompt = async function(index, prompt) {
+
+  api.queuePrompt = async function (index, prompt) {
     if (nodeIds && nodeIds.length > 0 && prompt.output) {
       const oldOutput = prompt.output;
       const newOutput = {};
@@ -1037,7 +1039,7 @@ async function executeToNode(node) {
     api.queuePrompt = originalQueuePrompt;
     return result;
   };
-  
+
   try {
     isButtonTriggeredExecution = true;
     await app.queuePrompt();
@@ -1123,16 +1125,16 @@ app.registerExtension({
     // Apply to all BatchBox dynamic nodes
     const batchboxNodePatterns = [
       "DynamicImage",
-      "DynamicVideo", 
+      "DynamicVideo",
       "DynamicText",
       "DynamicAudio",
       "NanoBananaPro"
     ];
-    
-    const isMatchingNode = batchboxNodePatterns.some(pattern => 
+
+    const isMatchingNode = batchboxNodePatterns.some(pattern =>
       nodeData.name.includes(pattern)
     );
-    
+
     if (!isMatchingNode) {
       return;
     }
@@ -1151,7 +1153,7 @@ app.registerExtension({
       this._dynamicParamManager = new DynamicParameterManager(this);
 
       // Create hidden extra_params widget for passing dynamic params to backend
-      const extraParamsWidget = this.addWidget("text", "extra_params", "{}", () => {});
+      const extraParamsWidget = this.addWidget("text", "extra_params", "{}", () => { });
       extraParamsWidget.hidden = true;
       extraParamsWidget.serialize = false; // Don't save to workflow
 
@@ -1176,10 +1178,10 @@ app.registerExtension({
           }, 100);
         }
       }
-      
+
       // Override to inject dynamic params before execution
       const node = this;
-      this.onExecute = function() {
+      this.onExecute = function () {
         // Update extra_params with current dynamic param values
         if (node._dynamicParamManager) {
           const dynamicParams = node._dynamicParamManager.collectDynamicParams();
@@ -1189,40 +1191,40 @@ app.registerExtension({
           }
         }
       };
-      
+
       // === IMAGE SELECTION: Track user's image selection ===
       // Intercept imageIndex setter to capture when ComfyUI changes it
       // This gives us an immediate signal without delays
       this._selectedImageIndex = 0;
       this._ignoreImageIndexChanges = false;  // Flag to pause tracking during/after execution
       this._imageIndexInternal = 0;  // Internal storage for imageIndex
-      
+
       // Store reference to node for the getter/setter
       const selfNode = this;
-      
+
       // Use Object.defineProperty to intercept imageIndex changes
       Object.defineProperty(this, 'imageIndex', {
-        get: function() {
+        get: function () {
           return selfNode._imageIndexInternal;
         },
-        set: function(value) {
+        set: function (value) {
           // Block null during execution window, allow at all other times
           if ((value === null || value === undefined) && selfNode._ignoreImageIndexChanges) {
             selfNode._imageIndexInternal = selfNode._selectedImageIndex || 0;
             return;
           }
-          
+
           selfNode._imageIndexInternal = value;
-          
+
           // Track user selections (valid indices only)
           if (!selfNode._ignoreImageIndexChanges && value !== null && value !== undefined) {
             if (selfNode.imgs && selfNode.imgs.length > 1 && value >= 0 && value < selfNode.imgs.length) {
               selfNode._selectedImageIndex = value;
-              
+
               // Save to properties
               if (!selfNode.properties) selfNode.properties = {};
               selfNode.properties._selected_image_index = value;
-              
+
               console.log(`[BatchBox] Node ${selfNode.id}: Selection saved: ${value}`);
             }
           }
@@ -1230,7 +1232,7 @@ app.registerExtension({
         configurable: true,
         enumerable: true
       });
-      
+
       console.log('[DynamicParams] onNodeCreated END, prompt value:', this.widgets?.find(w => w.name === "prompt")?.value);
     };
 
@@ -1244,7 +1246,7 @@ app.registerExtension({
       if (this._dynamicParamManager) {
         o.dynamicParams = this._dynamicParamManager.collectDynamicParams();
       }
-      
+
       // Also save endpoint selection state
       const toggleWidget = this.widgets?.find(w => w.name === "手动选择端点");
       const selectorWidget = this.widgets?.find(w => w.name === "endpoint_selector");
@@ -1254,12 +1256,12 @@ app.registerExtension({
           selectedEndpoint: selectorWidget?.value || ""
         };
       }
-      
+
       // Save collapsed groups state (e.g., 高级设置 expanded/collapsed)
       if (this._dynamicParamManager?.collapsedGroups) {
         o.collapsedGroups = Array.from(this._dynamicParamManager.collapsedGroups);
       }
-      
+
       // === IMAGE SELECTION: Save selection state ===
       o.imageSelectionState = {
         selectedIndex: this._selectedImageIndex || this.properties?._selected_image_index || 0
@@ -1280,20 +1282,20 @@ app.registerExtension({
         this._pendingDynamicParams = o.dynamicParams;
         console.log('[DynamicParams] Stored pending params for widget creation:', Object.keys(o.dynamicParams));
       }
-      
+
       // Store pending endpoint state for restoration when endpoint widgets are created
       // The actual restoration happens in updateEndpointSelector
       if (o.endpointState) {
         this._pendingEndpointState = o.endpointState;
         console.log('[DynamicParams] Stored pending endpoint state for widget creation');
       }
-      
+
       // Restore collapsed groups state (must happen before widgets are created)
       if (o.collapsedGroups && this._dynamicParamManager) {
         this._dynamicParamManager.collapsedGroups = new Set(o.collapsedGroups);
         console.log('[DynamicParams] Restored collapsed groups:', o.collapsedGroups);
       }
-      
+
       // === IMAGE SELECTION: Restore selection state ===
       if (o.imageSelectionState) {
         this._selectedImageIndex = o.imageSelectionState.selectedIndex || 0;
@@ -1316,41 +1318,41 @@ app.registerExtension({
 // Intercept queuePrompt to update extra_params and inject cache state
 // ==========================================
 const origQueuePrompt = api.queuePrompt;
-api.queuePrompt = async function(number, workflowData) {
+api.queuePrompt = async function (number, workflowData) {
   // Capture and reset the flag immediately
   const wasButtonTriggered = isButtonTriggeredExecution;
   isButtonTriggeredExecution = false;
-  
+
   // Collect BatchBox node IDs
   const batchboxNodeIds = new Set();
-  
+
   // Update extra_params for all dynamic nodes before sending to backend
   if (app.graph && app.graph._nodes) {
     for (const node of app.graph._nodes) {
       if (node._dynamicParamManager && node.widgets) {
         // Track BatchBox nodes
         batchboxNodeIds.add(String(node.id));
-        
+
         // Update extra_params widget
         // IMPORTANT: If widgets aren't restored yet (after restart), use pending params
         const extraParamsWidget = node.widgets.find(w => w.name === "extra_params");
         if (extraParamsWidget) {
           let dynamicParams = node._dynamicParamManager.collectDynamicParams();
-          
+
           // If collected params are empty but we have pending params (saved in workflow),
           // use those instead. This fixes the "first execution after restart" issue.
           if (Object.keys(dynamicParams).length === 0 && node._pendingDynamicParams) {
             dynamicParams = node._pendingDynamicParams;
             console.log(`[DynamicParams] node ${node.id}: Using pending params (widgets not ready yet)`);
           }
-          
+
           extraParamsWidget.value = JSON.stringify(dynamicParams);
           console.log(`[DynamicParams] node ${node.id} extra_params:`, extraParamsWidget.value);
         }
       }
     }
   }
-  
+
   // === SMART CACHE: Inject hidden inputs directly into workflowData ===
   // This is more reliable than widgets for hidden inputs
   if (workflowData?.output && app.graph && app.graph._nodes) {
@@ -1358,7 +1360,7 @@ api.queuePrompt = async function(number, workflowData) {
       if (node._dynamicParamManager) {
         const nodeId = String(node.id);
         const nodeData = workflowData.output[nodeId];
-        
+
         if (nodeData && nodeData.inputs) {
           // === CRITICAL: Also sync extra_params to workflowData ===
           // The widget update alone doesn't update workflowData, we need to do it explicitly
@@ -1367,50 +1369,50 @@ api.queuePrompt = async function(number, workflowData) {
             dynamicParams = node._pendingDynamicParams;
           }
           nodeData.inputs.extra_params = JSON.stringify(dynamicParams);
-          
+
           // Inject _force_generate
           nodeData.inputs._force_generate = wasButtonTriggered ? "true" : "false";
-          
+
           // Set flag for onExecuted to know if this is a new generation
           // (used to decide whether to reset selection to 0)
           node._forceGenerateFlag = wasButtonTriggered;
-          
+
           // === IMAGE SELECTION: Pause tracking during execution ===
           // This prevents ComfyUI's automatic imageIndex resets from being tracked
           node._ignoreImageIndexChanges = true;
-          
+
           // Inject _cached_hash from properties (persisted from last generation)
           nodeData.inputs._cached_hash = node.properties?._cached_hash || "";
-          
+
           // Inject _last_images from properties (persisted from last generation)
           nodeData.inputs._last_images = node.properties?._last_images || "";
-          
+
           // Inject _skip_hash_check based on setting (when disabled, skip hash comparison)
           nodeData.inputs._skip_hash_check = smartCacheHashCheckEnabled ? "false" : "true";
-          
+
           // === IMAGE SELECTION: Inject _selected_image_index ===
           const selectedIndex = node._selectedImageIndex || node.properties?._selected_image_index || 0;
           nodeData.inputs._selected_image_index = parseInt(selectedIndex) || 0;
-          
+
           // === DYNAMIC LOADING: Check if all_images output is connected ===
           // Output slot 1 is "all_images" (0: selected_image, 1: all_images)
-          const allImagesConnected = node.outputs && node.outputs[1] && 
-                                     node.outputs[1].links && 
-                                     node.outputs[1].links.length > 0;
+          const allImagesConnected = node.outputs && node.outputs[1] &&
+            node.outputs[1].links &&
+            node.outputs[1].links.length > 0;
           nodeData.inputs._all_images_connected = allImagesConnected ? "true" : "false";
-          
+
           console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, selectedIdx=${nodeData.inputs._selected_image_index}, allImagesConnected=${allImagesConnected}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
         }
       }
     }
   }
-  
+
   // If bypass is enabled AND NOT button-triggered, BatchBox nodes will still execute
   // but the backend will skip API call and return cached images
   if (bypassQueuePromptEnabled && !wasButtonTriggered && batchboxNodeIds.size > 0) {
     console.log(`[BatchBox] Bypass mode: ${batchboxNodeIds.size} BatchBox node(s) will return cached images`);
   }
-  
+
   // Call original queuePrompt
   return origQueuePrompt.call(this, number, workflowData);
 };
@@ -1434,13 +1436,13 @@ window.addEventListener("batchbox:node-settings-changed", () => {
 // Listen for config changes from API Manager - Hot Reload!
 window.addEventListener("batchbox:config-changed", async () => {
   console.log("[DynamicParams] Config changed, refreshing all BatchBox nodes...");
-  
+
   // 1. Clear schema cache to force fresh fetch
   clearSchemaCache();
-  
+
   // 2. Reload node settings (for bypass_queue_prompt etc)
   await fetchNodeSettings();
-  
+
   // 3. Fetch updated model lists from backend for each category
   const categoryMap = {
     "DynamicImageGeneration": "image",
@@ -1450,9 +1452,9 @@ window.addEventListener("batchbox:config-changed", async () => {
     "DynamicImageEditor": "image_editor",
     "NanoBananaPro": null  // Uses all models (presets)
   };
-  
+
   const modelListCache = {};  // Cache fetched model lists by category
-  
+
   async function fetchModelsForCategory(category) {
     if (modelListCache[category]) {
       return modelListCache[category];
@@ -1480,49 +1482,49 @@ window.addEventListener("batchbox:config-changed", async () => {
     }
     return null;
   }
-  
+
   // 4. Refresh all BatchBox nodes in the canvas
   if (app.graph && app.graph._nodes) {
     const batchboxNodeTypes = Object.keys(categoryMap);
-    
+
     for (const node of app.graph._nodes) {
       if (!batchboxNodeTypes.includes(node.type)) continue;
-      
+
       const category = categoryMap[node.type];
       const modelWidget = node.widgets?.find(w => w.name === "model" || w.name === "preset");
-      
+
       if (modelWidget) {
         // Fetch updated model list for this category
         const modelData = await fetchModelsForCategory(category);
-        
+
         if (modelData && modelData.names.length > 0) {
           const currentValue = modelWidget.value;
-          
+
           // Update widget options
           if (modelWidget.options) {
             modelWidget.options.values = modelData.names;
           }
-          
+
           // If current value is still valid, keep it; otherwise select first
           if (!modelData.names.includes(currentValue)) {
             modelWidget.value = modelData.names[0];
             console.log(`[DynamicParams] Node ${node.id}: Model "${currentValue}" no longer exists, switched to "${modelWidget.value}"`);
           }
-          
+
           console.log(`[DynamicParams] Node ${node.id}: Updated model options (${modelData.names.length} models)`);
         }
-        
+
         // Also refresh dynamic parameters
         if (node._dynamicParamManager && modelWidget.value) {
           await node._dynamicParamManager.onModelChange(modelWidget.value, true);
         }
       }
     }
-    
+
     // Redraw canvas
     app.graph.setDirtyCanvas(true, true);
   }
-  
+
   console.log("[DynamicParams] Hot reload complete!");
 });
 
