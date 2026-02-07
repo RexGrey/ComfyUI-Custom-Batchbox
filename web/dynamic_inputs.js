@@ -42,7 +42,7 @@ async function getNodeSettings() {
     if (nodeSettingsCache !== null) {
         return nodeSettingsCache;
     }
-    
+
     try {
         const resp = await api.fetchApi("/api/batchbox/node-settings");
         if (resp.status === 200) {
@@ -53,7 +53,7 @@ async function getNodeSettings() {
     } catch (e) {
         console.warn("[DynamicInputs] Failed to fetch node settings:", e);
     }
-    
+
     // Default fallback
     nodeSettingsCache = { default_width: 500 };
     return nodeSettingsCache;
@@ -151,9 +151,9 @@ function addDynamicInput(node, prefix, index, inputType) {
 
     // Save current width before adding input (to preserve user's custom width)
     const currentWidth = node.size[0];
-    
+
     node.addInput(inputName, inputType);
-    
+
     // Restore width after adding input, only update height
     const computedSize = node.computeSize();
     node.setSize([currentWidth, computedSize[1]]);
@@ -174,9 +174,9 @@ function removeDynamicInput(node, inputName) {
 
     // Save current width before removing input (to preserve user's custom width)
     const currentWidth = node.size[0];
-    
+
     node.removeInput(index);
-    
+
     // Restore width after removing input, only update height
     const computedSize = node.computeSize();
     node.setSize([currentWidth, computedSize[1]]);
@@ -193,7 +193,7 @@ function removeDynamicInput(node, inputName) {
 function updateInputsForType(node, prefix, inputType, maxInputs) {
     // Save current width before any modifications (to preserve user's custom width)
     const currentWidth = node.size[0];
-    
+
     if (!node.inputs) {
         // No inputs yet, add the first empty slot
         node.addInput(`${prefix}1`, inputType);
@@ -201,10 +201,10 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
         node.setSize([currentWidth, computedSize[1]]);
         return;
     }
-    
+
     const graph = app.graph;
     if (!graph) return;
-    
+
     // Collect connection info for all connected inputs (save SOURCE node info, not link ID)
     const connections = [];
     for (const input of node.inputs) {
@@ -218,14 +218,14 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
             }
         }
     }
-    
+
     // Calculate target count: connected count + 1 empty slot (up to max)
     const connectedCount = connections.length;
     let targetCount = Math.min(connectedCount + 1, maxInputs);
     if (connectedCount >= maxInputs) {
         targetCount = maxInputs;
     }
-    
+
     // Remove ALL existing inputs with this prefix
     // Must iterate backwards to avoid index shifting
     for (let i = node.inputs.length - 1; i >= 0; i--) {
@@ -233,12 +233,12 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
             node.removeInput(i);
         }
     }
-    
+
     // Re-add inputs in compact order
     for (let i = 1; i <= targetCount; i++) {
         node.addInput(`${prefix}${i}`, inputType);
     }
-    
+
     // Reconnect using saved source node info
     for (let i = 0; i < connections.length; i++) {
         const conn = connections[i];
@@ -295,7 +295,7 @@ async function updateAllDynamicInputs(node) {
 async function initializeDynamicInputs(node) {
     // Get node type from various possible sources
     const nodeType = node.comfyClass || node.type || node.constructor?.type || '';
-    
+
     // Skip if not a supported node type
     if (!DYNAMIC_INPUT_NODES.includes(nodeType)) {
         return;
@@ -309,11 +309,11 @@ async function initializeDynamicInputs(node) {
 
     // Store original onExecuted to save preview info for persistence
     const originalOnExecuted = node.onExecuted;
-    node.onExecuted = function(message) {
+    node.onExecuted = function (message) {
         if (originalOnExecuted) {
             originalOnExecuted.call(this, message);
         }
-        
+
         // Save _last_images to node.properties for persistence (properties are saved in workflow JSON)
         // Let OUTPUT_NODE handle the actual preview display
         if (message && message._last_images && message._last_images[0]) {
@@ -322,7 +322,7 @@ async function initializeDynamicInputs(node) {
             }
             this.properties._last_images = message._last_images[0];
             console.log("[Batchbox] Saved preview info to properties");
-            
+
             // === IMAGE SELECTION: Reset selection on new generation ===
             // Parse images to check if we have multiple
             try {
@@ -336,7 +336,7 @@ async function initializeDynamicInputs(node) {
                         this.properties._selected_image_index = 0;
                         console.log("[Batchbox] New generation: reset selection to 0");
                     }
-                    
+
                     // Set imageIndex to show the selected image (not thumbnails)
                     // Our setter will block null values from ComfyUI's useNodeImage.ts
                     const selectedIdx = this._selectedImageIndex || 0;
@@ -348,7 +348,7 @@ async function initializeDynamicInputs(node) {
                 console.warn("[Batchbox] Failed to parse images for selection:", e);
             }
         }
-        
+
         // Save _cached_hash for smart cache comparison
         if (message && message._cached_hash && message._cached_hash[0]) {
             if (!this.properties) {
@@ -357,10 +357,10 @@ async function initializeDynamicInputs(node) {
             this.properties._cached_hash = message._cached_hash[0];
             console.log("[Batchbox] Saved params hash to properties:", message._cached_hash[0]);
         }
-        
+
         // Clear force generate flag
         this._forceGenerateFlag = false;
-        
+
         // Re-enable imageIndex tracking after a short delay
         setTimeout(() => {
             this._ignoreImageIndexChanges = false;
@@ -420,11 +420,11 @@ app.registerExtension({
         if (!DYNAMIC_INPUT_NODES.includes(nodeType)) {
             return;
         }
-        
+
         // Mark this as a fresh node creation (not loading from workflow)
         // This flag will be cleared by loadedGraphNode if it's actually a workflow load
         node._batchbox_fresh_create = true;
-        
+
         // Use a short delay to allow loadedGraphNode to run first if this is a workflow load
         setTimeout(async () => {
             // If still marked as fresh create, this is truly a new node
@@ -438,7 +438,7 @@ app.registerExtension({
                 console.log(`[Batchbox] Set initial width for new ${nodeType}: ${defaultWidth}px`);
             }
             delete node._batchbox_fresh_create;
-            
+
             // Initialize dynamic inputs
             await initializeDynamicInputs(node);
         }, 50);
@@ -449,22 +449,22 @@ app.registerExtension({
         if (!DYNAMIC_INPUT_NODES.includes(nodeType)) {
             return;
         }
-        
+
         // This is a workflow load, not a fresh create
         node._batchbox_fresh_create = false;
-        
+
         // Mark as restoring - suppress intermediate canvas updates
         node._isRestoring = true;
-        
+
         // Apply saved size IMMEDIATELY to prevent initial wrong size
         const savedWidth = node.size[0];
         if (node.properties?._last_size) {
             try {
                 const savedSize = JSON.parse(node.properties._last_size);
                 node.size = [savedWidth, savedSize[1]];
-            } catch (e) {}
+            } catch (e) { }
         }
-        
+
         // Pre-load images BEFORE setTimeout to start loading early
         if (node.properties?._last_images) {
             try {
@@ -479,7 +479,7 @@ app.registerExtension({
                         imgEl.src = url;
                         return imgEl;
                     });
-                    
+
                     // === IMAGE SELECTION: Restore selection state early ===
                     if (node.properties?._selected_image_index !== undefined) {
                         node._selectedImageIndex = parseInt(node.properties._selected_image_index) || 0;
@@ -487,14 +487,14 @@ app.registerExtension({
                         console.log(`[Batchbox] Pre-restored image selection: index=${node._selectedImageIndex}`);
                     }
                 }
-            } catch (e) {}
+            } catch (e) { }
         }
-        
+
         // Now do async initialization
         setTimeout(async () => {
             // Initialize dynamic inputs (widgets etc)
             await initializeDynamicInputs(node);
-            
+
             // Wait for images if any
             if (node.imgs && node.imgs.length > 0) {
                 await Promise.all(node.imgs.map(img => {
@@ -505,27 +505,48 @@ app.registerExtension({
                     });
                 }));
             }
-            
-            // Final size calculation
+
+            // Clear restoring flag FIRST so any pending resizes can execute
+            node._isRestoring = false;
+
+            // Final size: always use computeSize() to match current widgets
+            // Use saved height as minimum to preserve user's manual resize
+            const computedSize = node.computeSize();
+            let finalHeight = computedSize[1];
             if (node.properties?._last_size) {
                 try {
                     const savedSize = JSON.parse(node.properties._last_size);
-                    node.size = [savedWidth, savedSize[1]];
-                } catch (e) {
-                    const computedSize = node.computeSize();
-                    node.size = [savedWidth, computedSize[1]];
-                }
-            } else {
-                const computedSize = node.computeSize();
-                node.size = [savedWidth, computedSize[1]];
+                    finalHeight = Math.max(computedSize[1], savedSize[1]);
+                } catch (e) { }
             }
-            
-            // Clear restoring flag and do single final render
-            node._isRestoring = false;
+            node.size = [savedWidth, finalHeight];
+
+            // Execute any resize that was deferred during restore
+            // (dynamic widgets may have been added while _isRestoring was true)
+            if (node._needsPostRestoreResize) {
+                delete node._needsPostRestoreResize;
+                const recomputedSize = node.computeSize();
+                if (recomputedSize[1] > node.size[1]) {
+                    node.size = [savedWidth, recomputedSize[1]];
+                }
+            }
+
             node.setDirtyCanvas(true, true);
             if (app.graph) {
                 app.graph.setDirtyCanvas(true, true);
             }
+
+            // Safety net: async operations (onModelChange fetching schema etc.)
+            // may complete after this point and add more widgets.
+            // Schedule a final resize to catch any late widget additions.
+            setTimeout(() => {
+                if (!node.graph) return; // Node may have been removed
+                const safetySize = node.computeSize();
+                if (safetySize[1] > node.size[1] + 5) {
+                    node.setSize([node.size[0], safetySize[1]]);
+                    node.setDirtyCanvas(true, true);
+                }
+            }, 1000);
         }, 100);
     }
 });
@@ -536,16 +557,16 @@ app.registerExtension({
 function restorePreviewFromProperties(node) {
     console.log(`[Batchbox] restorePreviewFromProperties called for node ${node.id}, type: ${node.comfyClass || node.type}`);
     console.log(`[Batchbox] node.properties:`, node.properties);
-    
+
     // Read from node.properties (saved in workflow JSON)
     const lastImagesData = node.properties?._last_images;
     if (!lastImagesData) {
         console.log(`[Batchbox] No _last_images found for node ${node.id}`);
         return;
     }
-    
+
     console.log(`[Batchbox] _last_images data type: ${typeof lastImagesData}, value:`, lastImagesData);
-    
+
     try {
         // Handle both formats:
         // - String (from independent generation): JSON stringified array
@@ -559,14 +580,14 @@ function restorePreviewFromProperties(node) {
             console.warn("[Batchbox] Unknown _last_images format:", typeof lastImagesData);
             return;
         }
-        
+
         console.log(`[Batchbox] Parsed images:`, images);
-        
+
         if (images && images.length > 0) {
             // Set image metadata - ComfyUI's OUTPUT_NODE mechanism
             node.imageIndex = 0;
             node.images = images;
-            
+
             // Pre-create Image objects for node.imgs
             // ComfyUI uses node.imgs for actual rendering
             node.imgs = images.map(img => {
@@ -575,7 +596,7 @@ function restorePreviewFromProperties(node) {
                 imgEl.src = url;
                 return imgEl;
             });
-            
+
             console.log(`[Batchbox] Restored ${images.length} preview image(s) for node ${node.id}`);
         }
     } catch (e) {
