@@ -312,8 +312,146 @@ models:
           status_path: status
           success_value: SUCCESS
           response_path: video_url
-  Nano Banana Pro:
-    display_name: 🖼️ Nano Banana Pro
+  Nano Banana Pro 2k:
+    display_name: 🖼️ Nano Banana Pro 2k
+    category: image
+    description: 高质量图片生成，支持多种风格
+    show_seed_widget: false
+    dynamic_inputs:
+      image:
+        max: 14
+        type: IMAGE
+        label: 图片
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        比例:
+          type: select
+          default: auto
+          api_name: aspect_ratio
+          options:
+          - value: '1:1'
+            label: '1:1'
+          - value: '2:3'
+            label: '2:3'
+          - value: '3:2'
+            label: '3:2'
+          - value: '3:4'
+            label: '3:4'
+          - value: '4:3'
+            label: '4:3'
+          - value: '4:5'
+            label: '4:5'
+          - value: '5:4'
+            label: '5:4'
+          - value: '9:16'
+            label: '9:16'
+          - value: '16:9'
+            label: '16:9'
+          - value: '21:9'
+            label: '21:9'
+          - value: auto
+            label: 自适应
+      advanced:
+        镜头控制:
+          type: boolean
+          default: 'false'
+          api_name: camera_control
+        种子:
+          type: number
+          default: '0'
+          api_name: seed
+    api_endpoints:
+    - display_name: 柏拉图
+      provider: 柏拉图
+      priority: 1
+      model_name: nano-banana-2-2k
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+        img2img:
+          endpoint: /v1/images/edits
+          method: POST
+          content_type: multipart/form-data
+          response_type: sync
+          response_path: data[0].url
+  Nano Banana Pro 4K:
+    display_name: 🖼️ Nano Banana Pro 4K
+    category: image
+    description: 高质量图片生成，支持多种风格
+    show_seed_widget: false
+    dynamic_inputs:
+      image:
+        max: 14
+        type: IMAGE
+        label: 图片
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        比例:
+          type: select
+          default: auto
+          api_name: aspect_ratio
+          options:
+          - value: '1:1'
+            label: '1:1'
+          - value: '2:3'
+            label: '2:3'
+          - value: '3:2'
+            label: '3:2'
+          - value: '3:4'
+            label: '3:4'
+          - value: '4:3'
+            label: '4:3'
+          - value: '4:5'
+            label: '4:5'
+          - value: '5:4'
+            label: '5:4'
+          - value: '9:16'
+            label: '9:16'
+          - value: '16:9'
+            label: '16:9'
+          - value: '21:9'
+            label: '21:9'
+          - value: auto
+            label: 自适应
+      advanced:
+        镜头控制:
+          type: boolean
+          default: 'false'
+          api_name: camera_control
+        种子:
+          type: number
+          default: '0'
+          api_name: seed
+    api_endpoints:
+    - display_name: 柏拉图
+      provider: 柏拉图
+      priority: 1
+      model_name: nano-banana-2-4k
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+        img2img:
+          endpoint: /v1/images/edits
+          method: POST
+          content_type: multipart/form-data
+          response_type: sync
+          response_path: data[0].url
+  Nano Banana Pro（Test）:
+    display_name: 🖼️ Nano Banana Pro（Test）
     category: image
     description: 高质量图片生成，支持多种风格
     show_seed_widget: false
@@ -393,8 +531,8 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: 柏拉图Chat
-      provider: bltcy_ai
-      priority: 1
+      provider: 柏拉图
+      priority: 2
       model_name: gemini-3-pro-image-preview
       modes:
         text2img:
@@ -413,9 +551,9 @@ models:
         responseModalities:
         - Image
     - display_name: 柏拉图
-      provider: bltcy_ai
+      provider: 柏拉图
       priority: 1
-      model_name: nano-banana-2
+      model_name: nano-banana-2-1k
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -430,14 +568,91 @@ models:
           response_type: sync
           response_path: data[0].url
     - display_name: Comfly
-      provider: comfly_chat
-      priority: 2
+      provider: another_provider
+      priority: 3
       model_name: ''
       modes:
         text2img:
           endpoint: /v1/images/generations
           method: POST
           content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+  Nano Banana Pro:
+    display_name: 🖼️ Nano Banana Pro
+    category: image
+    description: 高质量图片生成，支持多种风格
+    show_seed_widget: false
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        分辨率:
+          type: select
+          default: 2K
+          api_name: image_size
+          options:
+          - value: auto
+            label: 自适应
+          - value: 1K
+            label: 1K
+          - value: 2K
+            label: 2K
+          - value: 4K
+            label: 4K
+        比例:
+          type: select
+          default: auto
+          api_name: aspect_ratio
+          options:
+          - value: '1:1'
+            label: '1:1'
+          - value: '2:3'
+            label: '2:3'
+          - value: '3:2'
+            label: '3:2'
+          - value: '3:4'
+            label: '3:4'
+          - value: '4:3'
+            label: '4:3'
+          - value: '4:5'
+            label: '4:5'
+          - value: '5:4'
+            label: '5:4'
+          - value: '9:16'
+            label: '9:16'
+          - value: '16:9'
+            label: '16:9'
+          - value: '21:9'
+            label: '21:9'
+          - value: auto
+            label: 自适应
+      advanced:
+        镜头控制:
+          type: boolean
+          default: 'false'
+          api_name: camera_control
+        种子:
+          type: number
+          default: '0'
+          api_name: seed
+    api_endpoints:
+    - display_name: 柏拉图
+      provider: 柏拉图
+      priority: 1
+      model_name: nano-banana-2
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+        img2img:
+          endpoint: /v1/images/edits
+          method: POST
+          content_type: multipart/form-data
           response_type: sync
           response_path: data[0].url
 settings:
@@ -463,9 +678,17 @@ save_settings:
   fallback_format: png
 model_order:
   image:
+  - Nano Banana Pro 1K
   - Nano Banana Pro
-  - grok2_image
-  - tapnow_flash
+  - Nano Banana Pro 2k
+  - Nano Banana Pro 4K
+  - dalle3
+  - gpt4o_image
+  - sora_image
+  - flux_schnell
+  - flux_dev
+  - midjourney
+  - Nano Banana Pro（Test）
 node_settings:
   default_width: 480
   bypass_queue_prompt: true
