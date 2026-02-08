@@ -120,7 +120,7 @@ class GenericAPIAdapter(APIAdapter):
         elif content_type == "multipart/form-data":
             # Don't set Content-Type, let requests handle it
             request_info["data"] = {k: v for k, v in payload.items() 
-                                   if not k.startswith("image")}
+                                   if not k.startswith("_")}
             
             # Get file format configuration (endpoint > provider > default)
             file_format = (

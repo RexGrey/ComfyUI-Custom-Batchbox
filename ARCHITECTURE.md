@@ -4,6 +4,9 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| fix | 2026-02-08 | 修复 img2img 模式下 image_size 参数被 multipart 过滤器误删 |
+| fix | 2026-02-07 | 修复加载工作流时节点排版错位的时序竞争问题 |
+| fix | 2026-02-05 | API 密钥分离至 secrets.yaml |
 | 2.21 | 2026-01-29 | 动态缓存加载（根据输出端口连接状态按需加载图片） |
 | 2.20 | 2026-01-29 | 共享图片数据优化（img2img 批量共用一份 base64）+ multipart 兼容修复 |
 | 2.19 | 2026-01-29 | 修复请求体大小限制（分块读取解决HTTPRequestEntityTooLarge） |
@@ -1442,6 +1445,68 @@ def _load_persisted_images(self, json, selected_index, load_all=False):
 | `nodes.py` | 添加 `_all_images_connected` hidden input，`_load_persisted_images` 支持 `load_all` 参数 |
 | `web/dynamic_params.js` | 检测 `node.outputs[1].links` 并注入连接状态 |
 
+### 7.19 工作流加载排版修复
+
+**问题：** 加载已保存的工作流时，节点 widget 文字重叠/错位，原因是 `dynamic_inputs.js` 和 `dynamic_params.js` 两个扩展的异步初始化存在竞争。
+
+**根因分析：**
+
+```mermaid
+flowchart TD
+    A[工作流加载] --> B[loadedGraphNode 触发]
+    B --> C[dynamic_inputs.js 设置 _isRestoring=true]
+    B --> D[dynamic_params.js 调用 resizeNodePreservingWidth]
+    D --> E{_isRestoring?}
+    E -->|是| F[静默跳过 resize ❌]
+    C --> G[使用保存的旧高度]
+    G --> H[widget 数量变化但高度未更新 → 重叠]
+```
+
+**修复方案：**
+
+| 文件 | 修改 |
+|------|------|
+| `web/dynamic_params.js` | `resizeNodePreservingWidth()` 被跳过时标记 `_needsPostRestoreResize`，恢复后补做 resize |
+| `web/dynamic_inputs.js` | 先清除 `_isRestoring` 再 `computeSize()` 计算正确高度，添加 1s 兜底 resize |
+| `web/api_manager.js` | CSS 路径改用 `import.meta.url` 动态解析 |
+
+### 7.20 Multipart 参数过滤修复
+
+**问题：** img2img 模式下，用户选择 2K/4K 分辨率但始终输出 1K。text2img 不受影响。
+
+**根因：**
+
+`adapters/generic.py` 的 `_build_openai_request` 在构建 multipart/form-data 请求时：
+
+```python
+# BUG: 过滤所有以 "image" 开头的 key
+request_info["data"] = {k: v for k, v in payload.items() 
+                       if not k.startswith("image")}  # ← image_size 被误删！
+```
+
+本意是排除图片文件数据，但 `image_size` 参数也以 `image` 开头，被一并过滤。
+
+**修复：**
+
+```python
+# FIX: 仅排除内部字段（以 _ 开头，如 _upload_files）
+request_info["data"] = {k: v for k, v in payload.items() 
+                       if not k.startswith("_")}
+```
+
+**影响范围：**
+
+| 路径 | 修复前 | 修复后 |
+|------|--------|--------|
+| text2img (JSON) | ✅ image_size 正常发送 | ✅ 不受影响 |
+| img2img (multipart) | ❌ image_size 被过滤 | ✅ image_size 正常发送 |
+
+**修改的文件：**
+
+| 文件 | 修改内容 |
+|------|----------|
+| `adapters/generic.py` | `_build_openai_request` multipart 过滤条件从 `startswith("image")` 改为 `startswith("_")` |
+
 ## 8. 维护指南
 
 ### 8.1 添加新 API
@@ -1462,6 +1527,28 @@ def _load_persisted_images(self, json, selected_index, load_all=False):
 ---
 
 ## 9. 更新日志
+
+### 修复记录 (2026-02-05 ~ 2026-02-08)
+
+#### 🐛 img2img 分辨率失效 (02-08)
+
+- 修复 img2img 模式下 `image_size` 参数被 multipart 过滤器误删，导致分辨率始终为 1K
+- 根因：`_build_openai_request` 的 `not k.startswith("image")` 过滤条件误伤 `image_size`
+- 修复：过滤条件改为 `not k.startswith("_")`，仅排除内部字段
+- 修复后 text2img 和 img2img 均能正确传递分辨率参数
+
+#### 🐛 工作流加载排版错位 (02-07)
+
+- 修复加载工作流时节点排版错位（widget 文字重叠）的时序竞争问题
+- 根因：`_isRestoring=true` 时 `resizeNodePreservingWidth()` 被静默跳过
+- 添加 `_needsPostRestoreResize` 延迟补做机制 + 1s 兜底 resize
+- CSS 路径改用 `import.meta.url` 动态解析
+
+#### 🔧 API 密钥分离 (02-05)
+
+- API 密钥分离至 `secrets.yaml`（`.gitignore` 已排除）
+- `config_manager.py` 支持从 `secrets.yaml` 加载供应商凭证
+- 添加 `secrets.yaml.example` 模板文件
 
 ### v2.21 (2026-01-29)
 
