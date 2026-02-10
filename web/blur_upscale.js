@@ -430,6 +430,8 @@ function openStylePopup(node, screenX, screenY) {
       // Set repair_mode to 风格
       const mw = node.widgets?.find(w => w.name === "repair_mode");
       if (mw) mw.value = "风格";
+      // Store selected style name for button display
+      node._blurUI._selectedStyleName = name;
       // Clear custom active state
       node._blurUI._isCustomActive = false;
       node.setDirtyCanvas(true, true);
@@ -921,7 +923,7 @@ app.registerExtension({
       }
 
       const node = this;
-      node._blurUI = { blurGroupY: 0, modeGroupY: 0, customBtnY: 0, drawStartY: 0, model: "", _isCustomActive: false };
+      node._blurUI = { blurGroupY: 0, modeGroupY: 0, customBtnY: 0, drawStartY: 0, model: "", _isCustomActive: false, _selectedStyleName: "" };
 
       // --- Hide widgets we manage ourselves (same approach as dynamic_params.js) ---
       const widgetsToHide = ["blur_intensity", "repair_mode", "custom_sigma", "style_prompt", "seed", "control_after_generate", "生成后控制"];
@@ -970,23 +972,60 @@ app.registerExtension({
       }
 
       // --- Spacer widget to reserve space for canvas-drawn UI ---
-      // Manually create widget object (NOT via addWidget) to avoid LiteGraph
-      // registering it as an editable "text" widget that triggers "Value" dialog
-      const spacer = {
-        type: "custom",
-        name: "_blur_spacer",
-        value: "",
-        options: {},
-        last_y: 0,
-        _isSpacer: true,
-        serialize: false,
-        computeSize: () => [0, 140],
-        draw: function () {},
-        mouse: function () { return true; },
-        callback: function () {},
+      // Use addWidget so LiteGraph properly accounts for this widget's height
+      // in its layout calculations (including image preview positioning).
+      // Button hit-testing lives here since LiteGraph intercepts widget clicks
+      // BEFORE onMouseDown.
+      const SPACER_HEIGHT = 160;
+      const spacer = node.addWidget("custom", "_blur_spacer", "", () => { });
+      spacer._isSpacer = true;
+      spacer.serialize = false;
+      spacer.computeSize = () => [node.size[0], SPACER_HEIGHT];
+      spacer.draw = function () { };
+      spacer.mouse = function (event, pos, nodeRef) {
+        if (event.type !== "pointerdown" && event.type !== "mousedown") return true;
+
+        const padding = 10;
+        const innerW = nodeRef.size[0] - padding * 2;
+        const clickX = pos[0];
+        const clickY = pos[1];
+        const ui = nodeRef._blurUI;
+        if (!ui) return true;
+
+        // Blur intensity buttons
+        const blurHit = hitTestButtonGroup(padding, 0, innerW, BLUR_PRESETS, clickX, clickY, ui.blurGroupY);
+        if (blurHit) {
+          const w = nodeRef.widgets?.find(w => w.name === "blur_intensity");
+          if (w) { w.value = blurHit; w.callback?.(blurHit); }
+          nodeRef._blurUI._isCustomActive = false;
+          nodeRef.setDirtyCanvas(true, true);
+          return true;
+        }
+
+        // Repair mode buttons
+        const modeHit = hitTestButtonGroup(padding, 0, innerW, REPAIR_MODES, clickX, clickY, ui.modeGroupY);
+        if (modeHit) {
+          if (modeHit === "风格") {
+            openStylePopup(nodeRef, event.clientX, event.clientY);
+          } else {
+            const w = nodeRef.widgets?.find(w => w.name === "repair_mode");
+            if (w) { w.value = modeHit; w.callback?.(modeHit); }
+            nodeRef._blurUI._isCustomActive = false;
+            // Clear selected style name when switching away from 风格
+            nodeRef._blurUI._selectedStyleName = "";
+          }
+          nodeRef.setDirtyCanvas(true, true);
+          return true;
+        }
+
+        // Custom settings button
+        if (hitTestRect(padding, ui.customBtnY, innerW, 30, clickX, clickY)) {
+          openCustomPanel(nodeRef);
+          return true;
+        }
+
+        return true;
       };
-      if (!node.widgets) node.widgets = [];
-      node.widgets.push(spacer);
 
       // --- Load model info and style presets ---
       loadUpscaleModel().then(m => {
@@ -1000,6 +1039,8 @@ app.registerExtension({
       if (node.size[1] < minH) node.size[1] = minH;
 
       // ---- onDrawForeground ----
+      // Draw custom buttons inside the spacer area.
+      // Image preview is handled natively by LiteGraph AFTER the spacer.
       const origDraw = node.onDrawForeground;
       node.onDrawForeground = function (ctx) {
         if (origDraw) origDraw.apply(this, arguments);
@@ -1007,17 +1048,8 @@ app.registerExtension({
         const padding = 10;
         const innerW = node.size[0] - padding * 2;
 
-        // Calculate start Y after visible widgets (skip spacer — we draw INSIDE it)
-        let startY = 30;
-        if (node.widgets) {
-          for (const w of node.widgets) {
-            if (w.type !== "hidden" && !w._isSpacer && w.last_y !== undefined) {
-              const wBottom = w.last_y + (w.computeSize ? w.computeSize()[1] : 20) + 4;
-              if (wBottom > startY) startY = wBottom;
-            }
-          }
-        }
-        startY += 8;
+        // Anchor to spacer's actual position (set by LiteGraph layout)
+        let startY = (spacer.last_y || 30) + 4;
         node._blurUI.drawStartY = startY;
 
         // 1. Blur Intensity
@@ -1032,7 +1064,19 @@ app.registerExtension({
         // 2. Repair Mode
         const modeVal = node.widgets?.find(w => w.name === "repair_mode")?.value || "直出";
         node._blurUI.modeGroupY = startY;
-        const h2 = drawButtonGroup(ctx, padding, startY, innerW, REPAIR_MODES, modeVal, "修复模式", {
+        // If style is selected, initialize _selectedStyleName from style_prompt (for load/reload)
+        if (modeVal === "风格" && !node._blurUI._selectedStyleName) {
+          const sp = node.widgets?.find(w => w.name === "style_prompt")?.value || "";
+          for (const [sName, sPrompt] of Object.entries(stylePresets)) {
+            if (sp === sPrompt) { node._blurUI._selectedStyleName = sName; break; }
+          }
+        }
+        // Show selected style name on the "风格" button
+        const displayModes = node._blurUI._selectedStyleName
+          ? REPAIR_MODES.map(m => m === "风格" ? node._blurUI._selectedStyleName : m)
+          : REPAIR_MODES;
+        const h2 = drawButtonGroup(ctx, padding, startY, innerW, displayModes,
+          node._blurUI._selectedStyleName || modeVal, "修复模式", {
           bgActive: modeVal === "风格" ? COLORS.bgStyle : COLORS.bgActive,
           borderActive: modeVal === "风格" ? COLORS.borderStyle : COLORS.borderActive,
           text: COLORS.text, textActive: COLORS.textActive,
@@ -1052,67 +1096,15 @@ app.registerExtension({
           node._blurUI.model ? `放大模型: ${node._blurUI.model}` : "⚠️ 未配置放大模型 (请在 Manager 设置中配置)",
           node.size[0] / 2, startY + 12
         );
-        startY += 20;
-
-        // Dynamically update spacer height to match actual custom UI height
-        // This pushes ComfyUI's image preview below our canvas-drawn buttons
-        const uiHeight = startY - node._blurUI.drawStartY + 10;
-        spacer.computeSize = () => [0, uiHeight];
-
-        if (startY + 10 > node.size[1]) node.size[1] = startY + 10;
       };
 
-      // ---- onMouseDown ----
+      // ---- onMouseDown (fallback for clicks outside spacer area) ----
       const origMouseDown = node.onMouseDown;
       node.onMouseDown = function (e, localPos, canvas) {
         if (origMouseDown) {
           const result = origMouseDown.apply(this, arguments);
           if (result) return result;
         }
-
-        const padding = 10;
-        const innerW = node.size[0] - padding * 2;
-        const [clickX, clickY] = localPos;
-        const ui = node._blurUI;
-        if (!ui) return false;
-
-        // Blur intensity buttons
-        const blurHit = hitTestButtonGroup(padding, 0, innerW, BLUR_PRESETS, clickX, clickY, ui.blurGroupY);
-        if (blurHit) {
-          const w = node.widgets?.find(w => w.name === "blur_intensity");
-          if (w) { w.value = blurHit; w.callback?.(blurHit); }
-          node._blurUI._isCustomActive = false;
-          node.setDirtyCanvas(true, true);
-          return true;
-        }
-
-        // Repair mode buttons
-        const modeHit = hitTestButtonGroup(padding, 0, innerW, REPAIR_MODES, clickX, clickY, ui.modeGroupY);
-        if (modeHit) {
-          if (modeHit === "风格") {
-            // Show style preset popup at mouse position
-            openStylePopup(node, e.clientX, e.clientY);
-          } else {
-            const w = node.widgets?.find(w => w.name === "repair_mode");
-            if (w) { w.value = modeHit; w.callback?.(modeHit); }
-            node._blurUI._isCustomActive = false;
-          }
-          node.setDirtyCanvas(true, true);
-          return true;
-        }
-
-        // Custom settings button
-        if (hitTestRect(padding, ui.customBtnY, innerW, 30, clickX, clickY)) {
-          openCustomPanel(node);
-          return true;
-        }
-
-        // Consume all clicks within the custom UI area to prevent
-        // LiteGraph from opening the "Value" edit dialog on the spacer widget
-        if (ui.drawStartY && clickY >= ui.drawStartY) {
-          return true;
-        }
-
         return false;
       };
 
