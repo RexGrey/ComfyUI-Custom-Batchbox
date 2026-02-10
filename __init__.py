@@ -445,6 +445,45 @@ try:
                 endpoint_override=data.get("endpoint_override")
             )
             
+            # Send websocket "executed" event so ComfyUI's image viewer displays the result
+            if result.get("success") and result.get("preview_images"):
+                import uuid as _uuid
+                node_id = data.get("node_id", "")
+                if node_id:
+                    prompt_id = "independent_" + _uuid.uuid4().hex[:8]
+                    last_images_json = json.dumps(result["preview_images"])
+                    output_ui = {
+                        "images": result["preview_images"],
+                        "_last_images": [last_images_json],
+                        "_cached_hash": [result.get("params_hash", "")],
+                    }
+                    
+                    # 1. Send websocket event for real-time viewer update
+                    server.PromptServer.instance.send_sync("executed", {
+                        "node": node_id,
+                        "display_node": node_id,
+                        "output": output_ui,
+                        "prompt_id": prompt_id
+                    })
+                    
+                    # 2. Write history entry so "已生成" panel shows the images
+                    #    The /history API reads from prompt_queue.history
+                    prompt_queue = server.PromptServer.instance.prompt_queue
+                    with prompt_queue.mutex:
+                        if len(prompt_queue.history) > 10000:
+                            prompt_queue.history.pop(next(iter(prompt_queue.history)))
+                        prompt_queue.history[prompt_id] = {
+                            "prompt": (0, prompt_id, {node_id: {"class_type": "DynamicImageGeneration", "inputs": {}}}, {}, []),
+                            "outputs": {
+                                node_id: output_ui
+                            },
+                            "status": {
+                                "status_str": "success",
+                                "completed": True,
+                                "messages": []
+                            }
+                        }
+            
             return web.json_response(result)
             
         except Exception as e:

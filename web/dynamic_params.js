@@ -928,6 +928,7 @@ async function executeIndependent(node) {
 
     // Build request
     const requestBody = {
+      node_id: String(node.id),
       model: params.model || params.preset,
       prompt: params.prompt || "",
       seed: params.seed || 0,
@@ -961,6 +962,29 @@ async function executeIndependent(node) {
 
       // Update node preview with the backend-computed hash
       updateNodePreview(node, result.preview_images, paramsHash);
+
+      // Trigger ComfyUI's image viewer by calling onExecuted with the correct format
+      // This matches the UI format returned by nodes.py generate() method
+      if (result.preview_images && result.preview_images.length > 0) {
+        const lastImagesJson = JSON.stringify(result.preview_images);
+        const executedMessage = {
+          images: result.preview_images,
+          _last_images: [lastImagesJson],
+          _cached_hash: [paramsHash || ""],
+        };
+
+        // Update app.nodeOutputs (ComfyUI's central output store)
+        if (app.nodeOutputs) {
+          app.nodeOutputs[String(node.id)] = executedMessage;
+        }
+
+        // Call onExecuted to trigger ComfyUI's standard image display mechanism
+        if (node.onExecuted) {
+          console.log("[BatchBox] Triggering onExecuted for image viewer");
+          node.onExecuted(executedMessage);
+        }
+      }
+
       console.log("[BatchBox] Generation complete:", result.response_info);
     } else {
       console.error("[BatchBox] Generation failed:", result.error);
