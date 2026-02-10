@@ -88,15 +88,13 @@ class GenericAPIAdapter(APIAdapter):
         if model_name and "model" not in payload:
             payload["model"] = model_name
         
-        # If no payload_template defined, auto-add common parameters from params
-        # Frontend now handles api_name mapping, so params already have correct keys
-        auto_params = ["prompt", "n", "size", "quality", "style", "resolution", 
-                      "aspect_ratio", "seed", "response_format", "upscale", "image_size"]
-        
-        for param_name in auto_params:
-            if param_name in params and param_name not in payload:
-                value = params[param_name]
-                # Skip empty/None values
+        # Auto-add parameters from params to payload
+        # Pass through all non-internal params (keys starting with _ are internal)
+        # Frontend handles api_name mapping, so params already have correct keys
+        for param_name, value in params.items():
+            if param_name.startswith("_"):
+                continue
+            if param_name not in payload:
                 if value is not None and value != "":
                     payload[param_name] = value
         

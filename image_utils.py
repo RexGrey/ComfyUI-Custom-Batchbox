@@ -243,3 +243,112 @@ def validate_for_api(
             return False, f"Format {pil_image.format} not in allowed: {allowed_formats}"
     
     return True, None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: GAUSSIAN BLUR PROCESSING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def apply_gaussian_blur(pil_image: Image.Image, sigma: float) -> Image.Image:
+    """
+    Apply Gaussian blur to a PIL image.
+    
+    Used as preprocessing before AI upscaling to convert non-standard
+    degradation (VAE compression artifacts, fake textures) into standard
+    degradation (natural blur) that models are trained to handle.
+    
+    Args:
+        pil_image: Source PIL Image
+        sigma: Gaussian blur radius in pixels (1-15)
+        
+    Returns:
+        Blurred PIL Image
+    """
+    from PIL import ImageFilter
+    
+    if sigma <= 0:
+        return pil_image
+    
+    return pil_image.filter(ImageFilter.GaussianBlur(radius=sigma))
+
+
+def apply_gaussian_blur_tensor(image_tensor, sigma: float):
+    """
+    Apply Gaussian blur to a ComfyUI tensor.
+    
+    Args:
+        image_tensor: Tensor of shape [B, H, W, C] (ComfyUI IMAGE format)
+        sigma: Gaussian blur radius in pixels
+        
+    Returns:
+        Blurred tensor of same shape
+    """
+    import torch
+    
+    if sigma <= 0:
+        return image_tensor
+    
+    # Process each image in the batch
+    results = []
+    for i in range(image_tensor.shape[0]):
+        # Tensor [H, W, C] -> PIL
+        img_np = (image_tensor[i].cpu().numpy() * 255).astype(np.uint8)
+        pil_img = Image.fromarray(img_np)
+        
+        # Apply blur
+        blurred = apply_gaussian_blur(pil_img, sigma)
+        
+        # PIL -> Tensor
+        blurred_np = np.array(blurred).astype(np.float32) / 255.0
+        results.append(torch.from_numpy(blurred_np))
+    
+    return torch.stack(results)
+
+
+def generate_blur_preview_base64(image_base64: str, sigma: float, max_preview_size: int = 512) -> str:
+    """
+    Generate a blurred preview image as base64 for frontend display.
+    
+    Resizes large images to max_preview_size for fast network transfer,
+    then applies Gaussian blur.
+    
+    Args:
+        image_base64: Base64-encoded source image (data URL or raw base64)
+        sigma: Gaussian blur radius
+        max_preview_size: Max dimension for the preview (default 512px)
+        
+    Returns:
+        Base64-encoded blurred preview image (data URL format)
+    """
+    import base64
+    
+    # Strip data URL prefix if present
+    if ',' in image_base64:
+        image_base64 = image_base64.split(',', 1)[1]
+    
+    # Decode base64 to PIL
+    img_bytes = base64.b64decode(image_base64)
+    pil_img = Image.open(io.BytesIO(img_bytes))
+    
+    # Convert to RGB if needed
+    if pil_img.mode not in ('RGB', 'RGBA'):
+        pil_img = pil_img.convert('RGB')
+    
+    # Apply Gaussian blur on original resolution first
+    # so the preview accurately reflects the blur effect on the full image
+    blurred = apply_gaussian_blur(pil_img, sigma)
+
+    # Then resize for preview display (keep aspect ratio)
+    w, h = blurred.size
+    if max(w, h) > max_preview_size:
+        ratio = max_preview_size / max(w, h)
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
+        blurred = blurred.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    # Encode to base64
+    buffer = io.BytesIO()
+    blurred.save(buffer, format='JPEG', quality=85)
+    b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    
+    return f"data:image/jpeg;base64,{b64}"

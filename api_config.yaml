@@ -629,10 +629,6 @@ models:
           - value: auto
             label: 自适应
       advanced:
-        镜头控制:
-          type: boolean
-          default: 'false'
-          api_name: camera_control
         种子:
           type: number
           default: '0'
@@ -694,3 +690,11 @@ node_settings:
   bypass_queue_prompt: true
   show_in_canvas_menu: true
   smart_cache_hash_check: true
+upscale_settings:
+  model: Nano Banana Pro
+style_presets:
+  电影写实: 以电影级写实风格处理，保持自然光影和真实质感
+  现代数字艺术: 以现代数字艺术风格处理，色彩鲜艳，细节丰富
+  复古油画: 以古典油画风格处理，带有厚重的笔触感和温暖的色调
+  日式动漫: 以日式动漫风格处理，线条清晰，色彩明快
+  水墨国风: 以中国传统水墨画风格处理，注重意境和留白

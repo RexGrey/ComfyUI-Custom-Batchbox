@@ -1138,6 +1138,295 @@ class NanoBananaPro(DynamicImageNodeBase):
 
 
 # ==========================================
+# Gaussian Blur Upscale Node
+# ==========================================
+class GaussianBlurUpscaleNode(DynamicImageNodeBase):
+    """
+    高斯模糊预处理 + AI 放大节点
+    
+    工作流程:
+    1. 接收输入图片
+    2. 根据 blur_intensity 或 custom_sigma 应用高斯模糊
+    3. 构建提示词（模糊修复 prompt + 风格 prompt）
+    4. 将模糊后的图片 + 提示词发送给 AI 模型放大
+    5. 返回放大结果 + 中间模糊图（调试用）
+    
+    模型从 upscale_settings.model 读取（在 API Manager 中配置）。
+    """
+    
+    CATEGORY = "ComfyUI-Custom-Batchbox"
+    
+    # σ 值映射
+    BLUR_PRESETS = {
+        "轻 (σ1-3)": 2.0,
+        "中 (σ3-6)": 4.0,
+        "重 (σ6-10)": 7.0,
+    }
+    
+    # 修复模式提示词
+    REPAIR_PROMPTS = {
+        "直出": "把这张模糊的照片变高清",
+        "降噪": "把这张模糊的照片变高清，让画面变得干净整洁",
+        "风格": "把这张模糊的照片变高清。按照如下风格要求处理：",
+    }
+    
+    # 风格预设
+    STYLE_PRESETS = {
+        "电影写实": "以电影级写实风格处理，保持自然光影和真实质感",
+        "复古油画": "以古典油画风格处理，带有厚重的笔触感和温暖的色调",
+        "现代数字艺术": "以现代数字艺术风格处理，色彩鲜艳，细节丰富",
+        "日式动漫": "以日式动漫风格处理，线条清晰，色彩明快",
+        "水墨国风": "以中国传统水墨画风格处理，注重意境和留白",
+    }
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "blur_intensity": (list(cls.BLUR_PRESETS.keys()), {"default": "轻 (σ1-3)"}),
+                "repair_mode": (list(cls.REPAIR_PROMPTS.keys()), {"default": "直出"}),
+            },
+            "optional": {
+                "custom_sigma": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 15.0, "step": 0.5}),
+                "style_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 10}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647}),
+            },
+            "hidden": {
+                "extra_params": ("STRING", {"default": "{}"}),
+                "_last_images": ("STRING", {"default": ""}),
+                "_cached_hash": ("STRING", {"default": ""}),
+                "_force_generate": ("STRING", {"default": "false"}),
+                "_skip_hash_check": ("STRING", {"default": "false"}),
+                "_selected_image_index": ("INT", {"default": 0}),
+                "_all_images_connected": ("STRING", {"default": "false"}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING")
+    RETURN_NAMES = ("selected_image", "blurred_image", "all_images", "response_info")
+    FUNCTION = "upscale"
+    OUTPUT_NODE = True
+    
+    def _get_upscale_model(self) -> str:
+        """Get the model configured for upscaling from upscale_settings."""
+        settings = config_manager.get_upscale_settings()
+        model = settings.get("model", "")
+        if not model:
+            # Fallback: use first available image model
+            models = self.get_models_for_category("image")
+            model = models[0] if models and models[0] != "No Models Found" else ""
+        return model
+    
+    def _build_prompt(self, repair_mode: str, style_prompt: str) -> str:
+        """Build the full prompt based on repair mode and style."""
+        base_prompt = self.REPAIR_PROMPTS.get(repair_mode, self.REPAIR_PROMPTS["直出"])
+        
+        if repair_mode == "风格" and style_prompt:
+            return f"{base_prompt}{style_prompt}"
+        
+        return base_prompt
+    
+    def _get_sigma(self, blur_intensity: str, custom_sigma: float) -> float:
+        """Get the σ value from preset or custom setting."""
+        if custom_sigma > 0:
+            return custom_sigma
+        return self.BLUR_PRESETS.get(blur_intensity, 2.0)
+    
+    def upscale(self, image: torch.Tensor, blur_intensity: str, repair_mode: str, **kwargs) -> Dict:
+        """Apply Gaussian blur preprocessing and upscale via AI model."""
+        from .image_utils import apply_gaussian_blur_tensor
+        
+        custom_sigma = kwargs.get("custom_sigma", 0.0)
+        style_prompt = kwargs.get("style_prompt", "")
+        batch_count = kwargs.get("batch_count", 1)
+        
+        # Get model from global upscale_settings
+        model = self._get_upscale_model()
+        if not model:
+            return {
+                "ui": {"images": []},
+                "result": (image, image, image, "错误：未配置放大模型，请在 API Manager 中设置")
+            }
+        
+        # Build prompt
+        prompt = self._build_prompt(repair_mode, style_prompt)
+        
+        # Compute sigma
+        sigma = self._get_sigma(blur_intensity, custom_sigma)
+        
+        # ==========================================
+        # SMART CACHE: Check if API call is needed
+        # ==========================================
+        last_images_json = kwargs.get("_last_images", "")
+        force_generate = kwargs.get("_force_generate", "false") == "true"
+        cached_hash = kwargs.get("_cached_hash", "")
+        extra_params_str = kwargs.get("extra_params", "{}")
+        skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        
+        # Build kwargs dict for hash computation (include upscale-specific params)
+        hash_kwargs = {
+            "extra_params": extra_params_str,
+            "seed": kwargs.get("seed", 0),
+            "blur_intensity": blur_intensity,
+            "custom_sigma": custom_sigma,
+            "repair_mode": repair_mode,
+            "style_prompt": style_prompt,
+        }
+        
+        params_not_loaded = (extra_params_str == "{}" and last_images_json and cached_hash)
+        
+        if params_not_loaded or skip_hash_check:
+            need_api_call = force_generate or not last_images_json
+        else:
+            current_hash = self._compute_params_hash(model, prompt, batch_count, hash_kwargs)
+            need_api_call = (
+                force_generate or
+                not last_images_json or
+                (cached_hash and current_hash != cached_hash)
+            )
+        
+        if not need_api_call:
+            selected_index = kwargs.get("_selected_image_index", 0)
+            all_images_connected = kwargs.get("_all_images_connected", "false") == "true"
+            try:
+                selected_index = int(selected_index)
+            except (ValueError, TypeError):
+                selected_index = 0
+            
+            selected_tensor, all_tensor, preview_results = self._load_persisted_images(
+                last_images_json, selected_index, load_all=all_images_connected
+            )
+            if selected_tensor is not None:
+                # Also compute blurred image for the blurred_image output
+                blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
+                return {
+                    "ui": {
+                        "images": preview_results,
+                        "_last_images": [last_images_json],
+                        "_cached_hash": [cached_hash],
+                    },
+                    "result": (selected_tensor, blurred_tensor, all_tensor, "Loaded from cache")
+                }
+        
+        # ==========================================
+        # STEP 1: Apply Gaussian Blur
+        # ==========================================
+        print(f"[GaussianBlurUpscale] Applying Gaussian blur with σ={sigma}")
+        blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
+        
+        # ==========================================
+        # STEP 2: Prepare blurred image for API upload
+        # ==========================================
+        # Use first image in batch for upload
+        blurred_pil = tensor2pil(blurred_tensor)[0]
+        buffered = BytesIO()
+        blurred_pil.save(buffered, format="PNG")
+        
+        params = {
+            "prompt": prompt,
+            "seed": kwargs.get("seed", 0),
+            "_upload_files": [("image", ("blurred_input.png", buffered.getvalue(), "image/png"))],
+        }
+
+        # Merge default params from upscale_settings (lower priority than extra_params)
+        settings = config_manager.get_upscale_settings()
+        default_params = settings.get("default_params", {})
+        print(f"[GaussianBlurUpscale] upscale_settings: {settings}")
+        print(f"[GaussianBlurUpscale] default_params: {default_params}")
+        if default_params:
+            params.update(default_params)
+
+        # Parse extra dynamic parameters (highest priority, overrides defaults)
+        try:
+            extra_params = json.loads(extra_params_str)
+            params.update(extra_params)
+        except:
+            pass
+        
+        # Ensure seed is int
+        if "seed" in params:
+            try:
+                params["seed"] = int(params["seed"])
+            except (ValueError, TypeError):
+                params["seed"] = 0
+        
+        # Get endpoint override if any
+        endpoint_override = ""
+        try:
+            ep = json.loads(extra_params_str)
+            endpoint_override = ep.get("endpoint_override", "")
+        except:
+            pass
+        
+        # ==========================================
+        # STEP 3: Call AI model for upscaling
+        # ==========================================
+        print(f"[GaussianBlurUpscale] Sending to model: {model}, prompt: {prompt[:50]}...")
+        images_tensor, response_info, last_url, pil_images = self.process_batch(
+            model, batch_count, params, "img2img", endpoint_override
+        )
+        
+        # ==========================================
+        # STEP 4: Save and return results
+        # ==========================================
+        preview_results = []
+        try:
+            from .save_settings import SaveSettings
+            save_cfg = config_manager.get_save_settings()
+            saver = SaveSettings(save_cfg)
+            
+            if saver.enabled and pil_images:
+                for i, img in enumerate(pil_images):
+                    context = {
+                        "model": model,
+                        "seed": params.get("seed", 0),
+                        "prompt": prompt,
+                        "batch": i + 1,
+                    }
+                    result = saver.save_image(img, context)
+                    if result and "preview" in result:
+                        preview_results.append(result["preview"])
+        except Exception as e:
+            print(f"[GaussianBlurUpscale] AutoSave error: {e}")
+        
+        if not preview_results and pil_images:
+            preview_results = save_preview_images(pil_images, prefix="blur_upscale")
+        
+        last_images_json = json.dumps(preview_results) if preview_results else ""
+        
+        # Compute hash for smart cache
+        current_hash = self._compute_params_hash(model, prompt, batch_count, hash_kwargs)
+        
+        # Select image
+        selected_index = kwargs.get("_selected_image_index", 0)
+        try:
+            selected_index = int(selected_index)
+        except (ValueError, TypeError):
+            selected_index = 0
+        
+        if images_tensor.shape[0] > 1:
+            selected_index = max(0, min(selected_index, images_tensor.shape[0] - 1))
+            selected_tensor = images_tensor[selected_index:selected_index+1]
+        else:
+            selected_tensor = images_tensor
+        
+        info = f"Model: {model} | σ={sigma} | Mode: {repair_mode}"
+        if response_info and response_info != "Success":
+            info += f"\n{response_info}"
+        
+        return {
+            "ui": {
+                "images": preview_results,
+                "_last_images": [last_images_json],
+                "_cached_hash": [current_hash],
+            },
+            "result": (selected_tensor, blurred_tensor, images_tensor, info)
+        }
+
+
+# ==========================================
 # Dynamic Node Factory
 # ==========================================
 def create_dynamic_node(preset_name: str, node_def: Dict):
