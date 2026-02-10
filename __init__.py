@@ -12,6 +12,7 @@ from .nodes import (
     DynamicVideoGenerationNode,
     DynamicAudioGenerationNode,
     DynamicImageEditorNode,
+    GaussianBlurUpscaleNode,
     create_dynamic_node
 )
 from .config_manager import config_manager
@@ -28,6 +29,7 @@ NODE_CLASS_MAPPINGS = {
     "DynamicVideoGeneration": DynamicVideoGenerationNode,
     "DynamicAudioGeneration": DynamicAudioGenerationNode,
     "DynamicImageEditor": DynamicImageEditorNode,
+    "GaussianBlurUpscale": GaussianBlurUpscaleNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -37,6 +39,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DynamicVideoGeneration": "🎬 Dynamic Video Generation",
     "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
     "DynamicImageEditor": "🔧 Dynamic Image Editor",
+    "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
 }
 
 # ==========================================
@@ -328,6 +331,70 @@ try:
                 return web.json_response({"success": True, "node_settings": config_manager.get_node_settings()})
             else:
                 return web.json_response({"error": "Failed to save settings"}, status=500)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # --- Upscale Settings ---
+    @server.PromptServer.instance.routes.get("/api/batchbox/upscale-settings")
+    async def get_upscale_settings(request):
+        """Get upscale settings (model for blur upscale node)"""
+        try:
+            settings = config_manager.get_upscale_settings()
+            return web.json_response({"upscale_settings": settings})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/upscale-settings")
+    async def update_upscale_settings(request):
+        """Update upscale settings"""
+        try:
+            data = await request.json()
+            print(f"[BatchBox] Saving upscale settings: {data}")
+            success = config_manager.update_upscale_settings(data)
+            if success:
+                return web.json_response({"success": True, "upscale_settings": config_manager.get_upscale_settings()})
+            else:
+                return web.json_response({"error": "Failed to save settings"}, status=500)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # --- Style Presets ---
+    @server.PromptServer.instance.routes.get("/api/batchbox/style-presets")
+    async def get_style_presets(request):
+        try:
+            presets = config_manager.get_style_presets()
+            return web.json_response({"style_presets": presets})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/style-presets")
+    async def update_style_presets(request):
+        try:
+            data = await request.json()
+            presets = data.get("style_presets", {})
+            success = config_manager.update_style_presets(presets)
+            if success:
+                return web.json_response({"success": True, "style_presets": config_manager.get_style_presets()})
+            else:
+                return web.json_response({"error": "Failed to save"}, status=500)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # --- Blur Preview ---
+    @server.PromptServer.instance.routes.post("/api/batchbox/blur-preview")
+    async def blur_preview(request):
+        """Generate a blurred preview image for the upscale node UI"""
+        try:
+            from .image_utils import generate_blur_preview_base64
+            data = await request.json()
+            image_base64 = data.get("image_base64", "")
+            sigma = float(data.get("sigma", 2.0))
+            
+            if not image_base64:
+                return web.json_response({"error": "image_base64 is required"}, status=400)
+            
+            preview = generate_blur_preview_base64(image_base64, sigma)
+            return web.json_response({"preview_base64": preview})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 

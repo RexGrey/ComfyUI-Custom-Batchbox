@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.22 | 2026-02-09 | GaussianBlurUpscale 节点：高斯模糊放大 + 风格预设管理 + 自定义面板 |
 | fix | 2026-02-08 | 修复 img2img 模式下 image_size 参数被 multipart 过滤器误删 |
 | fix | 2026-02-07 | 修复加载工作流时节点排版错位的时序竞争问题 |
 | fix | 2026-02-05 | API 密钥分离至 secrets.yaml |
@@ -167,6 +168,7 @@ flowchart LR
 | `DynamicVideoGeneration` | 🎬 Dynamic Video Generation | 动态视频生成 |
 | `DynamicAudioGeneration` | 🎵 Dynamic Audio Generation (Beta) | 动态音频生成 |
 | `DynamicImageEditor` | 🔧 Dynamic Image Editor | 图像编辑器 |
+| `GaussianBlurUpscale` | 🔍 Gaussian Blur Upscale | 高斯模糊 + AI 放大 |
 
 ---
 
@@ -355,7 +357,9 @@ ComfyUI-Custom-Batchbox/
 │   ├── api_manager.css        管理界面样式
 │   ├── dynamic_params.js      动态参数渲染
 │   ├── dynamic_params.css
-│   └── dynamic_inputs.js      动态输入槽
+│   ├── dynamic_inputs.js      动态输入槽
+│   ├── blur_upscale.js        高斯模糊放大节点 UI
+│   └── blur_upscale.css       高斯模糊放大节点样式
 ├── save_settings.py           自动保存模块
 └── tests/                     单元测试
     ├── test_errors.py       异常类测试
@@ -382,6 +386,10 @@ ComfyUI-Custom-Batchbox/
 | `/api/batchbox/model-order/{category}` | POST | 更新模型排序 |
 | `/api/batchbox/node-settings` | GET | 获取节点显示设置 |
 | `/api/batchbox/node-settings` | POST | 更新节点显示设置 |
+| `/api/batchbox/upscale-settings` | GET | 获取高清放大模型设置 |
+| `/api/batchbox/upscale-settings` | POST | 更新高清放大模型设置 |
+| `/api/batchbox/style-presets` | GET | 获取风格预设列表 |
+| `/api/batchbox/style-presets` | POST | 更新风格预设列表 |
 
 ---
 
@@ -1474,6 +1482,139 @@ flowchart TD
 
 **问题：** img2img 模式下，用户选择 2K/4K 分辨率但始终输出 1K。text2img 不受影响。
 
+### 7.21 GaussianBlurUpscale 节点 (v2.22)
+
+**功能：** 对输入图片施加高斯模糊后调用外部 AI 放大模型，实现"模糊→放大→修复"的工作流。支持三种修复模式（直出/降噪/风格）、自定义模糊参数、风格预设管理、实时模糊预览。
+
+**整体流程：**
+
+```mermaid
+flowchart TD
+    A[输入图片] --> B[高斯模糊 σ]
+    B --> C{修复模式?}
+    C -->|直出| D[仅放大]
+    C -->|降噪| E[放大 + 降噪提示词]
+    C -->|风格| F[放大 + 风格提示词]
+    D --> G[调用外部放大 API]
+    E --> G
+    F --> G
+    G --> H[输出高清图片]
+```
+
+**节点 UI 架构：**
+
+```
+┌─────────────────────────────┐
+│  batch_count [widget]       │
+│  ▶ 开始生成 [button]        │
+│                             │
+│  模糊程度                    │
+│  [轻 σ1-3] [中 σ3-6] [重 σ6-10]  ← Canvas 绘制按钮组
+│                             │
+│  修复模式                    │
+│  [直出] [降噪] [风格]        ← Canvas 绘制按钮组
+│                             │
+│  [⚙️ 自定义设置（预览+精确调节）] ← Canvas 绘制按钮
+│                             │
+│  放大模型: Nano Banana Pro   │
+└─────────────────────────────┘
+```
+
+**隐藏 Widget 管理：**
+
+节点内部 widget（`blur_intensity`, `repair_mode`, `custom_sigma`, `style_prompt`, `seed`, `control_after_generate`）全部隐藏，由 Canvas 绘制的自定义 UI 代替。采用与 `dynamic_params.js` 相同的隐藏方式：
+
+```javascript
+widget.hidden = true;
+widget.computeSize = () => [0, -4];
+widget.type = "hidden";
+```
+
+> 注意：ComfyUI 可能在 `onNodeCreated` 之后才添加 `control_after_generate` widget，需要 `setTimeout` 延迟重试。
+
+**作用域执行（Scoped Execution）：**
+
+点击"▶ 开始生成"时，仅执行当前节点及其上游依赖，避免工作流中其他无关节点阻塞执行：
+
+```javascript
+// 临时覆盖 api.queuePrompt，过滤 prompt.output
+api.queuePrompt = async function (index, prompt) {
+  const filtered = {};
+  collectNodeDeps(String(node.id), prompt.output, filtered);
+  prompt.output = filtered;
+  const result = await orig.apply(api, [index, prompt]);
+  api.queuePrompt = orig; // 立即恢复
+  return result;
+};
+```
+
+**自定义面板（近全屏 DOM 浮层）：**
+
+| 组件 | 功能 |
+|------|------|
+| σ 滑块 | 0.5-15 范围，实时更新 CSS 模糊预览 |
+| 预览区域 | flex:1 自适应，显示输入图片的模糊效果 |
+| 风格提示词 | textarea + 风格预设 chips |
+| 应用按钮 | 设置 `repair_mode=风格` + 标记 `_isCustomActive` |
+
+**CSS 模糊预览精度修正：**
+
+CSS `filter: blur()` 作用于显示像素而非原图像素。一张 4000px 宽的图片显示为 800px 时，`blur(5px)` 只模糊 5 个显示像素，而非原图的 5 个像素。
+
+```javascript
+// 修正公式：cssBlurPx = sigma × (displayedWidth / naturalWidth)
+img.onload = () => {
+  blurScaleRatio = img.offsetWidth / img.naturalWidth;
+  img.style.filter = `blur(${sigma * blurScaleRatio}px)`;
+};
+```
+
+**风格预设系统：**
+
+```mermaid
+flowchart TD
+    A[点击"风格"按钮] --> B[弹出风格预设列表]
+    B --> C{用户选择}
+    C -->|选择预设| D[设置 style_prompt + repair_mode=风格]
+    C -->|管理风格预设| E[打开风格编辑器]
+    E --> F[CRUD 操作 + 拖拽排序]
+    F --> G[保存到后端 /api/batchbox/style-presets]
+    G --> H[stylePresets 变量更新]
+    H --> I[下次弹出列表即时反映]
+```
+
+**风格编辑器特性：**
+
+| 特性 | 实现 |
+|------|------|
+| 增删改 | 数组 `draft` 存储 `{name, prompt}` 条目 |
+| 拖拽排序 | HTML5 Drag & Drop，蓝色边框指示插入位置 |
+| 即时反馈 | 保存后 `stylePresets = obj` 立即更新全局变量 |
+| 后端持久化 | `config_manager.py` 存储到 `api_config.yaml` |
+
+**数据存储：**
+
+```yaml
+# api_config.yaml
+style_presets:
+  电影写实: "以电影级写实风格处理，保持自然光影和真实质感"
+  复古油画: "以古典油画风格处理，带有厚重的笔触感和温暖的色调"
+
+upscale_settings:
+  model: Nano Banana Pro
+```
+
+**修改的文件：**
+
+| 文件 | 职责 |
+|------|------|
+| `web/blur_upscale.js` | 节点 UI 全部逻辑（Canvas 绘制、DOM 面板、风格管理） |
+| `web/blur_upscale.css` | 暗色主题样式（按钮、面板、动画） |
+| `nodes.py` | `GaussianBlurUpscaleNode` 后端节点（模糊 + API 调用） |
+| `image_utils.py` | `apply_gaussian_blur()` PIL 高斯模糊实现 |
+| `config_manager.py` | `get/update_upscale_settings()` + `get/update_style_presets()` |
+| `__init__.py` | API 路由注册（upscale-settings、style-presets） |
+
 **根因：**
 
 `adapters/generic.py` 的 `_build_openai_request` 在构建 multipart/form-data 请求时：
@@ -1527,6 +1668,23 @@ request_info["data"] = {k: v for k, v in payload.items()
 ---
 
 ## 9. 更新日志
+
+### v2.22 (2026-02-09)
+
+- ✅ 新增 GaussianBlurUpscale 节点：高斯模糊 + AI 放大工作流
+- ✅ Canvas 绘制自定义按钮组（模糊程度、修复模式），替代隐藏 widget
+- ✅ 三种修复模式：直出 / 降噪 / 风格
+- ✅ 近全屏自定义面板：σ 滑块 + 实时 CSS 模糊预览 + 风格提示词
+- ✅ CSS 模糊预览精度修正：`cssBlurPx = sigma × (displayedWidth / naturalWidth)`
+- ✅ 风格预设弹出列表：点击"风格"按钮弹出预设选择
+- ✅ 风格预设管理器：CRUD + 拖拽排序（HTML5 Drag & Drop）
+- ✅ 风格预设后端持久化：`/api/batchbox/style-presets` GET/POST
+- ✅ 放大模型设置：`/api/batchbox/upscale-settings` GET/POST
+- ✅ 作用域执行：点击"开始生成"仅执行当前节点及上游依赖
+- ✅ Widget 隐藏：采用 `widget.hidden = true` 方式（与 dynamic_params.js 一致）
+- ✅ 图片预览不遮挡：spacer 动态高度 + startY 跳过 spacer 计算
+- 🔧 fix: `control_after_generate` 延迟隐藏（ComfyUI 可能在 onNodeCreated 后才添加）
+- ⚙️ 技术：`config_manager.py` 新增 `get/update_style_presets()` + `get/update_upscale_settings()`
 
 ### 修复记录 (2026-02-05 ~ 2026-02-08)
 

@@ -843,6 +843,52 @@ class ConfigManager:
         self._config["node_settings"].update(new_settings)
         return self.save_config_data(self._config)
 
+    def get_upscale_settings(self) -> Dict:
+        """Get upscale settings (model selection for Gaussian blur upscale node)"""
+        self.load_config()
+        defaults = {
+            "model": "",  # Will be selected by user in API Manager
+        }
+        upscale_settings = self._config.get("upscale_settings", {})
+        for key, value in defaults.items():
+            if key not in upscale_settings:
+                upscale_settings[key] = value
+        return upscale_settings
+
+    def update_upscale_settings(self, new_settings: Dict) -> bool:
+        """Update upscale settings in config file"""
+        self.load_config()
+        if "upscale_settings" not in self._config:
+            self._config["upscale_settings"] = {}
+        self._config["upscale_settings"].update(new_settings)
+        return self.save_config_data(self._config)
+
+    # ==========================================
+    # Style Presets Methods
+    # ==========================================
+
+    DEFAULT_STYLE_PRESETS = {
+        "电影写实": "以电影级写实风格处理，保持自然光影和真实质感",
+        "复古油画": "以古典油画风格处理，带有厚重的笔触感和温暖的色调",
+        "现代数字艺术": "以现代数字艺术风格处理，色彩鲜艳，细节丰富",
+        "日式动漫": "以日式动漫风格处理，线条清晰，色彩明快",
+        "水墨国风": "以中国传统水墨画风格处理，注重意境和留白",
+    }
+
+    def get_style_presets(self) -> Dict[str, str]:
+        """Get style presets dict {name: prompt}"""
+        self.load_config()
+        presets = self._config.get("style_presets", None)
+        if presets is None:
+            return dict(self.DEFAULT_STYLE_PRESETS)
+        return presets
+
+    def update_style_presets(self, presets: Dict[str, str]) -> bool:
+        """Replace all style presets"""
+        self.load_config()
+        self._config["style_presets"] = presets
+        return self.save_config_data(self._config)
+
 
 # Global instance
 config_manager = ConfigManager()

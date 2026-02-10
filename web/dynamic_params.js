@@ -1100,6 +1100,7 @@ app.registerExtension({
       { label: "📝 Dynamic Text Generation", type: "DynamicTextGeneration" },
       { label: "✏️ Dynamic Image Editor", type: "DynamicImageEditor" },
       { label: "🔊 Dynamic Audio Generation", type: "DynamicAudioGeneration" },
+      { label: "🔍 Gaussian Blur Upscale (高斯模糊放大)", type: "GaussianBlurUpscale" },
     ];
 
     return batchboxNodes.map(nodeInfo => ({
@@ -1530,3 +1531,12 @@ window.addEventListener("batchbox:config-changed", async () => {
 
 console.log("[ComfyUI-Custom-Batchbox] Dynamic parameter extension loaded");
 
+// Expose key functions for other extensions (e.g., blur_upscale.js)
+window.batchboxAPI = {
+  executeIndependent,
+  randomizeSeedAndExecute,
+  setNodeGeneratingState,
+  collectNodeParams,
+  collectImageInputsBase64,
+  updateNodePreview,
+};

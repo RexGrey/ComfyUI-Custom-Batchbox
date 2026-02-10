@@ -1577,6 +1577,180 @@ class BatchboxManager {
             }
         };
 
+        // ========== Upscale Model Settings Section ==========
+        const upscaleDivider = document.createElement("hr");
+        upscaleDivider.style.cssText = "margin: 30px 0; border: none; border-top: 1px solid #444;";
+        container.appendChild(upscaleDivider);
+
+        const upscaleSection = document.createElement("div");
+        upscaleSection.className = "batchbox-settings-section";
+        upscaleSection.innerHTML = `<h3>🔍 高清放大模型设置</h3><p style="color: #aaa;">配置高斯模糊放大节点使用的 AI 模型。</p>`;
+
+        const upscaleForm = document.createElement("div");
+        upscaleForm.className = "batchbox-upscale-settings-form";
+
+        // Load presets and upscale settings
+        let upscaleModel = "";
+        let savedDefaultParams = {};
+        try {
+            const upscaleResp = await api.fetchApi("/api/batchbox/upscale-settings");
+            if (upscaleResp.ok) {
+                const upscaleData = await upscaleResp.json();
+                upscaleModel = upscaleData.upscale_settings?.model || "";
+                savedDefaultParams = upscaleData.upscale_settings?.default_params || {};
+            }
+        } catch (e) {
+            console.error("Failed to load upscale settings:", e);
+        }
+
+        // Build model options from the config
+        const models = this.config.models || {};
+        let presetOptions = '<option value="">-- 选择预设模型 --</option>';
+        for (const [name, model] of Object.entries(models)) {
+            const selected = name === upscaleModel ? "selected" : "";
+            const displayName = model.display_name || name;
+            presetOptions += `<option value="${name}" ${selected}>${displayName}</option>`;
+        }
+
+        upscaleForm.innerHTML = `
+            <div class="batchbox-form-group">
+                <label>放大模型</label>
+                <div class="batchbox-input-hint">选择用于高斯模糊放大的预设模型（与图片生成节点使用相同的预设列表）</div>
+                <select id="upscale-model-select" class="batchbox-select">${presetOptions}</select>
+            </div>
+            <div id="upscale-params-container"></div>
+            <div class="batchbox-form-actions">
+                <button class="batchbox-btn btn-primary" id="save-upscale-settings-btn">💾 保存放大模型设置</button>
+            </div>
+        `;
+        upscaleSection.appendChild(upscaleForm);
+        container.appendChild(upscaleSection);
+
+        // Render model parameters into the params container
+        const renderUpscaleParams = (modelName) => {
+            const paramsContainer = container.querySelector("#upscale-params-container");
+            paramsContainer.innerHTML = "";
+            if (!modelName) return;
+
+            const modelData = models[modelName];
+            if (!modelData?.parameter_schema) return;
+
+            const schema = modelData.parameter_schema;
+            const allParams = [];
+            for (const [group, params] of Object.entries(schema)) {
+                for (const [name, config] of Object.entries(params || {})) {
+                    if (name === "prompt") continue;
+                    allParams.push({ name, config, group });
+                }
+            }
+            if (allParams.length === 0) return;
+
+            const heading = document.createElement("div");
+            heading.style.cssText = "margin: 16px 0 8px; color: #ccc; font-size: 13px; font-weight: 600;";
+            heading.textContent = "默认发送参数";
+            paramsContainer.appendChild(heading);
+
+            const hint = document.createElement("div");
+            hint.style.cssText = "margin-bottom: 10px; color: #888; font-size: 12px;";
+            hint.textContent = "设置放大时默认附加的参数值，留空则不发送该参数";
+            paramsContainer.appendChild(hint);
+
+            for (const { name, config } of allParams) {
+                const apiName = config.api_name || name;
+                const savedVal = savedDefaultParams[apiName];
+                const row = document.createElement("div");
+                row.className = "batchbox-upscale-param-row";
+                row.style.cssText = "display: flex; align-items: center; gap: 10px; margin-bottom: 6px;";
+
+                const label = document.createElement("label");
+                label.style.cssText = "width: 100px; color: #aaa; font-size: 12px; flex-shrink: 0;";
+                label.textContent = name;
+                row.appendChild(label);
+
+                let input;
+                if (config.type === "select" && Array.isArray(config.options)) {
+                    input = document.createElement("select");
+                    input.className = "batchbox-select";
+                    input.style.cssText = "flex: 1;";
+                    input.innerHTML = '<option value="">-- 不设置 --</option>';
+                    for (const opt of config.options) {
+                        const val = typeof opt === "object" ? opt.value : opt;
+                        const lbl = typeof opt === "object" ? opt.label : opt;
+                        const sel = String(savedVal ?? config.default) === String(val) ? "selected" : "";
+                        input.innerHTML += `<option value="${val}" ${sel}>${lbl}</option>`;
+                    }
+                } else if (config.type === "boolean") {
+                    input = document.createElement("select");
+                    input.className = "batchbox-select";
+                    input.style.cssText = "flex: 1;";
+                    const curVal = String(savedVal ?? config.default);
+                    input.innerHTML = `
+                        <option value="">-- 不设置 --</option>
+                        <option value="true" ${curVal === "true" ? "selected" : ""}>是</option>
+                        <option value="false" ${curVal === "false" ? "selected" : ""}>否</option>
+                    `;
+                } else if (config.type === "number") {
+                    input = document.createElement("input");
+                    input.type = "number";
+                    input.className = "batchbox-input";
+                    input.style.cssText = "flex: 1;";
+                    input.value = savedVal ?? config.default ?? "";
+                    input.placeholder = "默认: " + (config.default ?? "");
+                } else {
+                    input = document.createElement("input");
+                    input.type = "text";
+                    input.className = "batchbox-input";
+                    input.style.cssText = "flex: 1;";
+                    input.value = savedVal ?? config.default ?? "";
+                    input.placeholder = "默认: " + (config.default ?? "");
+                }
+                input.dataset.apiName = apiName;
+                input.dataset.paramType = config.type || "string";
+                row.appendChild(input);
+                paramsContainer.appendChild(row);
+            }
+        };
+
+        // Listen for model selection change
+        container.querySelector("#upscale-model-select").addEventListener("change", (e) => {
+            renderUpscaleParams(e.target.value);
+        });
+
+        // Initial render if model already selected
+        if (upscaleModel) {
+            renderUpscaleParams(upscaleModel);
+        }
+
+        // Save upscale settings button
+        container.querySelector("#save-upscale-settings-btn").onclick = async () => {
+            const selectedModel = container.querySelector("#upscale-model-select").value;
+
+            // Collect default params from the rendered param inputs
+            const defaultParams = {};
+            const paramInputs = container.querySelectorAll("#upscale-params-container [data-api-name]");
+            for (const input of paramInputs) {
+                const val = input.value;
+                if (val !== "") {
+                    defaultParams[input.dataset.apiName] = val;
+                }
+            }
+
+            try {
+                const resp = await api.fetchApi("/api/batchbox/upscale-settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: selectedModel, default_params: defaultParams }),
+                });
+                if (resp.ok) {
+                    this.showToast("放大模型设置已保存！", "success");
+                } else {
+                    throw new Error("保存失败");
+                }
+            } catch (e) {
+                this.showToast("保存失败: " + e.message, "error");
+            }
+        };
+
         // ========== Divider ==========
         const divider = document.createElement("hr");
         divider.style.cssText = "margin: 30px 0; border: none; border-top: 1px solid #444;";

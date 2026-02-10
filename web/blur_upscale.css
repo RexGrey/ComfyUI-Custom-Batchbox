@@ -1,0 +1,361 @@
+/**
+ * Gaussian Blur Upscale Node Styles
+ * Consistent with dynamic_params.css dark theme
+ */
+
+/* ========================================
+   Preset Button Groups
+   ======================================== */
+.blur-upscale-btn-group {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.blur-upscale-btn-group label {
+  color: #888;
+  font-size: 11px;
+  margin-bottom: 4px;
+  display: block;
+}
+
+.blur-upscale-btn {
+  flex: 1;
+  padding: 8px 8px;
+  background: linear-gradient(135deg, #2a2a3a 0%, #1a1a2a 100%);
+  border: 1px solid #3a3a4a;
+  border-radius: 6px;
+  color: #aaa;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.blur-upscale-btn:hover {
+  background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
+  border-color: #5a5a6a;
+  color: #ddd;
+}
+
+.blur-upscale-btn.active {
+  background: linear-gradient(135deg, #1e3a5f 0%, #0d2137 100%);
+  border-color: #2a5a8f;
+  color: #fff;
+  box-shadow: 0 0 8px rgba(42, 90, 143, 0.3);
+}
+
+/* Repair mode buttons - different color for "风格" when active */
+.blur-upscale-btn.active.style-mode {
+  background: linear-gradient(135deg, #5f3a1e 0%, #37210d 100%);
+  border-color: #8f5a2a;
+  box-shadow: 0 0 8px rgba(143, 90, 42, 0.3);
+}
+
+/* ========================================
+   Style Preset Dropdown
+   ======================================== */
+.blur-upscale-style-panel {
+  margin: 6px 0;
+  padding: 8px;
+  background: #1a1a2a;
+  border: 1px solid #3a3a4a;
+  border-radius: 6px;
+  animation: blur-upscale-slideDown 0.2s ease;
+}
+
+.blur-upscale-style-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.blur-upscale-style-item {
+  padding: 8px 12px;
+  background: #222233;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #aaa;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.blur-upscale-style-item:hover {
+  background: #2a2a3f;
+  border-color: #4a4a5a;
+  color: #ddd;
+}
+
+.blur-upscale-style-item.active {
+  background: linear-gradient(135deg, #3a2a1e 0%, #2a1a0d 100%);
+  border-color: #8f5a2a;
+  color: #fff;
+}
+
+.blur-upscale-style-item .style-name {
+  font-weight: 500;
+}
+
+.blur-upscale-style-item .style-desc {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+}
+
+.blur-upscale-style-item.active .style-desc {
+  color: #aa8866;
+}
+
+/* ========================================
+   Custom Preview Panel (DOM Overlay)
+   ======================================== */
+.blur-upscale-preview-panel {
+  position: fixed;
+  z-index: 10000;
+  background: #1a1a2a;
+  border: 1px solid #3a3a4a;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  padding: 16px;
+  width: 420px;
+  max-height: 600px;
+  overflow-y: auto;
+  animation: blur-upscale-fadeIn 0.25s ease;
+}
+
+.blur-upscale-preview-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #2a2a3a;
+}
+
+.blur-upscale-preview-panel .panel-title {
+  color: #ddd;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.blur-upscale-preview-panel .panel-close {
+  width: 24px;
+  height: 24px;
+  background: #2a2a3a;
+  border: 1px solid #3a3a4a;
+  border-radius: 50%;
+  color: #888;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.blur-upscale-preview-panel .panel-close:hover {
+  background: #3a3a4a;
+  color: #ddd;
+}
+
+/* Sigma Slider Section */
+.blur-upscale-sigma-section {
+  margin-bottom: 12px;
+}
+
+.blur-upscale-sigma-section label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #aaa;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.blur-upscale-sigma-section .sigma-value {
+  color: #5a8abf;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.blur-upscale-sigma-slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  background: linear-gradient(90deg, #1a3a5f 0%, #5f3a1a 100%);
+  border-radius: 3px;
+  outline: none;
+}
+
+.blur-upscale-sigma-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  background: linear-gradient(135deg, #5a8abf 0%, #3a6a9f 100%);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s ease;
+}
+
+.blur-upscale-sigma-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* Preview Image */
+.blur-upscale-preview-container {
+  position: relative;
+  margin: 12px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #111;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.blur-upscale-preview-container img {
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.blur-upscale-preview-container .preview-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  border: 3px solid #3a3a4a;
+  border-top-color: #5a8abf;
+  border-radius: 50%;
+  animation: blur-upscale-spin 0.8s linear infinite;
+}
+
+.blur-upscale-preview-container .preview-placeholder {
+  color: #555;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Prompt Textarea */
+.blur-upscale-prompt-section {
+  margin: 12px 0;
+}
+
+.blur-upscale-prompt-section label {
+  color: #aaa;
+  font-size: 12px;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.blur-upscale-prompt-textarea {
+  width: 100%;
+  min-height: 60px;
+  background: #222233;
+  border: 1px solid #3a3a4a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #ddd;
+  font-size: 12px;
+  resize: vertical;
+  transition: border-color 0.2s ease;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.blur-upscale-prompt-textarea:focus {
+  border-color: #5a8abf;
+  outline: none;
+}
+
+/* Apply Button */
+.blur-upscale-apply-btn {
+  width: 100%;
+  padding: 10px;
+  background: linear-gradient(135deg, #2a5a8f 0%, #1a3a5f 100%);
+  border: 1px solid #3a7abf;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.blur-upscale-apply-btn:hover {
+  background: linear-gradient(135deg, #3a6a9f 0%, #2a5a8f 100%);
+  box-shadow: 0 0 12px rgba(42, 90, 143, 0.4);
+}
+
+/* ========================================
+   Section Wrapper (inside node)
+   ======================================== */
+.blur-upscale-section {
+  margin: 4px 0 2px 0;
+}
+
+.blur-upscale-section-label {
+  color: #777;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+/* Custom toggle button */
+.blur-upscale-custom-btn {
+  width: 100%;
+  padding: 8px;
+  background: linear-gradient(135deg, #2a2a3a 0%, #1a1a2a 100%);
+  border: 1px dashed #3a3a4a;
+  border-radius: 6px;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-top: 4px;
+}
+
+.blur-upscale-custom-btn:hover {
+  background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
+  border-color: #5a5a6a;
+  color: #aaa;
+}
+
+/* ========================================
+   Animations
+   ======================================== */
+@keyframes blur-upscale-fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes blur-upscale-slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 300px;
+  }
+}
+
+@keyframes blur-upscale-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
