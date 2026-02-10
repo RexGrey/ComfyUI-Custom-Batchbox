@@ -1742,6 +1742,10 @@ class BatchboxManager {
                     body: JSON.stringify({ model: selectedModel, default_params: defaultParams }),
                 });
                 if (resp.ok) {
+                    // IMPORTANT: Sync to this.config so "保存所有更改" doesn't overwrite
+                    if (!this.config.upscale_settings) this.config.upscale_settings = {};
+                    this.config.upscale_settings.model = selectedModel;
+                    this.config.upscale_settings.default_params = defaultParams;
                     this.showToast("放大模型设置已保存！", "success");
                 } else {
                     throw new Error("保存失败");

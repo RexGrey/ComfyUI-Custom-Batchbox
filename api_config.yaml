@@ -692,6 +692,10 @@ node_settings:
   smart_cache_hash_check: true
 upscale_settings:
   model: Nano Banana Pro
+  default_params:
+    image_size: 2K
+    aspect_ratio: auto
+    seed: '0'
 style_presets:
   电影写实: 以电影级写实风格处理，保持自然光影和真实质感
   现代数字艺术: 以现代数字艺术风格处理，色彩鲜艳，细节丰富

@@ -1330,13 +1330,16 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             "_upload_files": [("image", ("blurred_input.png", buffered.getvalue(), "image/png"))],
         }
 
-        # Merge default params from upscale_settings (lower priority than extra_params)
+        # Merge default params from upscale_settings (lower priority than existing params)
         settings = config_manager.get_upscale_settings()
         default_params = settings.get("default_params", {})
         print(f"[GaussianBlurUpscale] upscale_settings: {settings}")
         print(f"[GaussianBlurUpscale] default_params: {default_params}")
         if default_params:
-            params.update(default_params)
+            # Only set keys not already present (don't overwrite prompt/seed/_upload_files)
+            for key, val in default_params.items():
+                if key not in params:
+                    params[key] = val
 
         # Parse extra dynamic parameters (highest priority, overrides defaults)
         try:
