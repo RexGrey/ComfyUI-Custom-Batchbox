@@ -151,7 +151,11 @@ try:
             
             # Support both new format (dynamic_inputs) and legacy (max_image_inputs)
             dynamic_inputs = model_config.get("dynamic_inputs") if model_config else None
-            max_image_inputs = model_config.get("max_image_inputs", 1) if model_config else 1
+            # Default max_image_inputs based on model category:
+            # image/image_editor models commonly accept multiple reference images
+            category = model_config.get("category", "") if model_config else ""
+            default_max_images = 9 if category in ("image", "image_editor") else 1
+            max_image_inputs = model_config.get("max_image_inputs", default_max_images) if model_config else 1
             
             # Also return flattened version for easier frontend processing
             flat_schema = config_manager.get_parameter_schema_flat(model_name)
