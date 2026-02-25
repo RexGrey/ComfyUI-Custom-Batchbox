@@ -75,6 +75,55 @@ class GenericAPIAdapter(APIAdapter):
         # Build headers
         headers = {"Authorization": f"Bearer {self.api_key}"}
         
+        # ─── OSS Cache: Upload images and switch to URL mode ───
+        # When use_oss_cache is enabled, upload images to OSS and use JSON+URL
+        # instead of multipart file upload. Falls back if OSS unavailable.
+        use_oss = self.endpoint.get("use_oss_cache", False)
+        oss_switched = False  # Track if we successfully switched to URL mode
+        
+        if use_oss and content_type == "multipart/form-data":
+            upload_files = params.get("_upload_files", [])
+            if upload_files:
+                try:
+                    from ..oss_cache import oss_cache
+                    if oss_cache.is_enabled():
+                        image_urls = []
+                        all_uploaded = True
+                        
+                        for field_name, file_tuple in upload_files:
+                            # file_tuple: (filename, bytes, mime) or (filename, bytes, mime, cached_b64)
+                            filename = file_tuple[0]
+                            file_bytes = file_tuple[1]
+                            mime_type = file_tuple[2] if len(file_tuple) > 2 else "image/png"
+                            
+                            oss_url = oss_cache.get_or_upload(file_bytes, filename, mime_type)
+                            if oss_url:
+                                image_urls.append(oss_url)
+                            else:
+                                logger.warning(f"[OSSCache] Failed to upload {filename}, falling back to multipart")
+                                all_uploaded = False
+                                break
+                        
+                        if all_uploaded and image_urls:
+                            # Successfully uploaded all images to OSS
+                            # Switch to JSON mode with image_urls
+                            content_type = "application/json"
+                            oss_switched = True
+                            
+                            # Switch endpoint: /v1/images/edits (multipart) -> /v1/images/generations (JSON)
+                            oss_endpoint = self.mode_config.get("oss_endpoint", "/v1/images/generations")
+                            url = f"{self.base_url}{oss_endpoint}"
+                            logger.info(f"[OSSCache] 🔄 Switched to URL mode: {len(image_urls)} image(s) → {oss_endpoint}")
+                            
+                            # Store URLs for inclusion in payload later
+                            params = params.copy()
+                            params["image_urls"] = image_urls
+                except ImportError:
+                    logger.debug("[OSSCache] oss_cache module not available, using multipart")
+                except Exception as e:
+                    logger.warning(f"[OSSCache] Error during OSS upload, falling back: {e}")
+        # ─── End OSS Cache ───
+        
         # Prepare base64 images for Chat API format (if using _chat_content template variable)
         # This converts _upload_files to _images_base64 data URLs
         if "_chat_content" in str(payload_template):
@@ -114,6 +163,13 @@ class GenericAPIAdapter(APIAdapter):
         
         if content_type == "application/json":
             headers["Content-Type"] = "application/json"
+            
+            # If OSS switched, update the endpoint to the JSON edit endpoint
+            if oss_switched:
+                # Use the same endpoint path — the API accepts both multipart and JSON
+                # with image_urls in the JSON body
+                logger.debug(f"[OSSCache] JSON payload with image_urls: {payload.get('image_urls', [])}")
+            
             request_info["json"] = payload
         elif content_type == "multipart/form-data":
             # Don't set Content-Type, let requests handle it
@@ -536,8 +592,32 @@ class GenericAPIAdapter(APIAdapter):
             retry_config = RetryConfig(max_retries=3, initial_delay=1.0)
         
         # Build request
+        import time as _time
+        _build_start = _time.time()
         request_info = self.build_request(params, mode)
+        _build_elapsed = _time.time() - _build_start
         url = request_info["url"]
+        
+        # ─── Debug: Request diagnostics ───
+        is_json_mode = "json" in request_info
+        is_multipart_mode = "files" in request_info
+        has_image_urls = False
+        if is_json_mode:
+            payload_data = request_info.get("json", {})
+            has_image_urls = "image_urls" in payload_data
+            if has_image_urls:
+                logger.info(f"[DEBUG] 📡 Request mode: JSON + URL (OSS cache)")
+                logger.info(f"[DEBUG]    image_urls: {payload_data['image_urls']}")
+            else:
+                logger.info(f"[DEBUG] 📡 Request mode: JSON (no images)")
+        elif is_multipart_mode:
+            file_count = len(request_info.get("files", []))
+            total_size = sum(len(f[1][1]) for f in request_info.get("files", []) if len(f) > 1 and len(f[1]) > 1)
+            logger.info(f"[DEBUG] 📡 Request mode: Multipart (direct file upload)")
+            logger.info(f"[DEBUG]    Files: {file_count}, Total size: {total_size/1024:.0f}KB")
+        logger.info(f"[DEBUG] 🔗 URL: {url}")
+        logger.info(f"[DEBUG] ⏱️ Request build time: {_build_elapsed:.2f}s (includes OSS upload if any)")
+        # ─── End Debug ───
         
         # Log request
         log_request(
