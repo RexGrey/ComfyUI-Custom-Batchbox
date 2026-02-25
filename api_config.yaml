@@ -368,6 +368,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-2k
+      use_oss_cache: true
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -437,6 +438,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-4k
+      use_oss_cache: true
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -554,6 +556,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-1k
+      use_oss_cache: true
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -635,9 +638,10 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: 柏拉图
-      provider: 柏拉图
+      provider: 柏拉图1
       priority: 1
       model_name: nano-banana-2
+      use_oss_cache: true
       modes:
         text2img:
           endpoint: /v1/images/generations
