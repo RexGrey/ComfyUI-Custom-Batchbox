@@ -139,17 +139,17 @@ class BatchboxManager {
         sidebar.className = "batchbox-sidebar";
         content.appendChild(sidebar);
 
-        ["供应商 Providers", "模型 Models", "保存设置 Save", "原始 JSON"].forEach((label, i) => {
+        ["供应商 Providers", "模型 Models", "保存设置 Save", "原始 JSON", "Account 服务"].forEach((label, i) => {
             const btn = document.createElement("button");
             btn.className = `batchbox-tab-btn ${i === 0 ? "active" : ""}`;
             btn.innerText = label;
-            btn.onclick = () => this.switchTab(["providers", "models", "save", "raw"][i]);
+            btn.onclick = () => this.switchTab(["providers", "models", "save", "raw", "account"][i]);
             sidebar.appendChild(btn);
         });
 
         // Panels
         this.panels = {};
-        ["providers", "models", "save", "raw"].forEach((name, i) => {
+        ["providers", "models", "save", "raw", "account"].forEach((name, i) => {
             const panel = document.createElement("div");
             panel.className = `batchbox-panel ${i === 0 ? "active" : ""}`;
             this.panels[name] = panel;
@@ -160,6 +160,7 @@ class BatchboxManager {
         this.renderModels(this.panels["models"]);
         this.renderSaveSettings(this.panels["save"]);
         this.renderRaw(this.panels["raw"]);
+        this.renderAccountTab(this.panels["account"]);
 
         // Footer
         const footer = document.createElement("div");
@@ -207,7 +208,7 @@ class BatchboxManager {
     switchTab(tabName) {
         const tabs = this.modalOverlay.querySelectorAll(".batchbox-tab-btn");
         tabs.forEach((t, i) => {
-            t.classList.toggle("active", ["providers", "models", "save", "raw"][i] === tabName);
+            t.classList.toggle("active", ["providers", "models", "save", "raw", "account"][i] === tabName);
         });
         Object.entries(this.panels).forEach(([name, panel]) => {
             panel.classList.toggle("active", name === tabName);
@@ -215,6 +216,547 @@ class BatchboxManager {
         if (tabName === "raw") this.renderRaw(this.panels["raw"]);
         if (tabName === "models") this.renderModels(this.panels["models"]);
         if (tabName === "save") this.renderSaveSettings(this.panels["save"]);
+        if (tabName === "account") this.renderAccountTab(this.panels["account"]);
+    }
+
+    // ================================================================
+    // 2.0 ACCOUNT SERVICE
+    // ================================================================
+
+    /**
+     * Render the Account service management tab.
+     * Login/logout, credits display, redeem codes.
+     */
+    async renderAccountTab(container) {
+        container.innerHTML = "";
+
+        // Header
+        const header = document.createElement("div");
+        header.className = "batchbox-panel-header";
+        header.innerHTML = `<h3>🔑 Account 服务</h3>`;
+        container.appendChild(header);
+
+        // Status card
+        const statusCard = document.createElement("div");
+        statusCard.className = "batchbox-account-card";
+        statusCard.style.cssText = `
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        `;
+        statusCard.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                <div class="account-avatar" style="width: 48px; height: 48px; border-radius: 50%; background: #333; display: flex; align-items: center; justify-content: center; font-size: 24px;">👤</div>
+                <div>
+                    <div class="account-nickname" style="font-size: 16px; font-weight: 600; color: #e0e0e0;">加载中...</div>
+                    <div class="account-status-text" style="font-size: 12px; color: #888; margin-top: 2px;">正在获取状态</div>
+                </div>
+            </div>
+            <div class="account-credits-row" style="display: none; background: #0d1117; border-radius: 8px; padding: 14px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-size: 11px; color: #888; margin-bottom: 4px;">可用积分</div>
+                        <div class="account-credits-value" style="font-size: 28px; font-weight: 700; color: #58a6ff;">--</div>
+                    </div>
+                    <button class="batchbox-btn btn-secondary btn-refresh-credits" style="padding: 6px 12px; font-size: 12px;">🔄 刷新</button>
+                </div>
+            </div>
+            <div class="account-actions" style="display: flex; gap: 10px;"></div>
+        `;
+        container.appendChild(statusCard);
+
+        // Redeem code section
+        const redeemSection = document.createElement("div");
+        redeemSection.className = "batchbox-account-redeem";
+        redeemSection.style.cssText = `
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            display: none;
+        `;
+        redeemSection.innerHTML = `
+            <h4 style="margin: 0 0 12px; color: #e0e0e0; font-size: 14px;">🎁 兑换冰糕</h4>
+            <div style="display: flex; gap: 10px;">
+                <input type="text" class="redeem-code-input batchbox-form-input" placeholder="输入兑换密钥" style="flex: 1; padding: 10px;">
+                <button class="batchbox-btn btn-primary btn-redeem" style="padding: 10px 20px; white-space: nowrap;">兑换</button>
+            </div>
+            <div class="redeem-result" style="margin-top: 8px; font-size: 12px; display: none;"></div>
+        `;
+        container.appendChild(redeemSection);
+
+        // Purchase section (获取冰糕)
+        const purchaseSection = document.createElement("div");
+        purchaseSection.className = "batchbox-account-purchase";
+        purchaseSection.style.cssText = `
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 12px;
+            display: none;
+        `;
+        purchaseSection.innerHTML = `
+            <h4 style="margin: 0 0 12px; color: #e0e0e0; font-size: 14px;">🛒 获取冰糕</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div class="purchase-tier" data-url="https://item.taobao.com/item.htm?ft=t&id=1007803936312&skuId=6168304691735" style="background: #0d1117; border: 1px solid #2a2a4a; border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; transition: border-color 0.2s;">
+                    <div style="font-size: 14px; font-weight: 600; color: #e0e0e0;">小型尝鲜礼包</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #58a6ff; margin: 6px 0;">冰糕 ×600</div>
+                    <div style="font-size: 14px; color: #43cf7c;">¥6</div>
+                </div>
+                <div class="purchase-tier" data-url="https://item.taobao.com/item.htm?ft=t&id=1007803936312&skuId=6168304691736" style="background: #0d1117; border: 1px solid #2a2a4a; border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; transition: border-color 0.2s;">
+                    <div style="font-size: 14px; font-weight: 600; color: #e0e0e0;">中型品鉴礼包</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #58a6ff; margin: 6px 0;">冰糕 ×3300</div>
+                    <div style="font-size: 14px; color: #2a82e4;">¥30</div>
+                </div>
+                <div class="purchase-tier" data-url="https://item.taobao.com/item.htm?ft=t&id=1007803936312&skuId=6168304691737" style="background: #0d1117; border: 1px solid #2a2a4a; border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; transition: border-color 0.2s;">
+                    <div style="font-size: 14px; font-weight: 600; color: #e0e0e0;">大型畅享礼包</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #58a6ff; margin: 6px 0;">冰糕 ×7200</div>
+                    <div style="font-size: 14px; color: #7948ea;">¥60</div>
+                </div>
+                <div class="purchase-tier" data-url="https://item.taobao.com/item.htm?ft=t&id=1007803936312&skuId=6168304691738" style="background: #0d1117; border: 1px solid #2a2a4a; border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; transition: border-color 0.2s;">
+                    <div style="font-size: 14px; font-weight: 600; color: #e0e0e0;">巨型满足礼包</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #58a6ff; margin: 6px 0;">冰糕 ×13000</div>
+                    <div style="font-size: 14px; color: #ffc300;">¥100</div>
+                </div>
+            </div>
+            <p style="font-size: 11px; color: #666; margin: 12px 0 0; text-align: center;">⚠️ 越多人消耗冰糕，未来单次运行消耗的冰糕数越会降低 ↓</p>
+        `;
+        container.appendChild(purchaseSection);
+
+        // Pricing section (模型消耗表)
+        const pricingSection = document.createElement("div");
+        pricingSection.className = "batchbox-account-pricing";
+        pricingSection.style.cssText = `
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 12px;
+            display: none;
+        `;
+        pricingSection.innerHTML = `
+            <h4 style="margin: 0 0 12px; color: #e0e0e0; font-size: 14px;">📊 模型冰糕消耗</h4>
+            <div class="pricing-table-container" style="font-size: 12px;">
+                <p style="color: #888;">加载中...</p>
+            </div>
+        `;
+        container.appendChild(pricingSection);
+
+        // Pricing strategy section (通道策略)
+        const strategySection = document.createElement("div");
+        strategySection.className = "batchbox-account-strategy";
+        strategySection.style.cssText = `
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 12px;
+        `;
+
+        // Load current pricing strategy from node settings
+        let currentStrategy = "bestPrice";
+        try {
+            const nsResp = await api.fetchApi("/api/batchbox/node-settings");
+            const nsData = await nsResp.json();
+            currentStrategy = nsData.node_settings?.pricing_strategy || "bestPrice";
+        } catch (e) {
+            console.error("Failed to load pricing strategy:", e);
+        }
+
+        strategySection.innerHTML = `
+            <h4 style="margin: 0 0 8px; color: #e0e0e0; font-size: 14px;">⚡ 通道策略</h4>
+            <p style="font-size: 11px; color: #888; margin: 0 0 12px;">选择 Account 服务的供应商分配策略（同 Blender 插件的低价优先/稳定优先）</p>
+            <div style="display: flex; gap: 10px;">
+                <button class="strategy-btn" data-value="bestPrice" style="flex: 1; padding: 12px; border-radius: 8px; border: 2px solid ${currentStrategy === 'bestPrice' ? '#58a6ff' : '#2a2a4a'}; background: ${currentStrategy === 'bestPrice' ? '#0d2137' : '#0d1117'}; color: #e0e0e0; cursor: pointer; transition: all 0.2s; text-align: center;">
+                    <div style="font-size: 20px; margin-bottom: 4px;">💰</div>
+                    <div style="font-size: 13px; font-weight: 600;">低价优先</div>
+                    <div style="font-size: 10px; color: #888; margin-top: 2px;">选择最优惠的供应商</div>
+                </button>
+                <button class="strategy-btn" data-value="bestBalance" style="flex: 1; padding: 12px; border-radius: 8px; border: 2px solid ${currentStrategy === 'bestBalance' ? '#58a6ff' : '#2a2a4a'}; background: ${currentStrategy === 'bestBalance' ? '#0d2137' : '#0d1117'}; color: #e0e0e0; cursor: pointer; transition: all 0.2s; text-align: center;">
+                    <div style="font-size: 20px; margin-bottom: 4px;">⚡</div>
+                    <div style="font-size: 13px; font-weight: 600;">稳定优先</div>
+                    <div style="font-size: 10px; color: #888; margin-top: 2px;">选择最稳定的供应商</div>
+                </button>
+            </div>
+        `;
+        container.appendChild(strategySection);
+
+        // Wire strategy buttons
+        strategySection.querySelectorAll(".strategy-btn").forEach(btn => {
+            btn.onmouseenter = () => { if (btn.style.borderColor !== "rgb(88, 166, 255)") btn.style.borderColor = "#444"; };
+            btn.onmouseleave = () => { if (btn.style.borderColor !== "rgb(88, 166, 255)") btn.style.borderColor = "#2a2a4a"; };
+            btn.onclick = async () => {
+                const value = btn.dataset.value;
+                // Update visual state
+                strategySection.querySelectorAll(".strategy-btn").forEach(b => {
+                    b.style.borderColor = "#2a2a4a";
+                    b.style.background = "#0d1117";
+                });
+                btn.style.borderColor = "#58a6ff";
+                btn.style.background = "#0d2137";
+                // Save to node settings
+                try {
+                    const resp = await api.fetchApi("/api/batchbox/node-settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pricing_strategy: value }),
+                    });
+                    if (resp.ok) {
+                        this.showToast(`通道策略已切换为: ${value === 'bestPrice' ? '低价优先 💰' : '稳定优先 ⚡'}`, "success");
+                    } else {
+                        throw new Error("保存失败");
+                    }
+                } catch (e) {
+                    this.showToast("保存失败: " + e.message, "error");
+                }
+            };
+        });
+
+        // Info section
+        const infoSection = document.createElement("div");
+        infoSection.style.cssText = `
+            margin-top: 20px;
+            padding: 16px;
+            background: #0d1117;
+            border-radius: 8px;
+            border: 1px solid #1a1a2a;
+        `;
+        infoSection.innerHTML = `
+            <p style="font-size: 12px; color: #888; margin: 0 0 8px;">
+                <strong style="color: #aaa;">ℹ️ 关于 Account 服务</strong>
+            </p>
+            <p style="font-size: 11px; color: #666; margin: 0; line-height: 1.6;">
+                Account 服务由 AIGODLIKE 提供稳定的 API 代理通道，通过冰糕(积分)计费。<br>
+                登录后即可使用 Account 通道的模型进行图片生成。
+            </p>
+        `;
+        container.appendChild(infoSection);
+
+        // Server status indicator
+        const serverStatusEl = document.createElement("div");
+        serverStatusEl.style.cssText = `
+            margin-top: 12px;
+            padding: 10px 16px;
+            background: #0d1117;
+            border-radius: 8px;
+            border: 1px solid #1a1a2a;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        `;
+        serverStatusEl.innerHTML = `
+            <span class="server-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #888;"></span>
+            <span class="server-status-text" style="color: #888;">服务器状态: 检测中...</span>
+        `;
+        container.appendChild(serverStatusEl);
+
+        // --- Wire up logic ---
+        const nicknameEl = statusCard.querySelector(".account-nickname");
+        const statusTextEl = statusCard.querySelector(".account-status-text");
+        const avatarEl = statusCard.querySelector(".account-avatar");
+        const creditsRow = statusCard.querySelector(".account-credits-row");
+        const creditsValueEl = statusCard.querySelector(".account-credits-value");
+        const actionsEl = statusCard.querySelector(".account-actions");
+        const refreshCreditsBtn = statusCard.querySelector(".btn-refresh-credits");
+        const redeemBtn = redeemSection.querySelector(".btn-redeem");
+        const redeemInput = redeemSection.querySelector(".redeem-code-input");
+        const redeemResult = redeemSection.querySelector(".redeem-result");
+
+        const updateUI = (status) => {
+            // Update server status indicator
+            const dot = serverStatusEl.querySelector(".server-status-dot");
+            const statusLabel = serverStatusEl.querySelector(".server-status-text");
+            if (status.services_connected) {
+                dot.style.background = "#4ade80";
+                statusLabel.style.color = "#4ade80";
+                statusLabel.textContent = "服务器状态: 已连接";
+            } else {
+                dot.style.background = "#f87171";
+                statusLabel.style.color = "#f87171";
+                statusLabel.textContent = "服务器状态: 未连接";
+            }
+
+            // Token expiry warning
+            if (status.token_expired) {
+                avatarEl.textContent = "⚠️";
+                avatarEl.style.background = "#2a2a1a";
+                nicknameEl.textContent = status.nickname || "用户";
+                statusTextEl.textContent = "Token 已过期，请重新登录";
+                statusTextEl.style.color = "#f0c060";
+                creditsRow.style.display = "none";
+                redeemSection.style.display = "none";
+                purchaseSection.style.display = "none";
+                pricingSection.style.display = "none";
+
+                actionsEl.innerHTML = "";
+                const reLoginBtn = document.createElement("button");
+                reLoginBtn.className = "batchbox-btn btn-primary";
+                reLoginBtn.innerText = "🔑 重新登录";
+                reLoginBtn.style.cssText = "padding: 12px 28px; font-size: 14px; font-weight: 600;";
+                reLoginBtn.onclick = async () => {
+                    reLoginBtn.disabled = true;
+                    reLoginBtn.innerText = "⏳ 正在打开浏览器...";
+                    try {
+                        await api.fetchApi("/api/batchbox/account/logout", { method: "POST" });
+                        const resp = await api.fetchApi("/api/batchbox/account/login", { method: "POST" });
+                        const result = await resp.json();
+                        if (result.success) {
+                            this.showToast("登录成功！", "success");
+                            this.renderAccountTab(container);
+                        } else {
+                            this.showToast(result.error || "登录失败", "error");
+                            reLoginBtn.disabled = false;
+                            reLoginBtn.innerText = "🔑 重新登录";
+                        }
+                    } catch (e) {
+                        this.showToast("登录失败: " + e.message, "error");
+                        reLoginBtn.disabled = false;
+                        reLoginBtn.innerText = "🔑 重新登录";
+                    }
+                };
+                actionsEl.appendChild(reLoginBtn);
+                return;
+            }
+
+            if (status.logged_in) {
+                avatarEl.textContent = "✅";
+                avatarEl.style.background = "#1a3a2a";
+                nicknameEl.textContent = status.nickname || "用户";
+                statusTextEl.textContent = "已登录";
+                statusTextEl.style.color = "#4ade80";
+                creditsRow.style.display = "block";
+                creditsValueEl.textContent = status.credits !== undefined ? status.credits : "--";
+                redeemSection.style.display = "none";
+                purchaseSection.style.display = "none";
+
+                actionsEl.innerHTML = "";
+
+                const hideAllPanels = () => {
+                    purchaseSection.style.display = "none";
+                    redeemSection.style.display = "none";
+                    pricingSection.style.display = "none";
+                };
+
+                // 获取冰糕 button
+                const purchaseBtn = document.createElement("button");
+                purchaseBtn.className = "batchbox-btn btn-primary";
+                purchaseBtn.innerText = "🛒 获取冰糕";
+                purchaseBtn.style.padding = "10px 20px";
+                purchaseBtn.onclick = () => {
+                    const show = purchaseSection.style.display === "none";
+                    hideAllPanels();
+                    if (show) purchaseSection.style.display = "block";
+                };
+                actionsEl.appendChild(purchaseBtn);
+
+                // 兑换冰糕 button
+                const redeemToggleBtn = document.createElement("button");
+                redeemToggleBtn.className = "batchbox-btn btn-primary";
+                redeemToggleBtn.innerText = "🎁 兑换冰糕";
+                redeemToggleBtn.style.padding = "10px 20px";
+                redeemToggleBtn.onclick = () => {
+                    const show = redeemSection.style.display === "none";
+                    hideAllPanels();
+                    if (show) redeemSection.style.display = "block";
+                };
+                actionsEl.appendChild(redeemToggleBtn);
+
+                // 消耗查询 button
+                const pricingBtn = document.createElement("button");
+                pricingBtn.className = "batchbox-btn btn-primary";
+                pricingBtn.innerText = "📊 消耗查询";
+                pricingBtn.style.padding = "10px 20px";
+                pricingBtn.onclick = async () => {
+                    const show = pricingSection.style.display === "none";
+                    hideAllPanels();
+                    if (show) {
+                        pricingSection.style.display = "block";
+                        const tableContainer = pricingSection.querySelector(".pricing-table-container");
+                        tableContainer.innerHTML = '<p style="color: #888;">⏳ 加载中...</p>';
+                        try {
+                            const resp = await api.fetchApi("/api/batchbox/account/pricing");
+                            const data = await resp.json();
+                            if (data.price_table && data.price_table.length > 0) {
+                                let html = `<table style="width: 100%; border-collapse: collapse;">`;
+                                html += `<tr style="border-bottom: 1px solid #2a2a4a;">
+                                    <th style="text-align: left; padding: 8px 6px; color: #aaa;">模型</th>
+                                    <th style="text-align: right; padding: 8px 6px; color: #aaa;">文生图</th>
+                                    <th style="text-align: right; padding: 8px 6px; color: #aaa;">图生图</th>
+                                </tr>`;
+                                for (const item of data.price_table) {
+                                    const name = item.modelName || "未知";
+                                    const t2i = item.text2img || item.txt2img;
+                                    const i2i = item.img2img;
+                                    const t2iPrice = t2i ? (t2i.price || t2i.coin || "-") : "-";
+                                    const i2iPrice = i2i ? (i2i.price || i2i.coin || "-") : "-";
+                                    html += `<tr style="border-bottom: 1px solid #1a1a2a;">
+                                        <td style="padding: 8px 6px; color: #e0e0e0;">${name}</td>
+                                        <td style="text-align: right; padding: 8px 6px; color: #58a6ff;">${t2iPrice} 🍦</td>
+                                        <td style="text-align: right; padding: 8px 6px; color: #58a6ff;">${i2iPrice} 🍦</td>
+                                    </tr>`;
+                                }
+                                html += `</table>`;
+                                tableContainer.innerHTML = html;
+                            } else {
+                                tableContainer.innerHTML = '<p style="color: #888;">暂无定价信息</p>';
+                            }
+                        } catch (e) {
+                            tableContainer.innerHTML = `<p style="color: #f87171;">获取失败: ${e.message}</p>`;
+                        }
+                    }
+                };
+                actionsEl.appendChild(pricingBtn);
+
+                // 退出登录 button
+                const logoutBtn = document.createElement("button");
+                logoutBtn.className = "batchbox-btn btn-danger";
+                logoutBtn.innerText = "退出登录";
+                logoutBtn.style.padding = "10px 24px";
+                logoutBtn.onclick = async () => {
+                    logoutBtn.disabled = true;
+                    logoutBtn.innerText = "⏳ 退出中...";
+                    try {
+                        await api.fetchApi("/api/batchbox/account/logout", { method: "POST" });
+                        this.showToast("已退出登录", "success");
+                        this.renderAccountTab(container);
+                    } catch (e) {
+                        this.showToast("退出失败: " + e.message, "error");
+                        logoutBtn.disabled = false;
+                        logoutBtn.innerText = "退出登录";
+                    }
+                };
+                actionsEl.appendChild(logoutBtn);
+            } else {
+                avatarEl.textContent = "🔒";
+                avatarEl.style.background = "#2a1a1a";
+                nicknameEl.textContent = "未登录";
+                statusTextEl.textContent = "点击登录以使用 Account 服务";
+                statusTextEl.style.color = "#888";
+                creditsRow.style.display = "none";
+                redeemSection.style.display = "none";
+                purchaseSection.style.display = "none";
+                pricingSection.style.display = "none";
+
+                actionsEl.innerHTML = "";
+                const loginBtn = document.createElement("button");
+                loginBtn.className = "batchbox-btn btn-primary";
+                loginBtn.innerText = "🔑 登录 Account";
+                loginBtn.style.cssText = "padding: 12px 28px; font-size: 14px; font-weight: 600;";
+                loginBtn.onclick = async () => {
+                    loginBtn.disabled = true;
+                    loginBtn.innerText = "⏳ 正在打开浏览器...";
+                    statusTextEl.textContent = "请在浏览器中完成登录";
+                    statusTextEl.style.color = "#f0c060";
+                    try {
+                        const resp = await api.fetchApi("/api/batchbox/account/login", { method: "POST" });
+                        const result = await resp.json();
+                        if (result.success) {
+                            this.showToast("登录成功！", "success");
+                            this.renderAccountTab(container);
+                        } else {
+                            this.showToast(result.error || "登录失败", "error");
+                            loginBtn.disabled = false;
+                            loginBtn.innerText = "🔑 登录 Account";
+                            statusTextEl.textContent = "登录失败，请重试";
+                            statusTextEl.style.color = "#f87171";
+                        }
+                    } catch (e) {
+                        this.showToast("登录请求失败: " + e.message, "error");
+                        loginBtn.disabled = false;
+                        loginBtn.innerText = "🔑 登录 Account";
+                        statusTextEl.textContent = "连接失败，请检查网络";
+                        statusTextEl.style.color = "#f87171";
+                    }
+                };
+                actionsEl.appendChild(loginBtn);
+            }
+        };
+
+        // Refresh credits
+        refreshCreditsBtn.onclick = async () => {
+            refreshCreditsBtn.disabled = true;
+            refreshCreditsBtn.innerText = "⏳ 刷新中...";
+            try {
+                const resp = await api.fetchApi("/api/batchbox/account/credits", { method: "POST" });
+                const data = await resp.json();
+                if (data.credits !== undefined) {
+                    creditsValueEl.textContent = data.credits;
+                }
+                this.showToast("积分已刷新", "success");
+            } catch (e) {
+                this.showToast("刷新失败: " + e.message, "error");
+            }
+            refreshCreditsBtn.disabled = false;
+            refreshCreditsBtn.innerText = "🔄 刷新";
+        };
+
+        // Redeem code
+        redeemBtn.onclick = async () => {
+            const code = redeemInput.value.trim();
+            if (!code) {
+                this.showToast("请输入兑换码", "error");
+                return;
+            }
+            redeemBtn.disabled = true;
+            redeemBtn.innerText = "⏳ 兑换中...";
+            redeemResult.style.display = "none";
+            try {
+                const resp = await api.fetchApi("/api/batchbox/account/redeem", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ code })
+                });
+                const data = await resp.json();
+                redeemResult.style.display = "block";
+                if (data.success) {
+                    redeemResult.style.color = "#4ade80";
+                    redeemResult.textContent = `✅ 兑换成功！获得 ${data.credits_added || ""} 积分`;
+                    redeemInput.value = "";
+                    // Refresh credits
+                    refreshCreditsBtn.click();
+                } else {
+                    redeemResult.style.color = "#f87171";
+                    redeemResult.textContent = `❌ ${data.error || "兑换失败"}`;
+                }
+            } catch (e) {
+                redeemResult.style.display = "block";
+                redeemResult.style.color = "#f87171";
+                redeemResult.textContent = `❌ 兑换请求失败: ${e.message}`;
+            }
+            redeemBtn.disabled = false;
+            redeemBtn.innerText = "兑换";
+        };
+
+        // Purchase tier hover effects & click to open Taobao
+        purchaseSection.querySelectorAll(".purchase-tier").forEach(tier => {
+            tier.onmouseenter = () => { tier.style.borderColor = "#58a6ff"; };
+            tier.onmouseleave = () => { tier.style.borderColor = "#2a2a4a"; };
+            tier.onclick = () => {
+                const url = tier.dataset.url;
+                if (url) window.open(url, "_blank");
+            };
+        });
+
+        // Enter key for redeem
+        redeemInput.onkeydown = (e) => {
+            if (e.key === "Enter") redeemBtn.click();
+        };
+
+        // Fetch initial status
+        try {
+            const resp = await api.fetchApi("/api/batchbox/account/status");
+            const status = await resp.json();
+            updateUI(status);
+        } catch (e) {
+            nicknameEl.textContent = "连接失败";
+            statusTextEl.textContent = "无法获取 Account 状态";
+            statusTextEl.style.color = "#f87171";
+            avatarEl.textContent = "⚠️";
+        }
     }
 
     // ================================================================
@@ -827,6 +1369,14 @@ class BatchboxManager {
                         </div>
                         <p style="font-size: 10px; color: #666; margin: 4px 0 0 0;">留空则继承供应商设置，供应商未设置则使用系统默认</p>
                         
+                        <div class="batchbox-form-group" style="margin-top: 12px;">
+                            <label style="font-size: 11px; display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" class="ep-use-oss-cache" ${ep.modes?.img2img?.use_oss_cache ? "checked" : ""}>
+                                <span>OSS 图片缓存 (img2img)</span>
+                            </label>
+                            <p style="font-size: 10px; color: #666; margin: 4px 0 0 0;">开启后图转图时先上传到阿里 OSS，适用于 Gemini 等不支持 base64 直传的 API</p>
+                        </div>
+                        
                         <div class="batchbox-form-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
                             <div class="batchbox-form-group">
                                 <label style="font-size: 11px;">API 格式</label>
@@ -993,6 +1543,8 @@ class BatchboxManager {
                     const fileField = card.querySelector(".ep-file-field")?.value.trim();
                     if (fileFormat) img2imgConfig.file_format = fileFormat;
                     if (fileField) img2imgConfig.file_field = fileField;
+                    const useOssCache = card.querySelector(".ep-use-oss-cache")?.checked;
+                    img2imgConfig.use_oss_cache = !!useOssCache;
 
                     modes.img2img = img2imgConfig;
                 }
@@ -1529,6 +2081,15 @@ class BatchboxManager {
                 <div class="batchbox-input-hint">开启后，修改节点参数会触发重新生成；关闭后仅按钮触发生成</div>
             </div>
             
+            <div class="batchbox-form-group">
+                <label>自动端点模式</label>
+                <div class="batchbox-input-hint">未手动选择端点时，自动模式的端点分配策略</div>
+                <select id="node-endpoint-mode" class="batchbox-select" style="width: 100%; padding: 8px; background: #333; color: #eee; border: 1px solid #555; border-radius: 6px;">
+                    <option value="priority" ${nodeSettings.auto_endpoint_mode === 'priority' ? 'selected' : ''}>🎯 优先级（始终使用排名第一的端点）</option>
+                    <option value="round_robin" ${nodeSettings.auto_endpoint_mode !== 'priority' ? 'selected' : ''}>🔄 轮询（批量时轮流使用所有端点）</option>
+                </select>
+            </div>
+            
             <div class="batchbox-form-actions">
                 <button class="batchbox-btn btn-primary" id="save-node-settings-btn">💾 保存节点设置</button>
             </div>
@@ -1551,11 +2112,13 @@ class BatchboxManager {
             const bypassQueuePrompt = container.querySelector("#node-bypass-queue").checked;
             const showInCanvasMenu = container.querySelector("#node-canvas-menu").checked;
             const smartCacheHashCheck = container.querySelector("#node-hash-check").checked;
+            const autoEndpointMode = container.querySelector("#node-endpoint-mode").value;
             const newNodeSettings = {
                 default_width: newWidth,
                 bypass_queue_prompt: bypassQueuePrompt,
                 show_in_canvas_menu: showInCanvasMenu,
-                smart_cache_hash_check: smartCacheHashCheck
+                smart_cache_hash_check: smartCacheHashCheck,
+                auto_endpoint_mode: autoEndpointMode
             };
             try {
                 const resp = await api.fetchApi("/api/batchbox/node-settings", {
@@ -1591,12 +2154,14 @@ class BatchboxManager {
 
         // Load presets and upscale settings
         let upscaleModel = "";
+        let upscaleEndpoint = "";
         let savedDefaultParams = {};
         try {
             const upscaleResp = await api.fetchApi("/api/batchbox/upscale-settings");
             if (upscaleResp.ok) {
                 const upscaleData = await upscaleResp.json();
                 upscaleModel = upscaleData.upscale_settings?.model || "";
+                upscaleEndpoint = upscaleData.upscale_settings?.endpoint || "";
                 savedDefaultParams = upscaleData.upscale_settings?.default_params || {};
             }
         } catch (e) {
@@ -1618,6 +2183,11 @@ class BatchboxManager {
                 <div class="batchbox-input-hint">选择用于高斯模糊放大的预设模型（与图片生成节点使用相同的预设列表）</div>
                 <select id="upscale-model-select" class="batchbox-select">${presetOptions}</select>
             </div>
+            <div class="batchbox-form-group" id="upscale-endpoint-group" style="display:none;">
+                <label>端点</label>
+                <div class="batchbox-input-hint">选择该模型使用的 API 端点</div>
+                <select id="upscale-endpoint-select" class="batchbox-select"></select>
+            </div>
             <div id="upscale-params-container"></div>
             <div class="batchbox-form-actions">
                 <button class="batchbox-btn btn-primary" id="save-upscale-settings-btn">💾 保存放大模型设置</button>
@@ -1625,6 +2195,35 @@ class BatchboxManager {
         `;
         upscaleSection.appendChild(upscaleForm);
         container.appendChild(upscaleSection);
+
+        // Render endpoint options for a given model
+        const renderUpscaleEndpoints = (modelName) => {
+            const endpointGroup = container.querySelector("#upscale-endpoint-group");
+            const endpointSelect = container.querySelector("#upscale-endpoint-select");
+            if (!modelName) {
+                endpointGroup.style.display = "none";
+                return;
+            }
+
+            const modelData = models[modelName];
+            const endpoints = modelData?.api_endpoints || [];
+            if (endpoints.length <= 1) {
+                // Single or no endpoint — no need to show selector
+                endpointGroup.style.display = "none";
+                endpointSelect.innerHTML = "";
+                return;
+            }
+
+            endpointGroup.style.display = "";
+            const autoLabel = nodeSettings.auto_endpoint_mode === 'round_robin' ? '自动（轮询）' : '自动（优先级）';
+            let options = `<option value="">${autoLabel}</option>`;
+            for (const ep of endpoints) {
+                const name = ep.display_name || ep.provider || "";
+                const sel = name === upscaleEndpoint ? "selected" : "";
+                options += `<option value="${name}" ${sel}>${name}</option>`;
+            }
+            endpointSelect.innerHTML = options;
+        };
 
         // Render model parameters into the params container
         const renderUpscaleParams = (modelName) => {
@@ -1713,17 +2312,21 @@ class BatchboxManager {
 
         // Listen for model selection change
         container.querySelector("#upscale-model-select").addEventListener("change", (e) => {
+            upscaleEndpoint = ""; // Reset endpoint when model changes
+            renderUpscaleEndpoints(e.target.value);
             renderUpscaleParams(e.target.value);
         });
 
         // Initial render if model already selected
         if (upscaleModel) {
+            renderUpscaleEndpoints(upscaleModel);
             renderUpscaleParams(upscaleModel);
         }
 
         // Save upscale settings button
         container.querySelector("#save-upscale-settings-btn").onclick = async () => {
             const selectedModel = container.querySelector("#upscale-model-select").value;
+            const selectedEndpoint = container.querySelector("#upscale-endpoint-select")?.value || "";
 
             // Collect default params from the rendered param inputs
             const defaultParams = {};
@@ -1739,12 +2342,13 @@ class BatchboxManager {
                 const resp = await api.fetchApi("/api/batchbox/upscale-settings", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ model: selectedModel, default_params: defaultParams }),
+                    body: JSON.stringify({ model: selectedModel, endpoint: selectedEndpoint, default_params: defaultParams }),
                 });
                 if (resp.ok) {
                     // IMPORTANT: Sync to this.config so "保存所有更改" doesn't overwrite
                     if (!this.config.upscale_settings) this.config.upscale_settings = {};
                     this.config.upscale_settings.model = selectedModel;
+                    this.config.upscale_settings.endpoint = selectedEndpoint;
                     this.config.upscale_settings.default_params = defaultParams;
                     this.showToast("放大模型设置已保存！", "success");
                 } else {

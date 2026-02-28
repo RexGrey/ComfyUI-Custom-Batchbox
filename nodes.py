@@ -131,18 +131,22 @@ class DynamicImageNodeBase:
             # User manually selected a specific endpoint by display_name
             endpoint_info = config_manager.get_endpoint_by_name(model_name, endpoint_override, mode)
         else:
-            # Auto mode: round-robin through all available endpoints
-            endpoints = config_manager.get_api_endpoints(model_name)
-            if not endpoints:
-                print(f"[DynamicImageNode] No endpoints for {model_name}")
-                return None
+            # Auto mode: check setting for strategy
+            node_settings = config_manager.get_node_settings()
+            auto_mode = node_settings.get("auto_endpoint_mode", "priority")
             
-            # Get current index and rotate
-            current_idx = DynamicImageNodeBase._endpoint_index.get(model_name, 0)
-            endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
-            
-            # Update index for next call (rotate)
-            DynamicImageNodeBase._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            if auto_mode == "round_robin":
+                # Round-robin: rotate through all available endpoints
+                endpoints = config_manager.get_api_endpoints(model_name)
+                if not endpoints:
+                    print(f"[DynamicImageNode] No endpoints for {model_name}")
+                    return None
+                current_idx = DynamicImageNodeBase._endpoint_index.get(model_name, 0)
+                endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
+                DynamicImageNodeBase._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            else:
+                # Priority mode: always use highest priority endpoint
+                endpoint_info = config_manager.get_best_endpoint(model_name, mode)
         
         if not endpoint_info:
             print(f"[DynamicImageNode] No endpoint found for {model_name}/{mode}")
@@ -186,6 +190,9 @@ class DynamicImageNodeBase:
         # If endpoint manually selected (has value), disable failover
         if endpoint_override:
             auto_failover = False
+        
+        # Inject model display name for Account model ID resolution
+        params["_model_display_name"] = model_name
         
         # Try primary endpoint (or manually selected endpoint)
         adapter = self.get_adapter(model_name, mode, endpoint_override)
@@ -1209,15 +1216,16 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
     FUNCTION = "upscale"
     OUTPUT_NODE = True
     
-    def _get_upscale_model(self) -> str:
-        """Get the model configured for upscaling from upscale_settings."""
+    def _get_upscale_model(self):
+        """Get the model and endpoint configured for upscaling from upscale_settings."""
         settings = config_manager.get_upscale_settings()
         model = settings.get("model", "")
+        endpoint = settings.get("endpoint", "")
         if not model:
             # Fallback: use first available image model
             models = self.get_models_for_category("image")
             model = models[0] if models and models[0] != "No Models Found" else ""
-        return model
+        return model, endpoint
     
     def _build_prompt(self, repair_mode: str, style_prompt: str) -> str:
         """Build the full prompt based on repair mode and style."""
@@ -1242,8 +1250,8 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         style_prompt = kwargs.get("style_prompt", "")
         batch_count = kwargs.get("batch_count", 1)
         
-        # Get model from global upscale_settings
-        model = self._get_upscale_model()
+        # Get model and endpoint from global upscale_settings
+        model, saved_endpoint = self._get_upscale_model()
         if not model:
             return {
                 "ui": {"images": []},
@@ -1355,11 +1363,12 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             except (ValueError, TypeError):
                 params["seed"] = 0
         
-        # Get endpoint override if any
-        endpoint_override = ""
+        # Get endpoint override: saved endpoint from settings, or extra_params override
+        endpoint_override = saved_endpoint
         try:
             ep = json.loads(extra_params_str)
-            endpoint_override = ep.get("endpoint_override", "")
+            if ep.get("endpoint_override"):
+                endpoint_override = ep.get("endpoint_override")
         except:
             pass
         

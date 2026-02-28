@@ -72,8 +72,18 @@ class GenericAPIAdapter(APIAdapter):
         payload_template = self.mode_config.get("payload_template", {})
         url = f"{self.base_url}{endpoint_path}"
         
-        # Build headers
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        # Build headers - support Account auth mode
+        auth_type = self.endpoint.get("auth_type", "api")
+        if auth_type == "account":
+            # Account mode: use X-Auth-T token from Account singleton
+            try:
+                from ..account import Account
+                account = Account.get_instance()
+                headers = {"X-Auth-T": account.token}
+            except Exception:
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+        else:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
         
         # ─── OSS Cache: Upload images and switch to URL mode ───
         # When use_oss_cache is enabled, upload images to OSS and use JSON+URL
@@ -240,13 +250,56 @@ class GenericAPIAdapter(APIAdapter):
         if "{{model}}" in endpoint_path:
             endpoint_path = endpoint_path.replace("{{model}}", model_name)
         
+        # Support {api_key} placeholder in endpoint path (e.g. Google official API)
+        if "{api_key}" in endpoint_path:
+            endpoint_path = endpoint_path.replace("{api_key}", self.api_key or "")
+        
         url = f"{self.base_url}{endpoint_path}"
         
-        # Build headers (Gemini uses same Bearer token format)
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # Build headers - support Account auth mode and auth_header_format
+        auth_type = self.endpoint.get("auth_type", "api")
+        auth_header_format = self.endpoint.get("auth_header_format", "bearer")
+        
+        if auth_type == "account":
+            try:
+                from ..account import Account
+                account = Account.get_instance()
+                # Resolve Account-specific model ID from pricing table
+                # The Account service uses numeric IDs, NOT Gemini model names
+                model_display_name = params.get("_model_display_name", "")
+                resolved_model_id = ""
+                if model_display_name:
+                    resolved_model_id = account.resolve_model_id(model_display_name)
+                
+                # Fallback to raw model_name if resolution fails
+                if not resolved_model_id:
+                    resolved_model_id = self.endpoint.get("model_name", "")
+                    logger.warning(f"[Gemini] Using raw model_name as fallback: {resolved_model_id}")
+                
+                # Determine image size from params or default
+                image_size = params.get("image_size", "1K")
+                headers = {
+                    "X-Auth-T": account.token,
+                    "X-Model-ID": resolved_model_id,
+                    "X-Image-Size": image_size,
+                    "Content-Type": "application/json"
+                }
+                logger.info(f"[Gemini] Account headers: X-Model-ID={resolved_model_id}, X-Image-Size={image_size}, token={'✅' if account.token else '❌ empty'}")
+            except Exception:
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
+        elif auth_header_format == "none":
+            # No Authorization header (e.g. Google official API uses ?key= in URL)
+            headers = {
+                "Content-Type": "application/json"
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
         
         # Build contents array
         prompt = params.get("prompt", "")
@@ -294,21 +347,38 @@ class GenericAPIAdapter(APIAdapter):
             image_config["imageSize"] = params["image_size"]
             logger.info(f"[Gemini] Added imageConfig.imageSize: {params['image_size']}")
         if "aspect_ratio" in params and params["aspect_ratio"]:
-            image_config["aspectRatio"] = params["aspect_ratio"]
-            logger.info(f"[Gemini] Added imageConfig.aspectRatio: {params['aspect_ratio']}")
+            # 'auto' is not a valid aspectRatio value for Gemini API, skip for all channels
+            if params["aspect_ratio"] == "auto":
+                logger.info("[Gemini] Skipping aspectRatio='auto' (not a valid Gemini value)")
+            else:
+                image_config["aspectRatio"] = params["aspect_ratio"]
+                logger.info(f"[Gemini] Added imageConfig.aspectRatio: {params['aspect_ratio']}")
         
         # Add imageConfig to generationConfig if not empty
         if image_config:
             generation_config["imageConfig"] = image_config
         
         if "maxOutputTokens" not in generation_config:
-            generation_config["maxOutputTokens"] = 4096
+            generation_config["maxOutputTokens"] = 32768
+        if "temperature" not in generation_config:
+            generation_config["temperature"] = 0.8
+        if "candidateCount" not in generation_config:
+            generation_config["candidateCount"] = 1
         
         # Build payload
         payload = {
             "contents": contents,
             "generationConfig": generation_config
         }
+        
+        # Debug: log payload for Account requests (truncate image data)
+        if auth_type == "account":
+            import json
+            debug_payload = json.dumps(payload, ensure_ascii=False, default=str)
+            # Truncate long base64 data for readability
+            if len(debug_payload) > 500:
+                debug_payload = debug_payload[:500] + "... (truncated)"
+            logger.info(f"[Gemini] Account payload: {debug_payload}")
         
         return {
             "url": url,
@@ -406,14 +476,39 @@ class GenericAPIAdapter(APIAdapter):
         
         Gemini returns images as base64 in:
         candidates[0].content.parts[].inline_data.data
+        
+        Account mode wraps the response in {"data": {...}}, so we unwrap first.
         """
         import base64
         
         images = []
         image_urls = []
         
+        # Account mode: check for Account-specific error format
+        # Account errors have: {"code": -1, "errCode": -1201, "errMsg": "Unknown Model!"}
+        logger.info(f"[Gemini] Response keys: {list(data.keys())}")
+        if "errCode" in data and data.get("code", 0) != 0:
+            err_msg = data.get("errMsg", "Unknown Account error")
+            err_code = data.get("errCode", "?")
+            logger.error(f"[Gemini] Account error: errCode={err_code}, errMsg={err_msg}")
+            return APIResponse(
+                success=False,
+                error_message=f"Account error ({err_code}): {err_msg}",
+                raw_response=data
+            )
+        
+        # Account mode: response is wrapped in {"data": {...}}
+        # Unwrap before parsing candidates
+        if "data" in data and isinstance(data["data"], dict) and "candidates" not in data:
+            logger.info(f"[Gemini] Unwrapping Account response, inner keys: {list(data['data'].keys())}")
+            data = data["data"]
+        
         candidates = data.get("candidates", [])
         if not candidates:
+            # Log truncated response for debugging
+            import json
+            truncated = json.dumps(data, ensure_ascii=False, default=str)[:500]
+            logger.warning(f"[Gemini] No candidates found. Response (truncated): {truncated}")
             return APIResponse(
                 success=False,
                 error_message="No candidates in Gemini response",
@@ -692,6 +787,10 @@ class GenericAPIAdapter(APIAdapter):
                 # Parse response
                 result = self.parse_response(response)
                 
+                # Corrective log: HTTP was 200 but business logic failed
+                if not result.success:
+                    logger.info(f"⬅️ ❌ 解析失败: {result.error_message}")
+                
                 # Handle async polling if needed
                 if result.task_id and result.status == "pending":
                     logger.info(f"📋 Task ID: {result.task_id}, starting polling...")
@@ -704,6 +803,14 @@ class GenericAPIAdapter(APIAdapter):
                         if img_bytes:
                             result.images.append(img_bytes)
                 
+                # Auto-refresh credits after Account mode generation
+                if result.success and self.endpoint.get("auth_type") == "account":
+                    try:
+                        from ..account import Account
+                        Account.get_instance().fetch_credits()
+                    except Exception:
+                        pass
+
                 return result
                 
             except requests.Timeout:

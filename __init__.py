@@ -495,7 +495,117 @@ try:
             traceback.print_exc()
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
-    print("[ComfyUI-Custom-Batchbox] API endpoints registered")
+    # ==========================================
+    # 5. Account System API Endpoints
+    # ==========================================
+    
+    # Initialize Account system
+    try:
+        import os
+        import yaml as _yaml
+        from .account import Account
+        
+        _plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        _account = Account.get_instance()
+        
+        # Load account config from secrets.yaml directly
+        _account_config = {}
+        _secrets_path = os.path.join(_plugin_dir, "secrets.yaml")
+        if os.path.exists(_secrets_path):
+            try:
+                with open(_secrets_path, 'r', encoding='utf-8') as _f:
+                    _secrets_data = _yaml.safe_load(_f) or {}
+                if "account" in _secrets_data:
+                    _account_config = _secrets_data["account"]
+            except Exception as _e:
+                print(f"[ComfyUI-Custom-Batchbox] Warning reading secrets.yaml account section: {_e}")
+        
+        _account.configure(_plugin_dir, _account_config)
+        
+        print("[ComfyUI-Custom-Batchbox] Account system initialized")
+    except Exception as e:
+        print(f"[ComfyUI-Custom-Batchbox] Account system init warning: {e}")
+        _account = None
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/login")
+    async def account_login(request):
+        """Trigger WebSocket login flow - opens browser to acggit.com"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            result = account.login()
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/logout")
+    async def account_logout(request):
+        """Logout and clear token"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            result = account.logout()
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.get("/api/batchbox/account/status")
+    async def account_status(request):
+        """Get login status, nickname, credits"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            return web.json_response(account.get_status())
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/credits")
+    async def account_refresh_credits(request):
+        """Refresh credit balance"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            account.fetch_credits()
+            # Return current status (credits will update async)
+            return web.json_response(account.get_status())
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/redeem")
+    async def account_redeem(request):
+        """Redeem a credit code"""
+        try:
+            from .account import Account
+            data = await request.json()
+            code = data.get("code", "").strip()
+            if not code:
+                return web.json_response({"error": "Code is required"}, status=400)
+            
+            account = Account.get_instance()
+            result = account.redeem_credits(code)
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.get("/api/batchbox/account/pricing")
+    async def account_pricing(request):
+        """Get model pricing table"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            if not account.price_table:
+                account.fetch_credits_price()
+                # Wait a moment for async fetch
+                import asyncio
+                await asyncio.sleep(1.5)
+            return web.json_response({
+                "success": True,
+                "price_table": account.price_table or []
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    print("[ComfyUI-Custom-Batchbox] API endpoints registered (with Account system)")
 
 except Exception as e:
     print(f"[ComfyUI-Custom-Batchbox] Warning: Could not register API endpoints: {e}")
