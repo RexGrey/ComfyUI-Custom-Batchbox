@@ -451,7 +451,7 @@ class ConfigManager:
         
         for ep in endpoints:
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or not provider.api_key:
+            if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
                 continue
             
             modes = ep.get("modes", {})
@@ -491,7 +491,7 @@ class ConfigManager:
                 continue
             
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or not provider.api_key:
+            if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
                 continue
             
             modes = ep.get("modes", {})
@@ -513,7 +513,7 @@ class ConfigManager:
                 }
         
         # If not found by name, fallback to priority-based
-        print(f"[ConfigManager] Endpoint '{endpoint_display_name}' not found, using priority-based selection")
+        print(f"[ConfigManager] ⚠️ 端点 '{endpoint_display_name}' 未找到（可能 provider 名称不匹配），回退到优先级选择")
         return self.get_best_endpoint(model_name, mode)
     
     def get_endpoint_by_index(self, model_name: str, index: int, 
@@ -530,7 +530,7 @@ class ConfigManager:
         ep = endpoints[actual_idx]
         
         provider = self.get_provider_config(ep.get("provider"))
-        if not provider or not provider.api_key:
+        if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
             # Try next endpoint
             return self.get_best_endpoint(model_name, mode)
         
@@ -566,7 +566,7 @@ class ConfigManager:
                 continue
             
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or not provider.api_key:
+            if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
                 continue
             
             modes = ep.get("modes", {})
@@ -827,6 +827,8 @@ class ConfigManager:
             "default_width": 500,  # Default node width in pixels
             "bypass_queue_prompt": True,  # Whether to exclude BatchBox nodes from global Queue Prompt
             "smart_cache_hash_check": True,  # Whether to check param hash for cache invalidation
+            "auto_endpoint_mode": "priority",  # 'priority' (always use top endpoint) or 'round_robin' (rotate)
+            "pricing_strategy": "bestPrice",  # 'bestPrice' (低价优先) or 'bestBalance' (稳定优先)
         }
         node_settings = self._config.get("node_settings", {})
         # Merge with defaults

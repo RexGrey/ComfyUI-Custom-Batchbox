@@ -1027,12 +1027,62 @@ app.registerExtension({
         return true;
       };
 
-      // --- Load model info and style presets ---
-      loadUpscaleModel().then(m => {
-        node._blurUI.model = m;
+      // --- Load model info, endpoint options, and style presets ---
+      loadUpscaleSettings().then(({ displayText, model, endpoint, endpointOptions }) => {
+        node._blurUI.model = displayText;
+        node._blurUI._upscaleModel = model;
+        node._blurUI._savedEndpoint = endpoint;
         node.setDirtyCanvas(true);
+
+        // Add endpoint selector if model has multiple endpoints
+        if (endpointOptions && endpointOptions.length >= 2) {
+          const options = endpointOptions.map(ep => ep.name);
+
+          const toggleWidget = node.addWidget("toggle", "手动选择端点", false, (v) => {
+            if (selectorWidget) {
+              selectorWidget.hidden = !v;
+            }
+            // Recalc node size
+            const currentWidth = node.size[0];
+            const computedSize = node.computeSize();
+            node.setSize([currentWidth, computedSize[1]]);
+          });
+          toggleWidget.serialize = false;
+
+          // Default to saved endpoint from settings, or first option
+          const initialEndpoint = endpoint && options.includes(endpoint) ? endpoint : options[0];
+          const selectorWidget = node.addWidget("combo", "endpoint_selector", initialEndpoint, () => { }, {
+            values: options
+          });
+          selectorWidget.hidden = true;
+          selectorWidget.serialize = false;
+
+          // Recalc node size
+          const currentWidth = node.size[0];
+          const computedSize = node.computeSize();
+          node.setSize([currentWidth, computedSize[1]]);
+        }
       });
       loadStylePresets();
+
+      // --- Inject endpoint_override into extra_params before execution ---
+      const origExecute = node.onExecute;
+      node.onExecute = function() {
+        if (origExecute) origExecute.apply(this, arguments);
+        const toggleW = node.widgets?.find(w => w.name === "手动选择端点");
+        const selectorW = node.widgets?.find(w => w.name === "endpoint_selector");
+        const epWidget = node.widgets?.find(w => w.name === "extra_params");
+        if (epWidget) {
+          let existing = {};
+          try { existing = JSON.parse(epWidget.value || "{}"); } catch {}
+          if (toggleW?.value && selectorW) {
+            existing.endpoint_override = selectorW.value;
+          } else {
+            delete existing.endpoint_override;
+          }
+          epWidget.value = JSON.stringify(existing);
+        }
+      };
 
       // --- Ensure minimum node size ---
       const minH = 280;
@@ -1125,15 +1175,33 @@ app.registerExtension({
 // SECTION 6: HELPERS
 // ================================================================
 
-async function loadUpscaleModel() {
+async function loadUpscaleSettings() {
   try {
     const resp = await api.fetchApi("/api/batchbox/upscale-settings");
     if (resp.ok) {
       const data = await resp.json();
-      return data.upscale_settings?.model || "";
+      const model = data.upscale_settings?.model || "";
+      const endpoint = data.upscale_settings?.endpoint || "";
+      const displayText = endpoint ? `${model} [${endpoint}]` : model;
+
+      // Also fetch endpoint options from model schema
+      let endpointOptions = [];
+      if (model) {
+        try {
+          const schemaResp = await api.fetchApi(`/api/batchbox/schema/${model}`);
+          if (schemaResp.ok) {
+            const schemaData = await schemaResp.json();
+            endpointOptions = schemaData.endpoint_options || [];
+          }
+        } catch (e) {
+          console.warn("[BlurUpscale] Could not load endpoint options:", e);
+        }
+      }
+
+      return { displayText, model, endpoint, endpointOptions };
     }
   } catch (e) { console.warn("[BlurUpscale] Could not load upscale settings:", e); }
-  return "";
+  return { displayText: "", model: "", endpoint: "", endpointOptions: [] };
 }
 
 

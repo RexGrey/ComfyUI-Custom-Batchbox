@@ -65,15 +65,22 @@ class IndependentGenerator:
         if endpoint_override:
             endpoint_info = config_manager.get_endpoint_by_name(model_name, endpoint_override, mode)
         else:
-            endpoints = config_manager.get_api_endpoints(model_name)
-            if not endpoints:
-                print(f"[IndependentGenerator] No endpoints for {model_name}")
-                return None
+            # Auto mode: check setting for strategy
+            node_settings = config_manager.get_node_settings()
+            auto_mode = node_settings.get("auto_endpoint_mode", "priority")
             
-            current_idx = IndependentGenerator._endpoint_index.get(model_name, 0)
-            endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
-            
-            IndependentGenerator._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            if auto_mode == "round_robin":
+                # Round-robin: rotate through all available endpoints
+                endpoints = config_manager.get_api_endpoints(model_name)
+                if not endpoints:
+                    print(f"[IndependentGenerator] No endpoints for {model_name}")
+                    return None
+                current_idx = IndependentGenerator._endpoint_index.get(model_name, 0)
+                endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
+                IndependentGenerator._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            else:
+                # Priority mode: always use highest priority endpoint
+                endpoint_info = config_manager.get_best_endpoint(model_name, mode)
         
         if not endpoint_info:
             print(f"[IndependentGenerator] No endpoint found for {model_name}/{mode}")
@@ -102,6 +109,9 @@ class IndependentGenerator:
         
         if endpoint_override:
             auto_failover = False
+        
+        # Inject model display name for Account model ID resolution
+        params["_model_display_name"] = model_name
         
         adapter = self.get_adapter(model_name, mode, endpoint_override)
         if adapter:
