@@ -99,10 +99,12 @@ try:
             
             # Save providers to secrets.yaml
             if "providers" in data:
-                config_manager.save_providers(data["providers"])
+                if not config_manager.save_providers(data["providers"]):
+                    return web.json_response({"error": "Failed to save providers"}, status=500)
             
             # Save rest of config to api_config.yaml (providers auto-excluded)
-            config_manager.save_config_data(data)
+            if not config_manager.save_config_data(data):
+                return web.json_response({"error": "Failed to save config"}, status=500)
             
             # Reload to merge providers back into memory
             config_manager.force_reload()
@@ -212,8 +214,10 @@ try:
         try:
             provider_name = request.match_info["provider_name"]
             data = await request.json()
-            config_manager.update_provider(provider_name, data)
-            return web.json_response({"status": "success"})
+            success = config_manager.update_provider(provider_name, data)
+            if success:
+                return web.json_response({"status": "success"})
+            return web.json_response({"error": "Failed to update provider"}, status=500)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -439,6 +443,23 @@ try:
                 return web.json_response({"success": False, "error": "Prompt is required"}, status=400)
             
             generator = IndependentGenerator()
+        
+            # Progress callback: send WebSocket event per batch for progressive preview
+            node_id = data.get("node_id", "")
+            completed_count = 0
+            
+            async def on_batch_complete(batch_idx, total, batch_previews):
+                nonlocal completed_count
+                completed_count += 1
+                preview = batch_previews[0] if batch_previews else None
+                server.PromptServer.instance.send_sync("batchbox:progress", {
+                    "node_id": node_id,
+                    "batch_index": batch_idx,
+                    "completed": completed_count,
+                    "total": total,
+                    "preview": preview,
+                })
+            
             result = await generator.generate(
                 model=model,
                 prompt=prompt,
@@ -446,13 +467,14 @@ try:
                 batch_count=data.get("batch_count", 1),
                 extra_params=data.get("extra_params"),
                 images_base64=data.get("images_base64"),
-                endpoint_override=data.get("endpoint_override")
+                endpoint_override=data.get("endpoint_override"),
+                on_batch_complete=on_batch_complete
             )
             
             # Send websocket "executed" event so ComfyUI's image viewer displays the result
             if result.get("success") and result.get("preview_images"):
                 import uuid as _uuid
-                node_id = data.get("node_id", "")
+                # node_id is already defined above
                 if node_id:
                     prompt_id = "independent_" + _uuid.uuid4().hex[:8]
                     last_images_json = json.dumps(result["preview_images"])

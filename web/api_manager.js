@@ -405,6 +405,9 @@ class BatchboxManager {
                         body: JSON.stringify({ pricing_strategy: value }),
                     });
                     if (resp.ok) {
+                        // Sync to this.config so "保存所有更改" doesn't overwrite
+                        if (!this.config.node_settings) this.config.node_settings = {};
+                        this.config.node_settings.pricing_strategy = value;
                         this.showToast(`通道策略已切换为: ${value === 'bestPrice' ? '低价优先 💰' : '稳定优先 ⚡'}`, "success");
                     } else {
                         throw new Error("保存失败");
@@ -2090,6 +2093,15 @@ class BatchboxManager {
                 </select>
             </div>
             
+            <div class="batchbox-form-group">
+                <label>预览模式</label>
+                <div class="batchbox-input-hint">生成多张图片时，节点预览的加载方式</div>
+                <select id="node-preview-mode" class="batchbox-select" style="width: 100%; padding: 8px; background: #333; color: #eee; border: 1px solid #555; border-radius: 6px;">
+                    <option value="progressive" ${nodeSettings.preview_mode !== 'wait_all' ? 'selected' : ''}>🖼️ 逐张载入（完成一张显示一张）</option>
+                    <option value="wait_all" ${nodeSettings.preview_mode === 'wait_all' ? 'selected' : ''}>📷 全部完成后载入</option>
+                </select>
+            </div>
+            
             <div class="batchbox-form-actions">
                 <button class="batchbox-btn btn-primary" id="save-node-settings-btn">💾 保存节点设置</button>
             </div>
@@ -2113,12 +2125,14 @@ class BatchboxManager {
             const showInCanvasMenu = container.querySelector("#node-canvas-menu").checked;
             const smartCacheHashCheck = container.querySelector("#node-hash-check").checked;
             const autoEndpointMode = container.querySelector("#node-endpoint-mode").value;
+            const previewMode = container.querySelector("#node-preview-mode").value;
             const newNodeSettings = {
                 default_width: newWidth,
                 bypass_queue_prompt: bypassQueuePrompt,
                 show_in_canvas_menu: showInCanvasMenu,
                 smart_cache_hash_check: smartCacheHashCheck,
-                auto_endpoint_mode: autoEndpointMode
+                auto_endpoint_mode: autoEndpointMode,
+                preview_mode: previewMode
             };
             try {
                 const resp = await api.fetchApi("/api/batchbox/node-settings", {

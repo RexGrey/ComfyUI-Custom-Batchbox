@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.24 | 2026-03-01 | 逐张预览 + 生成进度计数器 + WebSocket 批次推送 + preview_mode 设置 |
 | 2.23 | 2026-03-01 | Account 系统移植 + Google 官方 API 直连 + 多端点统一架构 + OSS 缓存 |
 | 2.22 | 2026-02-09 | GaussianBlurUpscale 节点：高斯模糊放大 + 风格预设管理 + 自定义面板 |
 | fix | 2026-02-08 | 修复 img2img 模式下 image_size 参数被 multipart 过滤器误删 |
@@ -1679,6 +1680,24 @@ request_info["data"] = {k: v for k, v in payload.items()
 
 ## 9. 更新日志
 
+### v2.24 (2026-03-01)
+
+**逐张预览 + 生成进度计数器**
+
+- ✅ 生成按钮实时显示批次进度：`⏳ 生成中 0/4` → `1/4` → …→ `4/4` → `▶ 开始生成`
+- ✅ 节点预览支持逐张载入模式（progressive）：完成一张显示一张
+- ✅ 管理面板「保存设置」新增预览模式下拉：🖼️ 逐张载入 / 📷 全部完成后载入
+- ✅ 设置项 `node_settings.preview_mode`：`progressive`（默认）| `wait_all`
+- ✅ 后端 WebSocket 事件 `batchbox:progress`：每完成一个 batch 推送进度
+- ✅ `on_batch_complete` 回调注入 `IndependentGenerator.generate()`
+- ✅ 前端 `appendSinglePreview()` 安全追加：有序槽位 + `.filter(null)` 保证 `node.imgs` 无 null
+- ✅ 两阶段分离设计：逐张显示仅操作 `node.imgs`；`onExecuted`/`imageIndex`/持久化仅在全部完成后执行一次
+
+**踩坑记录**
+
+- 🐛 `node.imgs = []` 导致画布冻结：空数组在 JS 中 truthy (`Boolean([]) === true`)，ComfyUI 分配空 image render area 导致布局崩溃
+- ✅ 修复：生成开始时不清除 `node.imgs`，由 progressive 回调自然覆盖旧图
+
 ### v2.23 (2026-03-01)
 
 **Account 系统移植**
@@ -2130,3 +2149,77 @@ providers:
 ### B.6 上游项目追踪
 
 基准版本：BlenderAIStudio v0.1.4 (`8b8c533`, 2026-02-28)。详见 [UPSTREAM.md](UPSTREAM.md)。
+
+---
+
+## 附录 C. 逐张预览与进度系统 (v2.24)
+
+### C.1 架构概览
+
+```
+后端 (asyncio.gather 并行)          前端 (JS)
+┌─────────────────────┐          ┌─────────────────────┐
+│ batch 0 完成        │ ──WS──→  │ 按钮: ⏳ 1/4        │
+│ batch 2 完成        │ ──WS──→  │ 按钮: ⏳ 2/4        │
+│ batch 1 完成        │ ──WS──→  │ 按钮: ⏳ 3/4        │
+│ batch 3 完成        │ ──WS──→  │ 按钮: ⏳ 4/4        │
+│ HTTP 200 (全部结果) │ ──HTTP→  │ onExecuted + 持久化 │
+└─────────────────────┘          └─────────────────────┘
+```
+
+### C.2 WebSocket 事件协议 (`batchbox:progress`)
+
+后端通过 `server.PromptServer.instance.send_sync()` 发送：
+
+```json
+{
+  "node_id": "12",
+  "batch_index": 0,
+  "completed": 1,
+  "total": 4,
+  "preview": { "filename": "...", "subfolder": "...", "type": "output" }
+}
+```
+
+- `completed` 为服务端累加计数器，反映实际完成数（不依赖 batch 顺序）
+- `batch_index` 用于前端有序插槽，保证图片显示顺序
+- 线程安全：`asyncio.to_thread()` 返回后在事件循环中调用 `send_sync`，无竞态
+
+### C.3 两阶段分离安全设计
+
+| 阶段 | 触发时机 | 操作 | 安全约束 |
+| --- | --- | --- | --- |
+| 阶段 1：逐批显示 | 每个 batch 完成 | 追加 `node.imgs`、更新按钮文字 | ❌ 不动 `imageIndex` / `onExecuted` / `_last_images` |
+| 阶段 2：执行完成 | HTTP 响应返回 | `onExecuted` + 持久化 + 选择重置 | 与 v2.23 完全一致，保持所有守卫机制 |
+
+### C.4 `appendSinglePreview` 安全追加
+
+核心安全逻辑（`dynamic_params.js`）：
+
+```javascript
+// 有序槽位数组，按 batch_index 插入
+node._progressiveSlots[batchIndex] = img;  // 仅已加载的 Image
+// ✅ 关键：filter 保证 node.imgs 永不含 null
+node.imgs = node._progressiveSlots.filter(i => i !== null);
+```
+
+- JS 单线程 → 数组赋值原子，不会被渲染循环打断
+- `img.onload` 回调中才写入 → 保证元素是完全加载的 Image 对象
+- 不触碰 `imageIndex` → 生成中默认 null（缩略图网格模式）
+
+### C.5 预览模式配置
+
+`api_config.yaml` → `node_settings.preview_mode`:
+
+| 值 | 行为 | 前端逻辑 |
+| --- | --- | --- |
+| `progressive` | 完成一张显示一张 | WebSocket 事件触发 `appendSinglePreview` |
+| `wait_all` | 全部完成后一起显示 | WebSocket 仅更新按钮，HTTP 完成后调 `updateNodePreview` |
+
+### C.6 踩坑：`node.imgs = []` 导致画布冻结
+
+**问题**：生成开始时设置 `node.imgs = []` 导致 ComfyUI 画布无法拖动。
+
+**根因**：空数组 `[]` 在 JS 中是 truthy (`Boolean([]) === true`)。ComfyUI 的 `drawImages` 检查 `if (this.imgs)` → truthy → 尝试绘制 → 数组长度 0 → 分配空白 image area → 布局异常 → 全局 FPS 崩溃。
+
+**修复**：不在生成开始时清除 `node.imgs`。progressive 模式的首个 `appendSinglePreview` 回调会自然覆盖旧图。

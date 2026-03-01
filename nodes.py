@@ -88,6 +88,21 @@ class DynamicImageNodeBase:
     
     def __init__(self):
         self.timeout = 600
+
+    @staticmethod
+    def _parse_extra_params(extra_params_raw: Any) -> Dict[str, Any]:
+        """Parse dynamic params payload safely, returning a dict."""
+        if isinstance(extra_params_raw, dict):
+            return dict(extra_params_raw)
+        if not extra_params_raw:
+            return {}
+        if not isinstance(extra_params_raw, str):
+            return {}
+        try:
+            parsed = json.loads(extra_params_raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
     
     @classmethod
     def get_models_for_category(cls, category: str = "image") -> List[str]:
@@ -262,19 +277,8 @@ class DynamicImageNodeBase:
         except (ValueError, TypeError):
             seed = 0
         
-        # Pre-create saver instance outside threads to avoid import issues
-        saver = None
-        saver_enabled = False
-        try:
-            from .save_settings import SaveSettings
-            save_cfg = config_manager.get_save_settings()
-            saver = SaveSettings(save_cfg)
-            saver_enabled = saver.enabled
-        except Exception as e:
-            print(f"[Batch] Could not initialize saver: {e}")
-        
         def process_single_batch(batch_idx: int):
-            """Process a single batch, save immediately, and return results."""
+            """Process a single batch request and return decoded results."""
             print(f"\n[Batch] {batch_idx+1}/{batch_count} - Model: {model_name}")
             
             current_params = params.copy()
@@ -293,24 +297,10 @@ class DynamicImageNodeBase:
                 for img_bytes in result.images:
                     try:
                         pil_img = Image.open(BytesIO(img_bytes))
-                        pil_img, img_mode = prepare_for_comfyui(pil_img, preserve_alpha=True)
+                        pil_img, _ = prepare_for_comfyui(pil_img, preserve_alpha=True)
                         batch_pil_images.append(pil_img)
                         tensor = pil_to_tensor_rgba(pil_img)
                         batch_tensors.append(tensor)
-                        
-                        # ⚡ IMMEDIATELY SAVE upon receiving image
-                        if saver_enabled and saver:
-                            try:
-                                context = {
-                                    "model": model_name,
-                                    "seed": current_params.get("seed", 0),
-                                    "prompt": current_params.get("prompt", ""),
-                                    "batch": batch_idx + 1,
-                                }
-                                saver.save_image(pil_img, context)
-                            except Exception as save_err:
-                                print(f"[Batch] Immediate save error: {save_err}")
-                            
                     except Exception as e:
                         batch_log += f"Image decode error: {e}\n"
                 
@@ -397,13 +387,10 @@ class DynamicImageNodeBase:
         
         # Parse extra_params and remove seed (we use kwargs.seed separately)
         # This ensures consistent hashing between frontend and backend
-        try:
-            extra_params = json.loads(extra_params_str) if extra_params_str else {}
-            extra_params.pop("seed", None)  # Remove seed from extra_params
-            # Use separators without spaces to match JavaScript JSON.stringify
-            extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
-        except:
-            extra_params_normalized = extra_params_str
+        extra_params = self._parse_extra_params(extra_params_str)
+        extra_params.pop("seed", None)  # Remove seed from extra_params
+        # Use separators without spaces to match JavaScript JSON.stringify
+        extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
         
         # Build hash string from all relevant parameters
         # Note: Seed is handled separately, not from extra_params
@@ -570,6 +557,10 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         cached_hash = kwargs.get("_cached_hash", "")
         extra_params_str = kwargs.get("extra_params", "{}")
         skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        current_hash = cached_hash
+        extra_params = self._parse_extra_params(extra_params_str)
+        if extra_params_str and not extra_params:
+            print("[SmartCache] Failed to parse extra_params, using empty dict")
         
         # Edge case: If extra_params is empty "{}" but we have cache,
         # it means dynamic params aren't loaded yet after restart.
@@ -640,15 +631,10 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         }
         
         # Parse extra dynamic parameters from frontend
-        extra_params_str = kwargs.get("extra_params", "{}")
         print(f"[DEBUG] kwargs: {kwargs}")
         print(f"[DEBUG] extra_params_str: {extra_params_str}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            print(f"[DEBUG] extra_params parsed: {extra_params}")
-            params.update(extra_params)
-        except:
-            pass
+        print(f"[DEBUG] extra_params parsed: {extra_params}")
+        params.update(extra_params)
         
         # Ensure numeric fields are correct type (seed should be int, not string)
         if "seed" in params:
@@ -722,6 +708,9 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         
         print(f"[Generate] Returning selected image {selected_index} of {images_tensor.shape[0]}")
         
+        # Persist a stable hash for subsequent smart-cache comparison.
+        current_hash = self._compute_params_hash(model, prompt, batch_count, kwargs)
+        
         # Return dict with both result tuple and UI data
         return {
             "ui": {
@@ -783,11 +772,7 @@ class DynamicTextGenerationNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         result = self.execute_with_failover(model, params, "text2text")
         
@@ -856,11 +841,7 @@ class DynamicVideoGenerationNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         # Handle image inputs
         if mode == "img2video":
@@ -932,11 +913,7 @@ class DynamicAudioGenerationNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         result = self.execute_with_failover(model, params, "text2audio")
         
@@ -1010,11 +987,7 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         # Select mode based on operation
         mode = operation  # upscale, inpaint, outpaint, etc.
@@ -1350,11 +1323,8 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                     params[key] = val
 
         # Parse extra dynamic parameters (highest priority, overrides defaults)
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        extra_params = self._parse_extra_params(extra_params_str)
+        params.update(extra_params)
         
         # Ensure seed is int
         if "seed" in params:
@@ -1365,12 +1335,8 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         
         # Get endpoint override: saved endpoint from settings, or extra_params override
         endpoint_override = saved_endpoint
-        try:
-            ep = json.loads(extra_params_str)
-            if ep.get("endpoint_override"):
-                endpoint_override = ep.get("endpoint_override")
-        except:
-            pass
+        if extra_params.get("endpoint_override"):
+            endpoint_override = extra_params.get("endpoint_override")
         
         # ==========================================
         # STEP 3: Call AI model for upscaling

@@ -32,9 +32,9 @@ class CacheEntry:
 class ProviderConfig:
     """API Provider configuration"""
     name: str
-    display_name: str
-    base_url: str
-    api_key: str
+    display_name: str = ""
+    base_url: str = ""
+    api_key: Optional[str] = None
     rate_limit: int = 60
 
 
@@ -67,7 +67,7 @@ class ConfigManager:
     CACHE_TTL = 300.0  # 5 minutes default TTL
     FILE_CHECK_INTERVAL = 5.0  # Check file every 5 seconds max
     
-    def __init__(self):
+    def __init__(self, config_path: Optional[str] = None, secrets_path: Optional[str] = None):
         self._config: Dict = {}
         self._last_mtime: float = 0
         self._last_file_check: float = 0
@@ -78,8 +78,18 @@ class ConfigManager:
         self._models_cache: Dict[str, CacheEntry] = {}
         self._schema_cache: Dict[str, CacheEntry] = {}
         
-        self.config_path = os.path.join(os.path.dirname(__file__), "api_config.yaml")
-        self.secrets_path = os.path.join(os.path.dirname(__file__), "secrets.yaml")
+        module_dir = os.path.dirname(__file__)
+        resolved_config_path = config_path or os.path.join(module_dir, "api_config.yaml")
+        if secrets_path is not None:
+            resolved_secrets_path = secrets_path
+        elif config_path is not None:
+            # For custom config files, prefer sibling secrets.yaml
+            resolved_secrets_path = os.path.join(os.path.dirname(resolved_config_path), "secrets.yaml")
+        else:
+            resolved_secrets_path = os.path.join(module_dir, "secrets.yaml")
+
+        self.config_path = resolved_config_path
+        self.secrets_path = resolved_secrets_path
         self.load_config()
 
     def load_config(self, force: bool = False) -> bool:
@@ -95,9 +105,14 @@ class ConfigManager:
             print(f"[ConfigManager] Config file not found at {self.config_path}")
             return False
         
+        # Force a reload when external code explicitly reset the cache.
+        if self._config is None:
+            force = True
+            self._config = {}
+
         # Throttle file stat checks to reduce I/O
         current_time = time.time()
-        if not force and (current_time - self._last_file_check) < self.FILE_CHECK_INTERVAL:
+        if not force and self._config is not None and (current_time - self._last_file_check) < self.FILE_CHECK_INTERVAL:
             return False
         
         self._last_file_check = current_time
@@ -108,8 +123,8 @@ class ConfigManager:
             mtime = os.path.getmtime(self.config_path)
             secrets_mtime = os.path.getmtime(self.secrets_path) if os.path.exists(self.secrets_path) else 0
             
-            # Reload if either file changed
-            if mtime > self._last_mtime or secrets_mtime > self._secrets_mtime:
+            # Reload if forced or either file changed
+            if force or mtime > self._last_mtime or secrets_mtime > self._secrets_mtime:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     self._config = yaml.safe_load(f) or {}
                 self._last_mtime = mtime
@@ -169,7 +184,10 @@ class ConfigManager:
         Returns:
             List of validation error messages (empty if valid)
         """
-        from .errors import ConfigError, ValidationError
+        try:
+            from .errors import ValidationError
+        except ImportError:
+            from errors import ValidationError
         import re
         
         errors = []
@@ -276,7 +294,7 @@ class ConfigManager:
             name=provider_name,
             display_name=p.get("display_name", provider_name),
             base_url=p.get("base_url", "").rstrip('/'),
-            api_key=p.get("api_key", ""),
+            api_key=p.get("api_key"),
             rate_limit=p.get("rate_limit", 60)
         )
         self._set_cached(self._providers_cache, provider_name, config)
@@ -661,37 +679,66 @@ class ConfigManager:
             print(f"[ConfigManager] Error saving config: {e}")
             raise e
     
-    def update_provider(self, provider_name: str, config: Dict) -> bool:
+    def _save_provider_secret(self, provider_name: str, api_key: str) -> bool:
         """
-        Update a specific provider's configuration.
-        Separates sensitive data (api_key) to secrets.yaml and 
-        non-sensitive data to api_config.yaml.
+        Update only one provider's API key in secrets.yaml.
+        Kept as a compatibility helper for existing call sites.
         """
         self.load_config()
-        if "providers" not in self._config:
-            self._config["providers"] = {}
-        
-        # Separate api_key from other config
-        api_key = config.pop("api_key", None)
-        
-        # Save non-sensitive config to api_config.yaml
-        self._config["providers"][provider_name] = config
-        self.save_config_data(self._config)
-        
-        # Save api_key to secrets.yaml if provided
+        providers = dict(self._config.get("providers", {}))
+        provider_config = dict(providers.get(provider_name, {}))
+        provider_config["api_key"] = api_key
+        providers[provider_name] = provider_config
+        return self.save_providers(providers)
+
+    def update_provider(self, provider_name: str, config: Dict) -> bool:
+        """
+        Update one provider and persist it to secrets.yaml.
+        Providers are stored entirely in secrets.yaml, so this method merges
+        incoming fields with existing provider config and writes back once.
+        """
+        self.load_config()
+
+        providers = dict(self._config.get("providers", {}))
+        current_provider = dict(providers.get(provider_name, {}))
+        incoming = dict(config or {})
+
+        api_key = incoming.pop("api_key", None)
+        current_provider.update(incoming)
         if api_key is not None:
-            self._save_provider_secret(provider_name, api_key)
-        
-        # Reload to merge secrets back into memory
+            current_provider["api_key"] = api_key
+
+        providers[provider_name] = current_provider
+
+        if not self.save_providers(providers):
+            return False
+
+        # Reload to refresh in-memory caches
         self.force_reload()
         return True
     
     def save_providers(self, providers: Dict) -> bool:
         """
-        Save entire providers section to secrets.yaml.
-        This keeps all provider info (including API keys) out of version control.
+        Save providers section to secrets.yaml while preserving other sections
+        (e.g. account, oss).
         """
         try:
+            if not isinstance(providers, dict):
+                providers = {}
+
+            existing = {}
+            if os.path.exists(self.secrets_path):
+                try:
+                    with open(self.secrets_path, 'r', encoding='utf-8') as f:
+                        existing = yaml.safe_load(f) or {}
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except Exception:
+                    existing = {}
+
+            merged = dict(existing)
+            merged["providers"] = providers
+
             with open(self.secrets_path, 'w', encoding='utf-8') as f:
                 # Add header comment
                 f.write("# =============================================================================\n")
@@ -700,7 +747,7 @@ class ConfigManager:
                 f.write("# 此文件包含所有 API 供应商的配置信息\n")
                 f.write("# 请复制 secrets.yaml.example 并重命名为 secrets.yaml\n")
                 f.write("# =============================================================================\n\n")
-                yaml.dump({"providers": providers}, f, default_flow_style=False, 
+                yaml.dump(merged, f, default_flow_style=False, 
                          allow_unicode=True, sort_keys=False)
             
             print(f"[ConfigManager] Saved {len(providers)} providers to {self.secrets_path}")
@@ -829,6 +876,7 @@ class ConfigManager:
             "smart_cache_hash_check": True,  # Whether to check param hash for cache invalidation
             "auto_endpoint_mode": "priority",  # 'priority' (always use top endpoint) or 'round_robin' (rotate)
             "pricing_strategy": "bestPrice",  # 'bestPrice' (低价优先) or 'bestBalance' (稳定优先)
+            "preview_mode": "progressive",  # 'progressive' (逐张载入) or 'wait_all' (全部完成后载入)
         }
         node_settings = self._config.get("node_settings", {})
         # Merge with defaults
@@ -901,4 +949,3 @@ try:
     configure_logging(level=config_manager.get_log_level())
 except ImportError:
     pass  # Logger not yet imported
-

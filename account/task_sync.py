@@ -79,13 +79,54 @@ class StatusResponseParser:
     }
     """
 
+    @staticmethod
+    def _normalize_state(raw_state: str) -> TaskStatus:
+        """Map backend state strings to TaskStatus enum safely."""
+        value = str(raw_state or "").strip()
+        if not value:
+            return TaskStatus.UNKNOWN
+
+        # Direct match for enum values such as "SUCCESS", "RUNNING", etc.
+        upper = value.upper()
+        for enum_value in TaskStatus:
+            if upper == enum_value.value:
+                return enum_value
+
+        # Common backend status variants
+        mapping = {
+            "completed": TaskStatus.SUCCESS,
+            "success": TaskStatus.SUCCESS,
+            "succeeded": TaskStatus.SUCCESS,
+            "running": TaskStatus.RUNNING,
+            "processing": TaskStatus.RUNNING,
+            "pending": TaskStatus.RUNNING,
+            "in_progress": TaskStatus.RUNNING,
+            "failed": TaskStatus.FAILED,
+            "failure": TaskStatus.FAILED,
+            "error": TaskStatus.ERROR,
+            "unknown": TaskStatus.UNKNOWN,
+        }
+        return mapping.get(value.lower(), TaskStatus.UNKNOWN)
+
     def parse_batch_response(self, response_json: dict) -> dict:
         result = {}
         data = response_json.get("data", {})
+        if not isinstance(data, dict):
+            logger.warning(f"Unexpected status response data type: {type(data).__name__}")
+            return result
         for task_id, task_info in data.items():
-            state = TaskStatus(task_info.get("state", TaskStatus.UNKNOWN.value))
+            if not isinstance(task_info, dict):
+                continue
+            state = self._normalize_state(task_info.get("state", ""))
             urls = task_info.get("urls") or []
-            progress = 1.0 if state == TaskStatus.SUCCESS else 0.0
+            progress_raw = task_info.get("progress", None)
+            if progress_raw is None:
+                progress = 1.0 if state == TaskStatus.SUCCESS else 0.0
+            else:
+                try:
+                    progress = max(0.0, min(1.0, float(progress_raw)))
+                except (TypeError, ValueError):
+                    progress = 1.0 if state == TaskStatus.SUCCESS else 0.0
             error_message = task_info.get("msg")
 
             result[task_id] = TaskStatusData(

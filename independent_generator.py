@@ -157,7 +157,8 @@ class IndependentGenerator:
         batch_count: int = 1,
         extra_params: Optional[Dict] = None,
         images_base64: Optional[List[str]] = None,
-        endpoint_override: Optional[str] = None
+        endpoint_override: Optional[str] = None,
+        on_batch_complete: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Generate images independently of ComfyUI's queue.
@@ -250,6 +251,13 @@ class IndependentGenerator:
                         batch_log += f"Image decode error: {e}\n"
             else:
                 batch_log += f"Batch {batch_idx+1} failed: {result.error_message}\n"
+            
+            # Fire progress callback (async context — safe for WebSocket send_sync)
+            if on_batch_complete:
+                try:
+                    await on_batch_complete(batch_idx, batch_count, batch_previews)
+                except Exception as e:
+                    print(f"[IndependentGenerator] Progress callback error: {e}")
             
             return (batch_idx, batch_previews, batch_log)
         

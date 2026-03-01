@@ -14,10 +14,16 @@ from PIL import Image
 
 from .base import APIAdapter, APIResponse, APIError
 from .template_engine import TemplateEngine
-from ..batchbox_logger import (
-    logger, log_request, log_response, log_error,
-    RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
-)
+try:
+    from ..batchbox_logger import (
+        logger, log_request, log_response, log_error,
+        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
+    )
+except ImportError:
+    from batchbox_logger import (
+        logger, log_request, log_response, log_error,
+        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
+    )
 
 
 class GenericAPIAdapter(APIAdapter):
@@ -423,7 +429,7 @@ class GenericAPIAdapter(APIAdapter):
         """
         try:
             data = response.json()
-        except:
+        except Exception:
             return APIResponse(
                 success=False,
                 error_message=f"Invalid JSON response: {response.text[:200]}",
@@ -657,7 +663,7 @@ class GenericAPIAdapter(APIAdapter):
                     import base64
                     img_bytes = base64.b64decode(value)
                     result["bytes"].append(img_bytes)
-                except:
+                except Exception:
                     pass
         elif isinstance(value, dict):
             if "url" in value:
@@ -667,7 +673,7 @@ class GenericAPIAdapter(APIAdapter):
                     import base64
                     img_bytes = base64.b64decode(value["b64_json"])
                     result["bytes"].append(img_bytes)
-                except:
+                except Exception:
                     pass
     
     def execute(self, params: Dict, mode: str = "text2img", 
@@ -728,33 +734,24 @@ class GenericAPIAdapter(APIAdapter):
         for attempt in range(retry_config.max_retries + 1):
             try:
                 with RequestTimer(f"API call to {provider_name}") as timer:
-                    # Execute request
+                    # Execute request using configured HTTP method.
+                    request_method = request_info.get("method", "POST").upper()
+                    request_kwargs = {
+                        "headers": request_info["headers"],
+                        "timeout": self.timeout,
+                    }
                     if "json" in request_info:
-                        response = requests.post(
-                            url,
-                            headers=request_info["headers"],
-                            json=request_info["json"],
-                            timeout=self.timeout
-                        )
+                        request_kwargs["json"] = request_info["json"]
                     elif "files" in request_info:
-                        response = requests.post(
-                            url,
-                            headers=request_info["headers"],
-                            data=request_info.get("data", {}),
-                            files=request_info["files"],
-                            timeout=self.timeout
-                        )
+                        request_kwargs["data"] = request_info.get("data", {})
+                        request_kwargs["files"] = request_info["files"]
                     else:
-                        response = requests.request(
-                            request_info["method"],
-                            url,
-                            headers=request_info["headers"],
-                            data=request_info.get("data"),
-                            timeout=self.timeout
-                        )
+                        request_kwargs["data"] = request_info.get("data")
+
+                    response = requests.request(request_method, url, **request_kwargs)
                 
                 # Log response
-                is_success = response.status_code == 200
+                is_success = 200 <= response.status_code < 300
                 log_response(
                     status_code=response.status_code,
                     elapsed=timer.elapsed,
@@ -777,7 +774,7 @@ class GenericAPIAdapter(APIAdapter):
                         log_error(f"Max retries exceeded for {provider_name}")
                 
                 # Check HTTP status
-                if response.status_code != 200:
+                if not is_success:
                     return APIResponse(
                         success=False,
                         error_message=f"HTTP {response.status_code}: {response.text[:200]}",
@@ -852,11 +849,21 @@ class GenericAPIAdapter(APIAdapter):
     def _poll_for_result(self, task_id: str, timeout: int = 600) -> APIResponse:
         """Poll for async task completion"""
         polling_endpoint = self.mode_config.get("polling_endpoint", "/v1/tasks/{task_id}")
+        polling_endpoint = polling_endpoint.replace("{{task_id}}", task_id).replace("{task_id}", task_id)
         status_path = self.mode_config.get("status_path", "data.status")
         success_value = self.mode_config.get("success_value", "SUCCESS")
         response_path = self.mode_config.get("response_path", "data.data.data[*].url")
         
-        poll_url = f"{self.base_url}{polling_endpoint.format(task_id=task_id)}"
+        poll_url = f"{self.base_url}{polling_endpoint}"
+        
+        poll_headers = {"Authorization": f"Bearer {self.api_key}"}
+        if self.endpoint.get("auth_type") == "account":
+            try:
+                from ..account import Account
+                account = Account.get_instance()
+                poll_headers = {"X-Auth-T": account.token}
+            except Exception:
+                poll_headers = {"Authorization": f"Bearer {self.api_key}"}
         
         start_time = time.time()
         
@@ -866,7 +873,7 @@ class GenericAPIAdapter(APIAdapter):
             try:
                 resp = requests.get(
                     poll_url,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=poll_headers,
                     timeout=30
                 )
                 
@@ -878,7 +885,9 @@ class GenericAPIAdapter(APIAdapter):
                 
                 print(f"[GenericAdapter] Poll status: {status}")
                 
-                if status == success_value:
+                normalized_status = str(status).strip().upper() if status is not None else ""
+                normalized_success = str(success_value).strip().upper()
+                if normalized_status == normalized_success:
                     # Extract images from response
                     images_data = self._extract_images_from_path(data, response_path)
                     
@@ -896,7 +905,7 @@ class GenericAPIAdapter(APIAdapter):
                         raw_response=data
                     )
                     
-                elif status in ["FAILURE", "FAILED", "ERROR"]:
+                elif normalized_status in ["FAILURE", "FAILED", "ERROR"]:
                     return APIResponse(
                         success=False,
                         error_message=f"Task failed: {data}",
