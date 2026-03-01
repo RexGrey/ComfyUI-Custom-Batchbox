@@ -310,6 +310,23 @@ async function initializeDynamicInputs(node) {
     // Store original onExecuted to save preview info for persistence
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (message) {
+        const messageToken =
+            message?._batchbox_generation_token?.[0] ||
+            message?._batchbox_generation_token ||
+            null;
+
+        // During independent generation, ignore stale executed events from prior runs.
+        // Only accept the executed payload carrying the active generation token.
+        if (this._batchboxIndependentInFlight) {
+            const activeToken = this._batchboxActiveGenerationToken || null;
+            if (!messageToken || (activeToken && messageToken !== activeToken)) {
+                console.log(`[Batchbox] Ignoring stale executed event on node ${this.id} (token=${messageToken || "none"})`);
+                return;
+            }
+        }
+
+        // Always let ComfyUI handle its standard executed flow.
+        // We already removed manual duplicate triggering on the extension side.
         if (originalOnExecuted) {
             originalOnExecuted.call(this, message);
         }
@@ -327,21 +344,23 @@ async function initializeDynamicInputs(node) {
             // Parse images to check if we have multiple
             try {
                 const images = JSON.parse(message._last_images[0]);
-                if (images && images.length > 1) {
+                if (images && images.length > 0) {
                     // For new generation (force_generate), reset to first image
-                    // For cache hit, maintain current selection
+                    // For cache hit, maintain current selection (only meaningful for multi-image outputs)
                     const isNewGeneration = this._forceGenerateFlag || false;
-                    if (isNewGeneration) {
+                    if (isNewGeneration && images.length > 1) {
                         this._selectedImageIndex = 0;
                         this.properties._selected_image_index = 0;
                         console.log("[Batchbox] New generation: reset selection to 0");
                     }
 
-                    // Set imageIndex to show the selected image (not thumbnails)
-                    // Our setter will block null values from ComfyUI's useNodeImage.ts
-                    const selectedIdx = this._selectedImageIndex || 0;
+                    // Keep a valid image index for both single and multi outputs.
+                    // This prevents preview disappearing when ComfyUI briefly writes null.
+                    const selectedIdx = Math.max(0, Math.min(this._selectedImageIndex || 0, images.length - 1));
                     this._ignoreImageIndexChanges = true;
                     this.imageIndex = selectedIdx;
+                    this._selectedImageIndex = selectedIdx;
+                    this.properties._selected_image_index = selectedIdx;
                     console.log(`[Batchbox] Set imageIndex to selected: ${selectedIdx}`);
                 }
             } catch (e) {
@@ -365,6 +384,12 @@ async function initializeDynamicInputs(node) {
         setTimeout(() => {
             this._ignoreImageIndexChanges = false;
         }, 100);  // 100ms is enough for ComfyUI to render the image
+
+        // Clear independent generation guard after consuming matching executed payload.
+        if (this._batchboxIndependentInFlight) {
+            delete this._batchboxIndependentInFlight;
+            delete this._batchboxActiveGenerationToken;
+        }
     };
 
     // Store original onConnectionsChange

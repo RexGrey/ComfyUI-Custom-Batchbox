@@ -658,7 +658,26 @@ function setNodeGeneratingState(node, isGenerating, progress) {
     // We'll track this via a custom flag
     btn._isGenerating = isGenerating;
   }
-  node.setDirtyCanvas(true, true);
+  requestNodeCanvasRefresh(node);
+}
+
+/**
+ * Coalesce frequent canvas refresh requests into at most one repaint per frame.
+ * This avoids UI stalls when progressive previews or progress events arrive rapidly.
+ */
+function requestNodeCanvasRefresh(node) {
+  if (!node) return;
+  if (node._batchboxCanvasRefreshPending) return;
+  node._batchboxCanvasRefreshPending = true;
+
+  requestAnimationFrame(() => {
+    node._batchboxCanvasRefreshPending = false;
+    if (!node.graph) return;
+    node.setDirtyCanvas(true, true);
+    if (app.graph) {
+      app.graph.setDirtyCanvas(true, true);
+    }
+  });
 }
 
 /**
@@ -841,18 +860,7 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
           node.imgs = validImgs;
         }
 
-        // Force immediate redraw
-        node.setDirtyCanvas(true, true);
-        if (app.graph) {
-          app.graph.setDirtyCanvas(true, true);
-        }
-
-        requestAnimationFrame(() => {
-          node.setDirtyCanvas(true, true);
-          if (app.canvas) {
-            app.canvas.draw(true, true);
-          }
-        });
+        requestNodeCanvasRefresh(node);
       }
     };
 
@@ -866,7 +874,7 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
         const validImgs = loadingImgs.filter(i => i !== null);
         if (validImgs.length > 0) {
           node.imgs = validImgs;
-          node.setDirtyCanvas(true, true);
+          requestNodeCanvasRefresh(node);
         }
       }
     };
@@ -933,11 +941,7 @@ function appendSinglePreview(node, previewInfo, batchIndex, totalBatches) {
     node.imgs = node._progressiveSlots.filter(i => i !== null);
     node.images = node._progressiveInfos.filter(i => i !== null);
 
-    // Force immediate canvas redraw
-    node.setDirtyCanvas(true, true);
-    if (app.graph) {
-      app.graph.setDirtyCanvas(true, true);
-    }
+    requestNodeCanvasRefresh(node);
 
     console.log(`[BatchBox] Node ${node.id}: Progressive image ${batchIndex + 1}/${totalBatches} loaded`);
   };
@@ -965,6 +969,9 @@ async function executeIndependent(node) {
   // Set generating state with initial progress
   const batchCount = node.widgets?.find(w => w.name === "batch_count")?.value || 1;
   setNodeGeneratingState(node, true, { current: 0, total: batchCount });
+  const generationToken = `ind_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  node._batchboxIndependentInFlight = true;
+  node._batchboxActiveGenerationToken = generationToken;
 
   // Determine preview mode from node settings cache
   let previewMode = "progressive";
@@ -981,6 +988,7 @@ async function executeIndependent(node) {
   const progressHandler = (event) => {
     const d = event.detail;
     if (String(d.node_id) !== nodeIdStr) return;
+    if (d.generation_token && d.generation_token !== generationToken) return;
 
     // Update button progress counter
     setNodeGeneratingState(node, true, { current: d.completed, total: d.total });
@@ -1011,6 +1019,7 @@ async function executeIndependent(node) {
     // Build request
     const requestBody = {
       node_id: nodeIdStr,
+      generation_token: generationToken,
       model: params.model || params.preset,
       prompt: params.prompt || "",
       seed: params.seed || 0,
@@ -1034,53 +1043,31 @@ async function executeIndependent(node) {
     const result = await response.json();
 
     if (result.success) {
-      // Debug: log result
-      console.log("[BatchBox] result.preview_images:", JSON.stringify(result.preview_images, null, 2));
+      console.log("[BatchBox] result.preview_images count:", Array.isArray(result.preview_images) ? result.preview_images.length : 0);
       console.log("[BatchBox] Backend params_hash:", result.params_hash);
 
       // Use the hash computed by backend for consistency
       const paramsHash = result.params_hash;
 
+      // Finalize cache/selection metadata.
+      // Image display is driven by backend "executed" websocket events.
+      if (!node.properties) node.properties = {};
+      node.properties._last_images = JSON.stringify(result.preview_images);
+      node.properties._last_size = JSON.stringify(node.size);
+      if (paramsHash) {
+        node.properties._cached_hash = paramsHash;
+        console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
+      }
+      node._selectedImageIndex = 0;
+      node.properties._selected_image_index = 0;
       if (previewMode === "progressive") {
-        // Progressive mode: images already displayed via WebSocket events.
-        // Just do finalization (persistence, hash, selection).
-        if (!node.properties) node.properties = {};
-        node.properties._last_images = JSON.stringify(result.preview_images);
-        node.properties._last_size = JSON.stringify(node.size);
-        if (paramsHash) {
-          node.properties._cached_hash = paramsHash;
-          console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
-        }
-        node._selectedImageIndex = 0;
-        node.properties._selected_image_index = 0;
         // Cleanup progressive state
         delete node._progressiveSlots;
         delete node._progressiveInfos;
-      } else {
-        // wait_all mode: load all images at once (existing behavior)
-        updateNodePreview(node, result.preview_images, paramsHash);
       }
-
-      // Trigger ComfyUI's image viewer by calling onExecuted with the correct format
-      if (result.preview_images && result.preview_images.length > 0) {
-        const lastImagesJson = JSON.stringify(result.preview_images);
-        const executedMessage = {
-          images: result.preview_images,
-          _last_images: [lastImagesJson],
-          _cached_hash: [paramsHash || ""],
-        };
-
-        // Update app.nodeOutputs (ComfyUI's central output store)
-        if (app.nodeOutputs) {
-          app.nodeOutputs[nodeIdStr] = executedMessage;
-        }
-
-        // Call onExecuted to trigger ComfyUI's standard image display mechanism
-        if (node.onExecuted) {
-          console.log("[BatchBox] Triggering onExecuted for image viewer");
-          node.onExecuted(executedMessage);
-        }
-      }
+      // The backend route already emits ComfyUI "executed" websocket events.
+      // Avoid manual onExecuted/app.nodeOutputs updates here to prevent duplicate render work.
+      requestNodeCanvasRefresh(node);
 
       console.log("[BatchBox] Generation complete:", result.response_info);
     } else {
@@ -1092,10 +1079,19 @@ async function executeIndependent(node) {
     console.error("[BatchBox] Independent generation error:", e);
     alert(`生成出错: ${e.message}`);
   } finally {
+    delete node._progressiveSlots;
+    delete node._progressiveInfos;
     // Remove WebSocket listener
     api.removeEventListener("batchbox:progress", progressHandler);
     // Reset generating state
     setNodeGeneratingState(node, false);
+    // If executed event does not arrive for any reason, avoid leaving stale in-flight guard.
+    setTimeout(() => {
+      if (node._batchboxActiveGenerationToken === generationToken) {
+        delete node._batchboxIndependentInFlight;
+        delete node._batchboxActiveGenerationToken;
+      }
+    }, 3000);
   }
 }
 

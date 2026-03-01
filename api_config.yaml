@@ -1049,7 +1049,7 @@ node_settings:
   bypass_queue_prompt: true
   show_in_canvas_menu: true
   smart_cache_hash_check: true
-  pricing_strategy: bestPrice
+  pricing_strategy: bestBalance
   auto_endpoint_mode: priority
   preview_mode: progressive
 upscale_settings:

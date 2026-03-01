@@ -312,16 +312,52 @@ class GenericAPIAdapter(APIAdapter):
         parts = [{"text": prompt}]
         
         # Add images if present (for img2img mode)
+        # For Gemini API: use GCS cache (gs:// URIs) when available,
+        # otherwise fall back to inline_data (base64).
+        # NOTE: Gemini API does NOT support arbitrary HTTP URLs in file_data,
+        # only gs:// URIs or Google Files API URIs.
         upload_files = params.get("_upload_files", [])
+        
+        # Check if GCS cache should be used for bandwidth savings
+        use_cache = self.mode_config.get("use_oss_cache", False) or self.endpoint.get("use_oss_cache", False)
+        gcs_available = False
+        if use_cache and upload_files:
+            try:
+                from ..gcs_cache import gcs_cache
+                gcs_available = gcs_cache.is_enabled()
+            except Exception:
+                pass
+        
         for field_name, file_tuple in upload_files:
             # file_tuple can be 3-element (filename, bytes, mime) or 4-element (+ cached base64)
             if len(file_tuple) >= 4:
-                # Use pre-cached base64 to avoid re-encoding per request
                 filename, file_bytes, mime_type, cached_b64 = file_tuple
+            else:
+                filename, file_bytes, mime_type = file_tuple
+                cached_b64 = None
+            
+            # GCS path: upload to GCS and use gs:// URI (saves upload bandwidth)
+            if gcs_available:
+                try:
+                    gs_uri = gcs_cache.get_or_upload(file_bytes, filename, mime_type)
+                    if gs_uri:
+                        parts.append({
+                            "file_data": {
+                                "mime_type": mime_type,
+                                "file_uri": gs_uri
+                            }
+                        })
+                        logger.info(f"[Gemini] Using GCS cached image: {gs_uri}")
+                        continue  # Skip inline_data fallback
+                    else:
+                        logger.warning("[Gemini] GCS upload failed, falling back to inline_data")
+                except Exception as e:
+                    logger.warning(f"[Gemini] GCS error: {e}, falling back to inline_data")
+            
+            # Fallback: embed image as base64 inline_data
+            if cached_b64:
                 b64_data = cached_b64
             else:
-                # Fallback: encode on the fly
-                filename, file_bytes, mime_type = file_tuple
                 b64_data = base64.b64encode(file_bytes).decode('utf-8')
             
             parts.append({

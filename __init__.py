@@ -436,6 +436,7 @@ try:
             
             model = data.get("model")
             prompt = data.get("prompt", "")
+            generation_token = data.get("generation_token", "")
             
             if not model:
                 return web.json_response({"success": False, "error": "Model is required"}, status=400)
@@ -454,6 +455,7 @@ try:
                 preview = batch_previews[0] if batch_previews else None
                 server.PromptServer.instance.send_sync("batchbox:progress", {
                     "node_id": node_id,
+                    "generation_token": generation_token,
                     "batch_index": batch_idx,
                     "completed": completed_count,
                     "total": total,
@@ -482,6 +484,7 @@ try:
                         "images": result["preview_images"],
                         "_last_images": [last_images_json],
                         "_cached_hash": [result.get("params_hash", "")],
+                        "_batchbox_generation_token": [generation_token],
                     }
                     
                     # 1. Send websocket event for real-time viewer update
