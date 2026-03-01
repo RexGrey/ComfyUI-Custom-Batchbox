@@ -260,6 +260,11 @@ class GenericAPIAdapter(APIAdapter):
         if "{api_key}" in endpoint_path:
             endpoint_path = endpoint_path.replace("{api_key}", self.api_key or "")
         
+        # Support {project_id} placeholder in endpoint path (e.g. Vertex AI)
+        if "{project_id}" in endpoint_path:
+            project_id = self.provider.get("project_id", "")
+            endpoint_path = endpoint_path.replace("{project_id}", project_id)
+        
         url = f"{self.base_url}{endpoint_path}"
         
         # Build headers - support Account auth mode and auth_header_format
@@ -296,6 +301,13 @@ class GenericAPIAdapter(APIAdapter):
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json"
                 }
+        elif auth_type == "vertex":
+            # Vertex AI with API key: same as AI Studio (key in URL query param)
+            # auth_type=vertex only affects image strategy (GCS gs:// instead of Files API)
+            headers = {
+                "Content-Type": "application/json"
+            }
+            logger.info("[Gemini] Vertex AI endpoint (API key in URL)")
         elif auth_header_format == "none":
             # No Authorization header (e.g. Google official API uses ?key= in URL)
             headers = {
@@ -312,31 +324,36 @@ class GenericAPIAdapter(APIAdapter):
         parts = [{"text": prompt}]
         
         # Add images if present (for img2img mode)
-        # Strategy: Use Google Files API to upload images and get file_uri.
-        # This avoids sending large base64 inline_data in every request.
-        # Files API uses the same API key as AI Studio (48h cache).
-        # Account proxy doesn't support file_data, so falls back to inline_data.
+        # Strategy per endpoint type:
+        #   - Vertex AI: GCS gs:// URIs (natively supported)
+        #   - AI Studio: Google Files API file_uri
+        #   - Account proxy: inline_data base64 (doesn't support file_data)
         upload_files = params.get("_upload_files", [])
         
-        # Extract Google API key for Files API upload
-        # Files API only works with Google official endpoints (AI Studio).
-        # Account proxy does NOT support file_data — always uses inline_data.
         use_cache = self.mode_config.get("use_oss_cache", False) or self.endpoint.get("use_oss_cache", False)
-        google_api_key = None
-        if use_cache and upload_files:
-            if self.endpoint.get("auth_type") != "account" and self.api_key:
-                google_api_key = self.api_key
         
+        # Determine image upload strategy
+        gcs_available = False
         files_api_available = False
-        if google_api_key:
-            try:
-                from ..gemini_files_cache import gemini_files_cache
-                files_api_available = True
-                logger.info(f"[Gemini] Files API enabled (key: {google_api_key[:8]}...)")
-            except Exception as e:
-                logger.warning(f"[Gemini] Files API import failed: {e}")
-        elif use_cache and upload_files:
-            logger.info(f"[Gemini] Files API NOT enabled: auth_type={self.endpoint.get('auth_type')}, api_key={'set' if self.api_key else 'empty'}")
+        
+        if use_cache and upload_files:
+            if auth_type == "vertex":
+                # Vertex AI: use GCS gs:// URIs
+                try:
+                    from ..gcs_cache import gcs_cache
+                    gcs_available = gcs_cache.is_enabled()
+                    if gcs_available:
+                        logger.info("[Gemini] GCS cache enabled for Vertex AI")
+                except Exception:
+                    pass
+            elif auth_type != "account" and self.api_key:
+                # AI Studio: use Files API
+                try:
+                    from ..gemini_files_cache import gemini_files_cache
+                    files_api_available = True
+                    logger.info(f"[Gemini] Files API enabled (key: {self.api_key[:8]}...)")
+                except Exception as e:
+                    logger.warning(f"[Gemini] Files API import failed: {e}")
         
         for field_name, file_tuple in upload_files:
             # file_tuple can be 3-element (filename, bytes, mime) or 4-element (+ cached base64)
@@ -346,11 +363,29 @@ class GenericAPIAdapter(APIAdapter):
                 filename, file_bytes, mime_type = file_tuple
                 cached_b64 = None
             
-            # Google Files API: upload and get file_uri (saves bandwidth)
+            # Vertex AI: GCS gs:// URI (natively supported)
+            if gcs_available:
+                try:
+                    gs_uri = gcs_cache.get_or_upload(file_bytes, filename, mime_type)
+                    if gs_uri:
+                        parts.append({
+                            "file_data": {
+                                "mime_type": mime_type,
+                                "file_uri": gs_uri
+                            }
+                        })
+                        logger.info(f"[Gemini] Using GCS cached: {gs_uri}")
+                        continue
+                    else:
+                        logger.warning("[Gemini] GCS upload failed, falling back to inline_data")
+                except Exception as e:
+                    logger.warning(f"[Gemini] GCS error: {e}, falling back to inline_data")
+            
+            # AI Studio: Files API upload and get file_uri
             if files_api_available:
                 try:
                     file_uri = gemini_files_cache.get_or_upload(
-                        google_api_key, file_bytes, filename, mime_type
+                        self.api_key, file_bytes, filename, mime_type
                     )
                     if file_uri:
                         parts.append({
@@ -360,7 +395,7 @@ class GenericAPIAdapter(APIAdapter):
                             }
                         })
                         logger.info(f"[Gemini] Using Files API cached: {file_uri}")
-                        continue  # Skip inline_data fallback
+                        continue
                     else:
                         logger.warning("[Gemini] Files API upload failed, falling back to inline_data")
                 except Exception as e:

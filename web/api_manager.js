@@ -792,10 +792,18 @@ class BatchboxManager {
         const providers = this.config.providers || {};
         for (const [name, data] of Object.entries(providers)) {
             const tr = document.createElement("tr");
+            const keyDisplay = (() => {
+                if (data.api_keys && Array.isArray(data.api_keys)) {
+                    const total = data.api_keys.length;
+                    const enabled = data.api_keys.filter(k => typeof k === 'string' || (k.enabled !== false)).length;
+                    return `<span style="color: ${enabled > 1 ? '#6cf' : '#ccc'}">${enabled}/${total} Key${enabled > 1 ? ' (轮询)' : ''}</span>`;
+                }
+                return data.api_key ? "••••••" + data.api_key.slice(-4) : "";
+            })();
             tr.innerHTML = `
                 <td><strong>${name}</strong></td>
                 <td>${data.base_url || ""}</td>
-                <td>${data.api_key ? "••••••" + data.api_key.slice(-4) : ""}</td>
+                <td>${keyDisplay}</td>
                 <td></td>
             `;
             const actionCell = tr.querySelector("td:last-child");
@@ -826,54 +834,265 @@ class BatchboxManager {
         const isEdit = editName !== null;
         const existing = isEdit ? this.config.providers[editName] : {};
 
-        this.showFormModal({
-            title: isEdit ? `编辑供应商: ${editName}` : "添加新供应商",
-            fields: [
-                { name: "name", label: "名称", value: editName || "", required: true },
-                { name: "base_url", label: "Base URL", value: existing.base_url || "", placeholder: "https://api.example.com", required: true },
-                { name: "api_key", label: "API Key", value: existing.api_key || "", placeholder: "sk-xxxxxx", type: "password" },
-                { name: "divider1", type: "divider", label: "高级设置 (可选)" },
-                {
-                    name: "file_format",
-                    label: "文件格式",
-                    type: "select",
-                    value: existing.file_format || "",
-                    options: [
-                        { value: "", label: "默认 (同名多个)" },
-                        { value: "same_name", label: "同名多个: image, image" },
-                        { value: "indexed", label: "索引式: image[0], image[1]" },
-                        { value: "array", label: "数组式: images[], images[]" },
-                        { value: "numbered", label: "编号式: image1, image2" }
-                    ]
-                },
-                { name: "file_field", label: "文件字段名", value: existing.file_field || "", placeholder: "默认: image" }
-            ],
-            onSubmit: (data) => {
-                if (!data.name || !data.base_url) {
-                    this.showToast("名称和 Base URL 为必填项", "error");
-                    return false;
-                }
-                if (!isEdit && this.config.providers[data.name]) {
-                    this.showToast("该名称已存在", "error");
-                    return false;
-                }
-                const providerConfig = {
-                    base_url: data.base_url,
-                    api_key: data.api_key
-                };
-                // Only add file settings if specified
-                if (data.file_format) providerConfig.file_format = data.file_format;
-                if (data.file_field) providerConfig.file_field = data.file_field;
+        // Migrate old api_key to api_keys format
+        let apiKeys = [];
+        if (existing.api_keys && Array.isArray(existing.api_keys)) {
+            apiKeys = existing.api_keys.map(k => {
+                if (typeof k === 'string') return { name: '', key: k, enabled: true };
+                return { name: k.name || '', key: k.key || '', enabled: k.enabled !== false };
+            });
+        } else if (existing.api_key) {
+            apiKeys = [{ name: '', key: existing.api_key, enabled: true }];
+        }
 
-                this.config.providers[data.name] = providerConfig;
-                if (isEdit && data.name !== editName) {
-                    delete this.config.providers[editName];
+        // Build provider form with embedded key management
+        const overlay = document.createElement("div");
+        overlay.className = "batchbox-submodal-overlay";
+        const modal = document.createElement("div");
+        modal.className = "batchbox-submodal batchbox-form-modal";
+        modal.style.maxWidth = "560px";
+
+        modal.innerHTML = `
+            <div class="batchbox-submodal-header"><h4>${isEdit ? `编辑供应商: ${editName}` : "添加新供应商"}</h4></div>
+            <div class="batchbox-submodal-body">
+                <div class="batchbox-form-group">
+                    <label>名称 *</label>
+                    <input type="text" name="name" value="${editName || ''}" placeholder="供应商名称" class="batchbox-form-input" ${isEdit ? '' : ''}>
+                </div>
+                <div class="batchbox-form-group">
+                    <label>Base URL *</label>
+                    <input type="text" name="base_url" value="${existing.base_url || ''}" placeholder="https://api.example.com" class="batchbox-form-input">
+                </div>
+                <div class="batchbox-form-group">
+                    <label>Project ID</label>
+                    <input type="text" name="project_id" value="${existing.project_id || ''}" placeholder="可选, 用于 Vertex AI" class="batchbox-form-input">
+                </div>
+                <div class="batchbox-form-divider" style="border-top: 1px solid #444; margin: 16px 0 8px 0; padding-top: 8px;">
+                    <span style="font-size: 11px; color: #888;">API Keys <span id="batchbox-key-count" style="color: #6cf;">(${apiKeys.filter(k => k.enabled).length}/${apiKeys.length} 启用)</span></span>
+                </div>
+                <div id="batchbox-key-list" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;"></div>
+                <button type="button" id="batchbox-add-key" class="batchbox-btn btn-success" style="width: 100%; padding: 8px; font-size: 13px;">+ 添加 Key</button>
+                <div class="batchbox-form-divider" style="border-top: 1px solid #444; margin: 16px 0 8px 0; padding-top: 8px;">
+                    <span style="font-size: 11px; color: #888;">高级设置 (可选)</span>
+                </div>
+                <div class="batchbox-form-group">
+                    <label>文件格式</label>
+                    <select name="file_format" class="batchbox-form-input">
+                        <option value="" ${!existing.file_format ? 'selected' : ''}>默认 (同名多个)</option>
+                        <option value="same_name" ${existing.file_format === 'same_name' ? 'selected' : ''}>同名多个: image, image</option>
+                        <option value="indexed" ${existing.file_format === 'indexed' ? 'selected' : ''}>索引式: image[0], image[1]</option>
+                        <option value="array" ${existing.file_format === 'array' ? 'selected' : ''}>数组式: images[], images[]</option>
+                        <option value="numbered" ${existing.file_format === 'numbered' ? 'selected' : ''}>编号式: image1, image2</option>
+                    </select>
+                </div>
+                <div class="batchbox-form-group">
+                    <label>文件字段名</label>
+                    <input type="text" name="file_field" value="${existing.file_field || ''}" placeholder="默认: image" class="batchbox-form-input">
+                </div>
+            </div>
+            <div class="batchbox-submodal-footer">
+                <button class="batchbox-btn btn-cancel">取消</button>
+                <button class="batchbox-btn btn-primary">保存</button>
+            </div>
+        `;
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        // Key list management
+        const keyList = modal.querySelector("#batchbox-key-list");
+        const keyCountEl = modal.querySelector("#batchbox-key-count");
+        let currentKeys = [...apiKeys];
+
+        const updateKeyCount = () => {
+            const enabled = currentKeys.filter(k => k.enabled).length;
+            keyCountEl.textContent = `(${enabled}/${currentKeys.length} 启用${enabled > 1 ? ', 轮询' : ''})`;
+        };
+
+        const renderKeyItem = (keyObj, index) => {
+            const row = document.createElement("div");
+            row.className = "batchbox-key-row";
+            row.draggable = true;
+            row.dataset.index = index;
+            row.style.cssText = "display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 6px; transition: all 0.2s;";
+
+            // Drag handle
+            const handle = document.createElement("span");
+            handle.textContent = "⠿";
+            handle.title = "拖拽排序";
+            handle.style.cssText = "cursor: grab; color: #666; font-size: 16px; user-select: none; padding: 0 2px;";
+            row.appendChild(handle);
+
+            // Enable toggle
+            const toggle = document.createElement("button");
+            toggle.type = "button";
+            toggle.textContent = keyObj.enabled ? "✅" : "❌";
+            toggle.title = keyObj.enabled ? "已启用 (点击禁用)" : "已禁用 (点击启用)";
+            toggle.style.cssText = "background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px;";
+            toggle.onclick = () => {
+                currentKeys[index].enabled = !currentKeys[index].enabled;
+                renderKeys();
+            };
+            row.appendChild(toggle);
+
+            // Name input
+            const nameInput = document.createElement("input");
+            nameInput.type = "text";
+            nameInput.value = keyObj.name;
+            nameInput.placeholder = `Key ${index + 1}`;
+            nameInput.className = "batchbox-form-input";
+            nameInput.style.cssText = "width: 90px; padding: 4px 6px; font-size: 12px;";
+            nameInput.oninput = () => { currentKeys[index].name = nameInput.value; };
+            row.appendChild(nameInput);
+
+            // Key input
+            const keyInput = document.createElement("input");
+            keyInput.type = "password";
+            keyInput.value = keyObj.key;
+            keyInput.placeholder = "API Key";
+            keyInput.className = "batchbox-form-input";
+            keyInput.style.cssText = "flex: 1; padding: 4px 6px; font-size: 12px;";
+            keyInput.oninput = () => { currentKeys[index].key = keyInput.value; };
+            row.appendChild(keyInput);
+
+            // Show/hide button
+            const eyeBtn = document.createElement("button");
+            eyeBtn.type = "button";
+            eyeBtn.textContent = "👁";
+            eyeBtn.title = "显示/隐藏";
+            eyeBtn.style.cssText = "background: #333; border: 1px solid #555; cursor: pointer; padding: 3px 6px; border-radius: 4px; font-size: 12px;";
+            eyeBtn.onclick = () => {
+                keyInput.type = keyInput.type === "password" ? "text" : "password";
+                eyeBtn.textContent = keyInput.type === "password" ? "👁" : "🔒";
+            };
+            row.appendChild(eyeBtn);
+
+            // Delete button
+            const delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.textContent = "🗑";
+            delBtn.title = "删除";
+            delBtn.style.cssText = "background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px; opacity: 0.6;";
+            delBtn.onmouseenter = () => { delBtn.style.opacity = "1"; };
+            delBtn.onmouseleave = () => { delBtn.style.opacity = "0.6"; };
+            delBtn.onclick = () => {
+                currentKeys.splice(index, 1);
+                renderKeys();
+            };
+            row.appendChild(delBtn);
+
+            // Drag & Drop
+            row.ondragstart = (e) => {
+                e.dataTransfer.setData("text/plain", index);
+                row.style.opacity = "0.4";
+            };
+            row.ondragend = () => { row.style.opacity = "1"; };
+            row.ondragover = (e) => {
+                e.preventDefault();
+                row.style.borderColor = "#6cf";
+            };
+            row.ondragleave = () => { row.style.borderColor = "#333"; };
+            row.ondrop = (e) => {
+                e.preventDefault();
+                row.style.borderColor = "#333";
+                const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
+                const toIdx = index;
+                if (fromIdx !== toIdx) {
+                    const [moved] = currentKeys.splice(fromIdx, 1);
+                    currentKeys.splice(toIdx, 0, moved);
+                    renderKeys();
                 }
-                this.renderProviders(this.panels["providers"]);
-                this.showToast(isEdit ? "供应商已更新" : "供应商已添加", "success");
-                return true;
+            };
+
+            // Dim disabled rows
+            if (!keyObj.enabled) {
+                row.style.opacity = "0.5";
+                row.style.borderColor = "#2a2a2a";
             }
-        });
+
+            return row;
+        };
+
+        const renderKeys = () => {
+            keyList.innerHTML = "";
+            currentKeys.forEach((k, i) => keyList.appendChild(renderKeyItem(k, i)));
+            updateKeyCount();
+            if (currentKeys.length === 0) {
+                const empty = document.createElement("div");
+                empty.style.cssText = "text-align: center; color: #666; padding: 12px; font-size: 12px;";
+                empty.textContent = "暂无 Key，点击下方按钮添加";
+                keyList.appendChild(empty);
+            }
+        };
+        renderKeys();
+
+        // Add key button
+        modal.querySelector("#batchbox-add-key").onclick = () => {
+            currentKeys.push({ name: "", key: "", enabled: true });
+            renderKeys();
+            // Focus the new key input
+            const lastRow = keyList.lastElementChild;
+            if (lastRow) {
+                const keyInput = lastRow.querySelector('input[type="password"]');
+                if (keyInput) keyInput.focus();
+            }
+        };
+
+        // Cancel / Save
+        modal.querySelector(".btn-cancel").onclick = () => overlay.remove();
+        modal.querySelector(".btn-primary").onclick = () => {
+            const name = modal.querySelector('[name="name"]').value.trim();
+            const base_url = modal.querySelector('[name="base_url"]').value.trim();
+            if (!name || !base_url) {
+                this.showToast("名称和 Base URL 为必填项", "error");
+                return;
+            }
+            if (!isEdit && this.config.providers[name]) {
+                this.showToast("该名称已存在", "error");
+                return;
+            }
+
+            // Build provider config
+            const providerConfig = { base_url };
+
+            // Project ID (for Vertex AI)
+            const project_id = modal.querySelector('[name="project_id"]').value.trim();
+            if (project_id) providerConfig.project_id = project_id;
+
+            // Save keys: filter out empty, clean format
+            const validKeys = currentKeys.filter(k => k.key.trim());
+            if (validKeys.length === 1 && !validKeys[0].name && validKeys[0].enabled) {
+                // Single unnamed enabled key → save as simple api_key
+                providerConfig.api_key = validKeys[0].key.trim();
+            } else if (validKeys.length > 0) {
+                // Multiple or named keys → save as api_keys list
+                providerConfig.api_keys = validKeys.map(k => ({
+                    name: k.name.trim() || undefined,
+                    key: k.key.trim(),
+                    enabled: k.enabled
+                }));
+                // Clean up: remove name if empty, remove enabled if true (default)
+                providerConfig.api_keys = providerConfig.api_keys.map(k => {
+                    const clean = { key: k.key };
+                    if (k.name) clean.name = k.name;
+                    if (!k.enabled) clean.enabled = false;
+                    return clean;
+                });
+            }
+
+            // File settings
+            const file_format = modal.querySelector('[name="file_format"]').value;
+            const file_field = modal.querySelector('[name="file_field"]').value.trim();
+            if (file_format) providerConfig.file_format = file_format;
+            if (file_field) providerConfig.file_field = file_field;
+
+            this.config.providers[name] = providerConfig;
+            if (isEdit && name !== editName) {
+                delete this.config.providers[editName];
+            }
+            this.renderProviders(this.panels["providers"]);
+            this.showToast(isEdit ? "供应商已更新" : "供应商已添加", "success");
+            overlay.remove();
+        };
     }
 
     // ================================================================

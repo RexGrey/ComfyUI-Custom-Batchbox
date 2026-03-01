@@ -555,9 +555,32 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
+    - display_name: Vertex AI
+      provider: vertex_ai
+      priority: 3
+      model_name: gemini-3-pro-image-preview
+      auth_type: vertex
+      api_format: gemini
+      base_url: https://us-central1-aiplatform.googleapis.com/v1
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /projects/{project_id}/locations/us-central1/publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /projects/{project_id}/locations/us-central1/publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+          use_oss_cache: true
     - display_name: 柏拉图
       provider: 柏拉图
-      priority: 3
+      priority: 4
       model_name: nano-banana-2
       use_oss_cache: true
       modes:
@@ -1050,7 +1073,7 @@ node_settings:
   show_in_canvas_menu: true
   smart_cache_hash_check: true
   pricing_strategy: bestBalance
-  auto_endpoint_mode: priority
+  auto_endpoint_mode: round_robin
   preview_mode: progressive
 upscale_settings:
   model: NanoBananaPro
