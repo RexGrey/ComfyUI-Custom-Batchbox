@@ -10,9 +10,12 @@ Provides high-quality image processing utilities:
 """
 
 import io
-from typing import Optional, Tuple, Literal
+from typing import Optional, Tuple, Literal, TYPE_CHECKING
 from PIL import Image
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: FORMAT DETECTION
