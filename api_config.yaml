@@ -1051,6 +1051,7 @@ node_settings:
   smart_cache_hash_check: true
   pricing_strategy: bestPrice
   auto_endpoint_mode: priority
+  preview_mode: progressive
 upscale_settings:
   model: NanoBananaPro
   default_params:

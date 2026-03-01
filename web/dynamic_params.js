@@ -640,11 +640,20 @@ class DynamicParameterManager {
  * Set node generating state (button text and disabled state)
  * @param {Object} node - ComfyUI node
  * @param {boolean} isGenerating - Whether generation is in progress
+ * @param {Object} [progress] - Optional progress info {current, total}
  */
-function setNodeGeneratingState(node, isGenerating) {
+function setNodeGeneratingState(node, isGenerating, progress) {
   const btn = node.widgets?.find(w => w._isGenerateButton);
   if (btn) {
-    btn.name = isGenerating ? "⏳ 生成中..." : "▶ 开始生成";
+    if (isGenerating) {
+      if (progress && progress.total > 0) {
+        btn.name = `⏳ 生成中 ${progress.current}/${progress.total}`;
+      } else {
+        btn.name = "⏳ 生成中...";
+      }
+    } else {
+      btn.name = "▶ 开始生成";
+    }
     // Note: ComfyUI button widgets don't have a built-in disabled state
     // We'll track this via a custom flag
     btn._isGenerating = isGenerating;
@@ -897,6 +906,51 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
 }
 
 /**
+ * Safely append a single preview image to the node during progressive loading.
+ * Uses ordered slots array to maintain correct batch order.
+ * SAFETY: node.imgs is always set to a filtered array containing ONLY fully-loaded Image objects.
+ * @param {Object} node - The node
+ * @param {Object} previewInfo - {filename, subfolder, type} for the image
+ * @param {number} batchIndex - Index of this batch (for ordering)
+ * @param {number} totalBatches - Total number of batches
+ */
+function appendSinglePreview(node, previewInfo, batchIndex, totalBatches) {
+  const url = `/view?filename=${encodeURIComponent(previewInfo.filename)}&subfolder=${encodeURIComponent(previewInfo.subfolder || "")}&type=${previewInfo.type || "output"}&t=${Date.now()}`;
+  const img = new Image();
+
+  img.onload = () => {
+    // Initialize ordered slot arrays on first call
+    if (!node._progressiveSlots) {
+      node._progressiveSlots = new Array(totalBatches).fill(null);
+      node._progressiveInfos = new Array(totalBatches).fill(null);
+    }
+
+    // Place loaded image in its correct slot
+    node._progressiveSlots[batchIndex] = img;
+    node._progressiveInfos[batchIndex] = previewInfo;
+
+    // ✅ CRITICAL SAFETY: only collect non-null elements → node.imgs never contains null
+    node.imgs = node._progressiveSlots.filter(i => i !== null);
+    node.images = node._progressiveInfos.filter(i => i !== null);
+
+    // Force immediate canvas redraw
+    node.setDirtyCanvas(true, true);
+    if (app.graph) {
+      app.graph.setDirtyCanvas(true, true);
+    }
+
+    console.log(`[BatchBox] Node ${node.id}: Progressive image ${batchIndex + 1}/${totalBatches} loaded`);
+  };
+
+  img.onerror = (e) => {
+    console.error(`[BatchBox] Node ${node.id}: Progressive image ${batchIndex} failed to load`, e);
+    // Don't append failed images — counter still updates via WebSocket
+  };
+
+  img.src = url;
+}
+
+/**
  * Independent generation - bypasses ComfyUI queue for concurrent execution
  * @param {Object} node - The node to generate for
  */
@@ -908,8 +962,35 @@ async function executeIndependent(node) {
     return;
   }
 
-  // Set generating state
-  setNodeGeneratingState(node, true);
+  // Set generating state with initial progress
+  const batchCount = node.widgets?.find(w => w.name === "batch_count")?.value || 1;
+  setNodeGeneratingState(node, true, { current: 0, total: batchCount });
+
+  // Determine preview mode from node settings cache
+  let previewMode = "progressive";
+  try {
+    const nsResp = await api.fetchApi("/api/batchbox/node-settings");
+    const nsData = await nsResp.json();
+    previewMode = nsData.node_settings?.preview_mode || "progressive";
+  } catch (e) {
+    // Default to progressive
+  }
+
+  // Register WebSocket progress listener
+  const nodeIdStr = String(node.id);
+  const progressHandler = (event) => {
+    const d = event.detail;
+    if (String(d.node_id) !== nodeIdStr) return;
+
+    // Update button progress counter
+    setNodeGeneratingState(node, true, { current: d.completed, total: d.total });
+
+    // Progressive mode: append image as it arrives
+    if (previewMode === "progressive" && d.preview) {
+      appendSinglePreview(node, d.preview, d.batch_index, d.total);
+    }
+  };
+  api.addEventListener("batchbox:progress", progressHandler);
 
   try {
     // Collect parameters
@@ -923,12 +1004,13 @@ async function executeIndependent(node) {
       // Show error to user via alert (since we can't use ComfyUI's toast easily)
       alert(e.message);
       setNodeGeneratingState(node, false);
+      api.removeEventListener("batchbox:progress", progressHandler);
       return;
     }
 
     // Build request
     const requestBody = {
-      node_id: String(node.id),
+      node_id: nodeIdStr,
       model: params.model || params.preset,
       prompt: params.prompt || "",
       seed: params.seed || 0,
@@ -957,14 +1039,29 @@ async function executeIndependent(node) {
       console.log("[BatchBox] Backend params_hash:", result.params_hash);
 
       // Use the hash computed by backend for consistency
-      // This ensures the hash matches what nodes.py computes during Queue Prompt
       const paramsHash = result.params_hash;
 
-      // Update node preview with the backend-computed hash
-      updateNodePreview(node, result.preview_images, paramsHash);
+      if (previewMode === "progressive") {
+        // Progressive mode: images already displayed via WebSocket events.
+        // Just do finalization (persistence, hash, selection).
+        if (!node.properties) node.properties = {};
+        node.properties._last_images = JSON.stringify(result.preview_images);
+        node.properties._last_size = JSON.stringify(node.size);
+        if (paramsHash) {
+          node.properties._cached_hash = paramsHash;
+          console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
+        }
+        node._selectedImageIndex = 0;
+        node.properties._selected_image_index = 0;
+        // Cleanup progressive state
+        delete node._progressiveSlots;
+        delete node._progressiveInfos;
+      } else {
+        // wait_all mode: load all images at once (existing behavior)
+        updateNodePreview(node, result.preview_images, paramsHash);
+      }
 
       // Trigger ComfyUI's image viewer by calling onExecuted with the correct format
-      // This matches the UI format returned by nodes.py generate() method
       if (result.preview_images && result.preview_images.length > 0) {
         const lastImagesJson = JSON.stringify(result.preview_images);
         const executedMessage = {
@@ -975,7 +1072,7 @@ async function executeIndependent(node) {
 
         // Update app.nodeOutputs (ComfyUI's central output store)
         if (app.nodeOutputs) {
-          app.nodeOutputs[String(node.id)] = executedMessage;
+          app.nodeOutputs[nodeIdStr] = executedMessage;
         }
 
         // Call onExecuted to trigger ComfyUI's standard image display mechanism
@@ -995,6 +1092,8 @@ async function executeIndependent(node) {
     console.error("[BatchBox] Independent generation error:", e);
     alert(`生成出错: ${e.message}`);
   } finally {
+    // Remove WebSocket listener
+    api.removeEventListener("batchbox:progress", progressHandler);
     // Reset generating state
     setNodeGeneratingState(node, false);
   }
