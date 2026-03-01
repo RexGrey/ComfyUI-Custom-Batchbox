@@ -312,19 +312,26 @@ class GenericAPIAdapter(APIAdapter):
         parts = [{"text": prompt}]
         
         # Add images if present (for img2img mode)
-        # For Gemini API: use GCS cache (gs:// URIs) when available,
-        # otherwise fall back to inline_data (base64).
-        # NOTE: Gemini API does NOT support arbitrary HTTP URLs in file_data,
-        # only gs:// URIs or Google Files API URIs.
+        # Strategy: Use Google Files API to upload images and get file_uri.
+        # This avoids sending large base64 inline_data in every request.
+        # Files API uses the same API key as AI Studio (48h cache).
+        # Account proxy doesn't support file_data, so falls back to inline_data.
         upload_files = params.get("_upload_files", [])
         
-        # Check if GCS cache should be used for bandwidth savings
+        # Extract Google API key for Files API upload
+        # The key is in the endpoint URL like: ?key={api_key}
         use_cache = self.mode_config.get("use_oss_cache", False) or self.endpoint.get("use_oss_cache", False)
-        gcs_available = False
-        if use_cache and upload_files:
+        google_api_key = None
+        if use_cache and upload_files and self.api_key:
+            # Only for non-Account endpoints that have a real Google API key
+            if self.endpoint.get("auth_type") != "account":
+                google_api_key = self.api_key
+        
+        files_api_available = False
+        if google_api_key:
             try:
-                from ..gcs_cache import gcs_cache
-                gcs_available = gcs_cache.is_enabled()
+                from ..gemini_files_cache import gemini_files_cache
+                files_api_available = True
             except Exception:
                 pass
         
@@ -336,23 +343,25 @@ class GenericAPIAdapter(APIAdapter):
                 filename, file_bytes, mime_type = file_tuple
                 cached_b64 = None
             
-            # GCS path: upload to GCS and use gs:// URI (saves upload bandwidth)
-            if gcs_available:
+            # Google Files API: upload and get file_uri (saves bandwidth)
+            if files_api_available:
                 try:
-                    gs_uri = gcs_cache.get_or_upload(file_bytes, filename, mime_type)
-                    if gs_uri:
+                    file_uri = gemini_files_cache.get_or_upload(
+                        google_api_key, file_bytes, filename, mime_type
+                    )
+                    if file_uri:
                         parts.append({
                             "file_data": {
                                 "mime_type": mime_type,
-                                "file_uri": gs_uri
+                                "file_uri": file_uri
                             }
                         })
-                        logger.info(f"[Gemini] Using GCS cached image: {gs_uri}")
+                        logger.info(f"[Gemini] Using Files API cached: {file_uri}")
                         continue  # Skip inline_data fallback
                     else:
-                        logger.warning("[Gemini] GCS upload failed, falling back to inline_data")
+                        logger.warning("[Gemini] Files API upload failed, falling back to inline_data")
                 except Exception as e:
-                    logger.warning(f"[Gemini] GCS error: {e}, falling back to inline_data")
+                    logger.warning(f"[Gemini] Files API error: {e}, falling back to inline_data")
             
             # Fallback: embed image as base64 inline_data
             if cached_b64:
