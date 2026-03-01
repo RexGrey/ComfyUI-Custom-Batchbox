@@ -319,12 +319,12 @@ class GenericAPIAdapter(APIAdapter):
         upload_files = params.get("_upload_files", [])
         
         # Extract Google API key for Files API upload
-        # The key is in the endpoint URL like: ?key={api_key}
+        # Files API only works with Google official endpoints (AI Studio).
+        # Account proxy does NOT support file_data — always uses inline_data.
         use_cache = self.mode_config.get("use_oss_cache", False) or self.endpoint.get("use_oss_cache", False)
         google_api_key = None
-        if use_cache and upload_files and self.api_key:
-            # Only for non-Account endpoints that have a real Google API key
-            if self.endpoint.get("auth_type") != "account":
+        if use_cache and upload_files:
+            if self.endpoint.get("auth_type") != "account" and self.api_key:
                 google_api_key = self.api_key
         
         files_api_available = False
@@ -332,8 +332,11 @@ class GenericAPIAdapter(APIAdapter):
             try:
                 from ..gemini_files_cache import gemini_files_cache
                 files_api_available = True
-            except Exception:
-                pass
+                logger.info(f"[Gemini] Files API enabled (key: {google_api_key[:8]}...)")
+            except Exception as e:
+                logger.warning(f"[Gemini] Files API import failed: {e}")
+        elif use_cache and upload_files:
+            logger.info(f"[Gemini] Files API NOT enabled: auth_type={self.endpoint.get('auth_type')}, api_key={'set' if self.api_key else 'empty'}")
         
         for field_name, file_tuple in upload_files:
             # file_tuple can be 3-element (filename, bytes, mime) or 4-element (+ cached base64)

@@ -120,6 +120,8 @@ class GeminiFilesCache:
     def __init__(self):
         self._db = None
         self._initialized = False
+        self._upload_locks = {}  # Per-hash locks to prevent parallel duplicate uploads
+        self._locks_lock = threading.Lock()  # Lock for the locks dict
 
     def _ensure_db(self):
         if not self._initialized:
@@ -146,14 +148,33 @@ class GeminiFilesCache:
         """
         self._ensure_db()
 
-        # 1. Check cache
+        # 1. Check cache (fast path, no lock needed)
         file_hash = _compute_hash(image_bytes)
         cached_uri = self._db.get(file_hash)
         if cached_uri:
             logger.info(f"[FilesAPI] ✅ Cache hit: {file_hash[:12]}... (saved upload)")
             return cached_uri
 
-        # 2. Upload to Files API via resumable upload
+        # 2. Acquire per-hash lock to prevent parallel duplicate uploads
+        # If 3 batches try to upload the same image, only 1 actually uploads.
+        with self._locks_lock:
+            if file_hash not in self._upload_locks:
+                self._upload_locks[file_hash] = threading.Lock()
+            upload_lock = self._upload_locks[file_hash]
+
+        with upload_lock:
+            # Re-check cache after acquiring lock (another thread may have uploaded)
+            cached_uri = self._db.get(file_hash)
+            if cached_uri:
+                logger.info(f"[FilesAPI] ✅ Cache hit (after wait): {file_hash[:12]}... (saved upload)")
+                return cached_uri
+
+            # Actually upload
+            return self._do_upload(api_key, image_bytes, file_hash, filename, mime_type)
+
+    def _do_upload(self, api_key: str, image_bytes: bytes,
+                    file_hash: str, filename: str, mime_type: str) -> Optional[str]:
+        """Perform the actual upload to Google Files API."""
         file_size = len(image_bytes)
         logger.info(f"[FilesAPI] ⬆️ Uploading image ({file_size/1024/1024:.1f}MB) to Google Files API...")
 
@@ -190,7 +211,6 @@ class GeminiFilesCache:
             # Get upload URL from response headers
             upload_url = init_resp.headers.get("X-Goog-Upload-URL")
             if not upload_url:
-                # Try alternate header name
                 upload_url = init_resp.headers.get("x-goog-upload-url")
             if not upload_url:
                 logger.error(f"[FilesAPI] ❌ No upload URL in response headers: {dict(init_resp.headers)}")
@@ -225,7 +245,7 @@ class GeminiFilesCache:
 
             elapsed = time.time() - start_time
 
-            # 3. Cache the result
+            # Cache the result
             file_name = file_info.get("name", "")
             self._db.put(file_hash, file_uri, file_name, mime_type, file_size)
 
