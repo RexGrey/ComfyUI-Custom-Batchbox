@@ -160,25 +160,36 @@ class GCSImageCache:
         try:
             bucket_name = self._config["bucket_name"]
             credentials_path = self._config.get("credentials_path", "")
+            inline_credentials = self._config.get("credentials")  # Inline JSON in secrets.yaml
 
-            # Set credentials if path provided
-            if credentials_path:
+            client = None
+
+            if inline_credentials and isinstance(inline_credentials, dict):
+                # Method 1: Inline credentials embedded in secrets.yaml
+                from google.oauth2 import service_account
+                creds = service_account.Credentials.from_service_account_info(inline_credentials)
+                client = storage.Client(credentials=creds, project=inline_credentials.get("project_id"))
+                logger.info("[GCSCache] Using inline credentials from secrets.yaml")
+            elif credentials_path:
+                # Method 2: External JSON key file
                 abs_path = credentials_path if os.path.isabs(credentials_path) else os.path.join(_MODULE_DIR, credentials_path)
                 if os.path.exists(abs_path):
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = abs_path
+                    client = storage.Client()
+                    logger.info(f"[GCSCache] Using credentials file: {abs_path}")
                 else:
                     logger.warning(f"[GCSCache] Credentials file not found: {abs_path}")
                     self._enabled = False
                     return False
+            else:
+                # Method 3: Default credentials (e.g. GCE instance, gcloud auth)
+                client = storage.Client()
 
-            self._client = storage.Client()
+            self._client = client
             self._bucket = self._client.bucket(bucket_name)
 
-            # Verify bucket exists
-            if not self._bucket.exists():
-                logger.warning(f"[GCSCache] Bucket '{bucket_name}' does not exist")
-                self._enabled = False
-                return False
+            # Skip bucket.exists() check - it requires storage.buckets.get permission
+            # which Storage Object User role doesn't have. Bucket is validated on first upload.
 
             self._db = GCSCacheDB()
             self._enabled = True
