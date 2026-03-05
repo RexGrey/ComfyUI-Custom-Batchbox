@@ -1266,8 +1266,10 @@ app.registerExtension({
         origOnNodeCreated.apply(this, arguments);
       }
 
-      // Add the "开始生成" button
-      addGenerateButton(this);
+      // Add the "开始生成" button (skip for Editor - it needs Queue Prompt for image+mask)
+      if (!nodeData.name.includes("Editor")) {
+        addGenerateButton(this);
+      }
 
       // Initialize dynamic parameter manager
       this._dynamicParamManager = new DynamicParameterManager(this);

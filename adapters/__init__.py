@@ -15,10 +15,16 @@ try:
 except Exception:  # pragma: no cover - fallback for non-package imports
     GenericAPIAdapter = None
 
+try:
+    from .volcengine import VolcengineAdapter
+except Exception:
+    VolcengineAdapter = None
+
 __all__ = [
     'APIAdapter',
     'APIResponse', 
     'APIError',
     'GenericAPIAdapter',
+    'VolcengineAdapter',
     'TemplateEngine'
 ]

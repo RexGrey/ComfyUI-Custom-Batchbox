@@ -28,8 +28,7 @@ const DYNAMIC_INPUT_NODES = [
     "DynamicImageGeneration",
     "DynamicVideoGeneration",
     "DynamicAudioGeneration",
-    "DynamicTextGeneration",
-    "DynamicImageEditor"
+    "DynamicTextGeneration"
 ];
 
 // Cache for node settings (default_width, etc.)

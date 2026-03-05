@@ -17,6 +17,7 @@ import uuid
 from PIL import Image
 from io import BytesIO
 from typing import Dict, List, Optional, Any, Tuple, Union
+from .adapters.base import APIResponse
 
 import folder_paths  # ComfyUI's folder paths helper
 
@@ -206,6 +207,21 @@ class DynamicImageNodeBase:
         provider = endpoint_info["provider"]
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
+        
+        # Dispatch to Volcengine adapter if api_format is volcengine
+        api_format = endpoint_config.get("api_format", "")
+        if api_format == "volcengine":
+            from .adapters.volcengine import VolcengineAdapter
+            return VolcengineAdapter(
+                provider_config={
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "access_key": provider.access_key,
+                    "secret_key": provider.secret_key
+                },
+                endpoint_config=endpoint_config,
+                mode_config=mode_config
+            )
         
         return GenericAPIAdapter(
             provider_config={
@@ -1006,14 +1022,12 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
         return {
             "required": {
                 "model": (models, {"default": models[0] if models else None}),
-                "image": ("IMAGE",),
-                "operation": (["upscale", "inpaint", "outpaint", "remove_bg", "enhance", "restore"], {"default": "upscale"}),
+                "image1": ("IMAGE",),
+                "mask": ("MASK",),
             },
             "optional": {
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "scale": ("INT", {"default": 2, "min": 1, "max": 8}),
-                "mask": ("MASK",),
-                "strength": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1}),
             },
             "hidden": {
                 "extra_params": ("STRING", {"default": "{}"}),
@@ -1023,47 +1037,190 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("edited_image", "response_info", "image_url")
     FUNCTION = "edit"
+    OUTPUT_NODE = True  # Show preview inline like DynamicImageGeneration
     
-    def edit(self, model: str, image: torch.Tensor, operation: str, **kwargs) -> Tuple:
-        """Edit image using selected model and operation"""
+    def edit(self, model: str, image1, mask=None, **kwargs) -> Tuple:
+        """Edit image using selected model — supports 1 image + 1 mask"""
+        operation = "inpaint"
         
-        # Prepare image for upload
-        pil_img = tensor2pil(image)[0]
-        buffered = BytesIO()
-        pil_img.save(buffered, format="PNG")
+        # Volcengine limits: max 4.7MB per image, max 4096x4096 resolution
+        MAX_DIMENSION = 4096
+        MAX_FILE_SIZE = int(4.7 * 1024 * 1024)  # 4.7MB
+        
+        def resize_if_needed(pil_img, max_dim=MAX_DIMENSION):
+            """Resize image if any dimension exceeds max_dim"""
+            w, h = pil_img.size
+            if w > max_dim or h > max_dim:
+                ratio = min(max_dim / w, max_dim / h)
+                new_w, new_h = int(w * ratio), int(h * ratio)
+                pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
+            return pil_img
+        
+        def compress_image(pil_img, max_size=MAX_FILE_SIZE):
+            """Compress image: try PNG first (lossless), fall back to JPEG if over max_size"""
+            buf = BytesIO()
+            pil_img.save(buf, format="PNG")
+            if buf.tell() <= max_size:
+                return buf.getvalue(), "png"
+            for quality in [95, 85, 70, 55]:
+                buf = BytesIO()
+                pil_img.save(buf, format="JPEG", quality=quality)
+                if buf.tell() <= max_size:
+                    return buf.getvalue(), "jpg"
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG", quality=55)
+            return buf.getvalue(), "jpg"
+        
+        # Process the single input image
+        pil_img = tensor2pil(image1)[0]
+        pil_img = resize_if_needed(pil_img)
+        img_bytes, fmt = compress_image(pil_img)
+        mime = "image/png" if fmt == "png" else "image/jpeg"
+        upload_files = [("image1", (f"image1.{fmt}", img_bytes, mime))]
         
         params = {
             "prompt": kwargs.get("prompt", ""),
             "operation": operation,
-            "scale": kwargs.get("scale", 2),
-            "strength": kwargs.get("strength", 0.75),
-            "_upload_files": [("image", ("input.png", buffered.getvalue(), "image/png"))],
+            "_upload_files": upload_files,
         }
         
-        # Handle mask if provided
-        mask = kwargs.get("mask")
+        # Handle mask — MUST be after image in _upload_files for Volcengine
+        # Volcengine expects binary_data_base64 = [image, mask]
+        # Mask format per docs: 8-bit grayscale PNG, no ICC profile
         if mask is not None:
-            mask_img = tensor2pil(mask.unsqueeze(-1).expand(-1, -1, -1, 3))[0]
+            if mask.dim() == 3:
+                mask_2d = mask[0]
+            else:
+                mask_2d = mask
+            # Volcengine: white (255) = edit area, black (0) = keep area
+            # ComfyUI: 1.0 = masked/edit, 0.0 = visible/keep → same direction ✓
+            # CRITICAL: Threshold to pure black/white to prevent API from modifying non-masked areas
+            mask_np = mask_2d.cpu().numpy()
+            mask_np = ((mask_np > 0.5) * 255).astype("uint8")  # Binary threshold
+            mask_img = Image.fromarray(mask_np, mode="L")
+            
+            # Resize mask to match image dimensions
+            if upload_files:
+                img_bytes = upload_files[0][1][1]
+                ref_img = Image.open(BytesIO(img_bytes))
+                if mask_img.size != ref_img.size:
+                    mask_img = mask_img.resize(ref_img.size, Image.NEAREST)
+            
+            # Save as 8-bit grayscale PNG without ICC profile
             mask_buffered = BytesIO()
-            mask_img.save(mask_buffered, format="PNG")
+            mask_img.save(mask_buffered, format="PNG", icc_profile=None)
             params["_upload_files"].append(("mask", ("mask.png", mask_buffered.getvalue(), "image/png")))
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
         params.update(self._parse_extra_params(extra_params_str))
         
-        # Select mode based on operation
-        mode = operation  # upscale, inpaint, outpaint, etc.
+        # All editor operations use img2img mode
+        mode = "img2img"
+        batch_count = kwargs.get("batch_count", 1)
         
-        result = self.execute_with_failover(model, params, mode)
+        # Prepare mask compositing data once (shared across all batch items)
+        original_pil = tensor2pil(image1)[0].convert("RGB")
+        mask_binary = None
+        if mask is not None:
+            if mask.dim() == 3:
+                mask_float = mask[0].cpu().numpy()
+            else:
+                mask_float = mask.cpu().numpy()
+            mask_binary = (mask_float > 0.5).astype(np.float32)
         
-        if result.success and result.images:
-            output_tensor = bytes2tensor(result.images[0])
-            url = result.image_urls[0] if result.image_urls else ""
-            return (output_tensor, "Success", url)
+        def composite_result(result_pil, orig_pil, m_binary):
+            """Composite original + edited using mask to prevent color shift"""
+            if m_binary is None:
+                return result_pil
+            result_w, result_h = result_pil.size
+            mb = m_binary.copy()
+            if mb.shape[0] != result_h or mb.shape[1] != result_w:
+                mp = Image.fromarray((mb * 255).astype("uint8"), mode="L")
+                mp = mp.resize((result_w, result_h), Image.NEAREST)
+                mb = np.array(mp).astype(np.float32) / 255.0
+            op = orig_pil
+            if op.size != result_pil.size:
+                op = op.resize(result_pil.size, Image.LANCZOS)
+            orig_np = np.array(op).astype(np.float32)
+            edit_np = np.array(result_pil).astype(np.float32)
+            mask_3d = mb[:, :, np.newaxis]
+            composited = (orig_np * (1 - mask_3d) + edit_np * mask_3d).clip(0, 255).astype("uint8")
+            return Image.fromarray(composited)
+        
+        # Execute batch sequentially (API concurrent limit = 1, entire lifecycle)
+        # With 429 auto-retry: if rate limited, wait and retry automatically
+        import time
+        
+        def execute_with_retry(attempt_num):
+            """Execute with automatic 429 retry"""
+            max_retries = 3
+            for retry in range(max_retries + 1):
+                result = self.execute_with_failover(model, params, mode)
+                if result.success:
+                    return result
+                # Check for 429 rate limit
+                if "429" in str(result.error_message) and retry < max_retries:
+                    wait = 3 * (2 ** retry)  # 3s, 6s, 12s
+                    print(f"[Editor] Rate limited, retrying in {wait}s... ({retry+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                return result
+            return result
+        
+        results = []
+        for i in range(batch_count):
+            print(f"[Editor] Generating {i+1}/{batch_count}...")
+            results.append(execute_with_retry(i))
+        
+        # Process all results
+        output_tensors = []
+        all_previews = []
+        all_urls = []
+        success_count = 0
+        
+        for i, result in enumerate(results):
+            if result.success and result.images:
+                result_pil = Image.open(BytesIO(result.images[0])).convert("RGB")
+                result_pil = composite_result(result_pil, original_pil, mask_binary)
+                output_tensors.append(pil2tensor(result_pil))
+                all_urls.append(result.image_urls[0] if result.image_urls else "")
+                success_count += 1
+                
+                # Auto-save
+                try:
+                    from .save_settings import SaveSettings
+                    from .config_manager import config_manager
+                    save_cfg = config_manager.get_save_settings()
+                    saver = SaveSettings(save_cfg)
+                    if saver.enabled:
+                        context = {"model": model, "seed": i, "prompt": kwargs.get("prompt", ""), "batch": batch_count}
+                        save_result = saver.save_image(result_pil, context)
+                        if save_result and "preview" in save_result:
+                            all_previews.append(save_result["preview"])
+                            continue
+                except Exception as e:
+                    print(f"[Editor AutoSave] Error: {e}")
+                all_previews.extend(save_preview_images([result_pil], prefix="editor_result"))
+            else:
+                print(f"[Editor] Batch {i+1}/{batch_count} failed: {result.error_message}")
+        
+        if output_tensors:
+            # Concatenate all results into batch tensor
+            batch_tensor = torch.cat(output_tensors, dim=0)
+            url_str = " | ".join(all_urls) if all_urls else ""
+            info = f"Success: {success_count}/{batch_count}"
+            
+            return {
+                "ui": {"images": all_previews},
+                "result": (batch_tensor, info, url_str)
+            }
         else:
-            # Return original image on failure
-            return (image, f"Edit failed: {result.error_message}", "")
+            error_msgs = [r.error_message for r in results if not r.success]
+            return {
+                "ui": {"images": []},
+                "result": (image1, f"All {batch_count} edits failed: {'; '.join(error_msgs)}", "")
+            }
 
 
 # ==========================================
