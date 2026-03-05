@@ -4,6 +4,8 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 2.24 | 2026-03-01 | 逐张预览 + 生成进度计数器 + WebSocket 批次推送 + preview_mode 设置 |
+| 2.23 | 2026-03-01 | Account 系统移植 + Google 官方 API 直连 + 多端点统一架构 + OSS 缓存 |
 | 2.22 | 2026-02-09 | GaussianBlurUpscale 节点：高斯模糊放大 + 风格预设管理 + 自定义面板 |
 | fix | 2026-02-08 | 修复 img2img 模式下 image_size 参数被 multipart 过滤器误删 |
 | fix | 2026-02-07 | 修复加载工作流时节点排版错位的时序竞争问题 |
@@ -42,6 +44,7 @@
 | [docs/preview_persistence.md](docs/preview_persistence.md) | 预览持久化机制 |
 | [docs/node_width_retrospective.md](docs/node_width_retrospective.md) | 节点宽度保持开发复盘 |
 | [YAML_CONFIG_REFERENCE.md](YAML_CONFIG_REFERENCE.md) | YAML 配置参考（供 LLM 使用） |
+| [UPSTREAM.md](UPSTREAM.md) | 上游项目 (BlenderAIStudio) 版本追踪与同步策略 |
 
 ---
 
@@ -54,6 +57,8 @@ ComfyUI-Custom-Batchbox 是一套 ComfyUI 自定义节点系统，实现：
 3. **多 API 中转站** - 同模型支持多个 API 站点
 4. **智能端点管理** - 轮询、手动选择、故障转移
 5. **灵活配置** - YAML 配置 + 可视化管理器
+6. **Account 计费系统** - AIGODLIKE 账户登录、冰糕积分、代理通道
+7. **多通道认证** - Account 稳定通道 / Google 官方 API / 第三方代理
 
 ---
 
@@ -390,6 +395,12 @@ ComfyUI-Custom-Batchbox/
 | `/api/batchbox/upscale-settings` | POST | 更新高清放大模型设置 |
 | `/api/batchbox/style-presets` | GET | 获取风格预设列表 |
 | `/api/batchbox/style-presets` | POST | 更新风格预设列表 |
+| `/api/batchbox/account/login` | POST | Account 登录（启动 WebSocket） |
+| `/api/batchbox/account/logout` | POST | Account 登出 |
+| `/api/batchbox/account/status` | GET | 获取状态（昵称、积分、Token 过期、服务器连接） |
+| `/api/batchbox/account/credits` | POST | 刷新积分余额 |
+| `/api/batchbox/account/redeem` | POST | 兑换码兑换冰糕 |
+| `/api/batchbox/account/pricing` | GET | 获取模型定价信息 |
 
 ---
 
@@ -1669,6 +1680,72 @@ request_info["data"] = {k: v for k, v in payload.items()
 
 ## 9. 更新日志
 
+### v2.24 (2026-03-01)
+
+**逐张预览 + 生成进度计数器**
+
+- ✅ 生成按钮实时显示批次进度：`⏳ 生成中 0/4` → `1/4` → …→ `4/4` → `▶ 开始生成`
+- ✅ 节点预览支持逐张载入模式（progressive）：完成一张显示一张
+- ✅ 管理面板「保存设置」新增预览模式下拉：🖼️ 逐张载入 / 📷 全部完成后载入
+- ✅ 设置项 `node_settings.preview_mode`：`progressive`（默认）| `wait_all`
+- ✅ 后端 WebSocket 事件 `batchbox:progress`：每完成一个 batch 推送进度
+- ✅ `on_batch_complete` 回调注入 `IndependentGenerator.generate()`
+- ✅ 前端 `appendSinglePreview()` 安全追加：有序槽位 + `.filter(null)` 保证 `node.imgs` 无 null
+- ✅ 两阶段分离设计：逐张显示仅操作 `node.imgs`；`onExecuted`/`imageIndex`/持久化仅在全部完成后执行一次
+
+**踩坑记录**
+
+- 🐛 `node.imgs = []` 导致画布冻结：空数组在 JS 中 truthy (`Boolean([]) === true`)，ComfyUI 分配空 image render area 导致布局崩溃
+- ✅ 修复：生成开始时不清除 `node.imgs`，由 progressive 回调自然覆盖旧图
+
+### v2.23 (2026-03-01)
+
+**Account 系统移植**
+
+- ✅ Account 登录计费系统移植（从 BlenderAIStudio v0.1.4）
+- ✅ WebSocket 登录回调 + Token 管理 + 自动初始化
+- ✅ 冰糕积分：余额查询、定价查询、兑换码兑换
+- ✅ Token 过期检测（code=-4001）+ 前端重新登录提示
+- ✅ 生图后自动刷新积分
+- ✅ 前端 Account Tab：服务器状态、积分、购买入口、兑换
+- ✅ 6 个新 API 端点：login/logout/status/credits/redeem/pricing
+
+**Account Model ID 解析（Pricing Table）**
+
+- ✅ 启动时自动拉取 `/v1/billing/model-price` 定价表
+- ✅ 定价表解析：`data` 列表 → `{modelName: {bestPrice: {modelId}, bestBalance: {modelId}}}` 映射
+- ✅ `Account.resolve_model_id()` 根据 model display name + pricing strategy 查找数字 model ID
+- ✅ Account 请求使用数字 ID 而非 Gemini 模型名（如 `2027633051231584256` 而非 `gemini-3.1-flash-image-preview`）
+- 🔧 fix: `configure()` 缺失 `fetch_credits_price()` 调用，导致 pricing table 为空
+- 🔧 fix: model display name 通过 `params['_model_display_name']` 传递给适配器
+
+**通道策略 UI（低价优先/稳定优先）**
+
+- ✅ 管理面板 Account 服务标签页新增「⚡ 通道策略」区域
+- ✅ 两个 toggle 按钮：💰 低价优先 (bestPrice) / ⚡ 稳定优先 (bestBalance)
+- ✅ 点击即刻保存至 `node_settings.pricing_strategy`，不需要重启
+- ✅ `Account.resolve_model_id()` 动态读取 `node_settings` 获取当前策略
+- ✅ 日志显示当前策略：`[Account] Resolved model ID: NanoBanana2 + bestPrice (低价优先) -> 2027633051231584256`
+
+**API 参数对齐上游**
+
+- ✅ `generationConfig` 默认值对齐上游：`maxOutputTokens=32768`, `temperature=0.8`, `candidateCount=1`
+- ✅ `responseModalities` 大小写修正：`Image` → `IMAGE`（Account 代理可能大小写敏感）
+- ✅ Account 特殊响应解析：unwrap `data` 字段获取内层 Gemini 格式
+
+**多通道认证 + 模型合并**
+
+- ✅ Google 官方 API 直连：`auth_header_format: none` + URL `?key={api_key}` 模板替换
+- ✅ 三通道认证架构：Account (X-Auth-T) / Google (URL Key) / 代理 (Bearer)
+- ✅ 模型合并：8 个独立模型合为 5 个统一模型（多端点架构）
+  - NanoBananaPro / NanoBanana2 / NanoBanana 各带 Account + Google 双端点
+  - Seedream v4 / v4.5 保持 Account 单端点
+- ✅ 参数校正：严格对齐上游 BlenderAIStudio `models_config.yaml`（比例选项/顺序、分辨率、图片上限）
+- ✅ `aspectRatio == "auto"` 所有 Gemini 通道统一跳过不传
+- ✅ img2img 模式新增 `use_oss_cache: true`（图片先上传阿里 OSS）
+- ✅ 管理面板新增 OSS 图片缓存复选框（端点高级设置，即时开关）
+- ✅ 柏拉图 `Nano Banana Pro` 合并入 `NanoBananaPro` 作为第三端点（OpenAI 兼容格式）
+
 ### v2.22 (2026-02-09)
 
 - ✅ 新增 GaussianBlurUpscale 节点：高斯模糊 + AI 放大工作流
@@ -1866,6 +1943,283 @@ request_info["data"] = {k: v for k, v in payload.items()
 - ✅ LLM 配置参考文档
 
 ### v1.0 (初版)
+
 - 动态参数系统
 - 多供应商支持
 - 基础 API 适配器
+
+---
+
+## 附录 A. Account 计费系统 (v2.23)
+
+移植自 [AIGODLIKE/BlenderAIStudio](https://github.com/AIGODLIKE/BlenderAIStudio) v0.1.4（commit `8b8c533`），去除 Blender（bpy）依赖，适配 ComfyUI。
+
+### A.1 核心文件
+
+| 文件 | 职责 |
+|------|------|
+| `account/core.py` | 单例核心：登录、Token 管理、积分、定价 |
+| `account/websocket_server.py` | WebSocket 接收登录回调 Token |
+| `account/network.py` | HTTP 会话管理 |
+| `account/task_sync.py` | 任务同步服务 |
+| `account/url_config.py` | 服务 URL 配置（可自定义） |
+| `account/exceptions.py` | TokenExpiredException 等 |
+
+### A.2 登录流程
+
+1. 用户点击 **🔑 登录** → 启动 WebSocket Server (port 10718)
+2. 打开浏览器 → acggit.com 登录页
+3. 登录成功 → acggit 回调 Token 到 WebSocket
+4. `init_force()` 自动执行：`ping_once()` + `fetch_credits()` + `fetch_credits_price()`
+5. 前端轮询 `/account/status` 更新 UI
+
+### A.3 Token 过期处理
+
+`fetch_credits()` 收到 `code=-4001` → 设置 `token_expired=True` → 前端显示警告 + 重新登录按钮
+
+### A.4 生图后自动刷新积分
+
+```python
+# adapters/generic.py execute() 末尾
+if self.endpoint.get("auth_type") == "account":
+    Account.get_instance().fetch_credits()
+```
+
+### A.5 前端 UI 组件
+
+| 区域 | 功能 |
+|------|------|
+| 服务器状态指示 | 🟢 已连接 / 🔴 未连接 |
+| 积分显示 | 余额 + 消耗查询 |
+| 购买入口 | 跳转冰糕充值页 |
+| 兑换码输入 | 兑换冰糕 |
+| Token 过期警告 | ⚠️ 提示 + 重新登录 |
+| 通道策略选择 | 💰 低价优先 / ⚡ 稳定优先（toggle 按钮） |
+
+### A.6 Pricing Table 与 Model ID 解析
+
+**核心问题**：Account 服务不使用 Gemini 原始模型名（如 `gemini-3-pro-image-preview`），而是使用从 pricing table 查到的数字 ID（如 `2027633051231584256`）。发送错误的 model ID 会返回 `errCode=-1201, errMsg=Unknown Model!`。
+
+**初始化流程**：
+
+```python
+# account/core.py - configure() 中调用
+def configure(self, plugin_dir, account_config):
+    self.load_account_info_from_local()
+    self.ping_once()
+    self.fetch_credits()         # 拉取积分余额
+    self.fetch_credits_price()   # 拉取定价表 ← 关键！
+```
+
+> ⚠️ **踩坑记录**：初版 `configure()` 漏调了 `fetch_credits_price()`，导致 `_pricing_data` 始终为空，model ID 解析失败，所有 Account 请求都返回 `Unknown Model!`。
+
+**API 响应结构** (`GET /v1/billing/model-price`)：
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "modelName": "NanoBanana2",
+      "providerCount": 3,
+      "bestBalance": { "modelId": 2027633051231584255, "prices": [...] },
+      "bestPrice": { "modelId": 2027633051231584256, "prices": [...] }
+    }
+  ]
+}
+```
+
+**解析后存储** (`_pricing_data`)：
+
+```python
+{
+  "NanoBanana2": {
+    "bestBalance": {"modelId": 2027633051231584255, "prices": [...]},
+    "bestPrice": {"modelId": 2027633051231584256, "prices": [...]}
+  },
+  "NanoBananaPro": { ... },
+  ...
+}
+```
+
+**Model ID 解析** (`resolve_model_id`)：
+
+```python
+def resolve_model_id(self, model_display_name):
+    # 动态读取 node_settings 中的 pricing_strategy
+    strategy = config_manager.get_node_settings().get("pricing_strategy", "bestPrice")
+    model_data = self._pricing_data.get(model_display_name, {})
+    return str(model_data.get(strategy, {}).get("modelId", ""))
+```
+
+**请求头构建** (`_build_gemini_request`)：
+
+```python
+if auth_type == "account":
+    account_model_id = account.resolve_model_id(model_display_name)
+    # fallback: 数字 ID 未找到时使用原始 Gemini 模型名
+    headers["X-Model-ID"] = account_model_id or model_name
+```
+
+### A.7 通道策略（Pricing Strategy）
+
+**功能**：对应上游 Blender 插件的「低价优先」和「稳定优先」选项，决定 Account 服务选择哪个供应商通道。
+
+| 策略 | 值 | 说明 |
+|------|----|---------|
+| 低价优先 | `bestPrice` | 选择最优惠的供应商（默认） |
+| 稳定优先 | `bestBalance` | 选择最稳定的供应商 |
+
+**存储位置**：`api_config.yaml` → `node_settings.pricing_strategy`
+
+**前端 UI**：Account 服务标签页中的 toggle 按钮组，点击即刻保存
+
+**读取方式**：`Account.resolve_model_id()` 每次请求时动态读取 `node_settings`，无需重启
+
+### A.8 generationConfig 对齐上游
+
+| 参数 | 之前 | 修正后 | 上游值 |
+|------|------|--------|--------|
+| `maxOutputTokens` | 8192 | 32768 | 32768 |
+| `temperature` | 1 | 0.8 | 0.8 |
+| `candidateCount` | 1 | 1 | 1 |
+| `responseModalities` | `Image` | `IMAGE` | `IMAGE` |
+
+---
+
+## 附录 B. 多通道认证架构 (v2.24)
+
+### B.1 三种认证通道
+
+| 通道 | 配置标识 | 认证方式 | 计费方式 |
+|------|----------|----------|----------|
+| Account 稳定通道 | `auth_type: account` | `X-Auth-T` Token | 冰糕积分 |
+| Google 官方 API | `auth_header_format: none` | URL `?key=` | Google 计费 |
+| 第三方代理 | 默认 (`bearer`) | `Authorization: Bearer` | 代理方计费 |
+
+### B.2 认证决策流程 (`_build_gemini_request`)
+
+```text
+auth_type == "account"?
+  → Yes: X-Auth-T Token, auto-refresh credits
+  → No: auth_header_format == "none"?
+    → Yes: No Auth header, API Key in URL ?key=
+    → No: Authorization: Bearer api_key (default)
+
+aspect_ratio == "auto"? → 所有通道统一跳过，不传 aspectRatio
+```
+
+### B.3 统一模型清单 (v2.23 多端点架构)
+
+每个模型可配多个端点，用户通过端点选择器切换通道。参数按上游 BlenderAIStudio 原项目为准。
+
+| 模型 ID | 显示名 | 端点 | API model_name | img2img OSS |
+|---------|--------|------|----------------|-------------|
+| `NanoBananaPro` | 🍌 Nano Banana Pro | Account + Google | `gemini-3-pro-image-preview` | ✅ |
+| `NanoBanana2` | 🍌 Nano Banana 2 | Account + Google | `gemini-3.1-flash-image-preview` | ✅ |
+| `NanoBanana` | 🍌 Nano Banana | Account + Google | `gemini-2.5-flash-image` | ✅ |
+| `Seedream_v4` | 🌱 Seedream v4 | Account | `doubao-seedream-4-0-250828` | ✅ |
+| `Seedream_v45` | 🌱 Seedream v4.5 | Account | `doubao-seedream-4-5-251128` | ✅ |
+
+### B.4 特殊处理
+
+1. **URL 模板替换**: Google 端点中的 `{api_key}` 被替换为真实 API Key
+2. **无 Auth Header**: `auth_header_format: none` 跳过 `Authorization` header
+3. **Auto 比例跳过**: `auto` 不是合法 Gemini aspectRatio 值，**所有通道**统一跳过不传
+4. **OSS 图片缓存**: img2img 模式通过阿里 OSS 上传图片，管理面板可即时开关
+5. **模型参数来源**: 严格对齐上游 BlenderAIStudio `models_config.yaml`（比例选项、分辨率、图片上限）
+6. **Account Model ID**: Account 通道使用 pricing table 中的数字 ID，而非 Gemini 模型名
+7. **通道策略**: `pricing_strategy` 决定使用 `bestPrice` 或 `bestBalance` 对应的 model ID
+8. **generationConfig**: 严格对齐上游：`maxOutputTokens=32768`, `temperature=0.8`, `responseModalities=["IMAGE"]`
+
+### B.5 供应商配置 (secrets.yaml)
+
+```yaml
+providers:
+  acggit_account:
+    display_name: Account 服务 (稳定通道)
+    base_url: https://api-addon.acggit.com/v1
+    api_key: ''    # Token 由登录流程自动获取
+  google_official:
+    display_name: Google 官方 API
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    api_key: ''    # 填入 Google API Key
+```
+
+### B.6 上游项目追踪
+
+基准版本：BlenderAIStudio v0.1.4 (`8b8c533`, 2026-02-28)。详见 [UPSTREAM.md](UPSTREAM.md)。
+
+---
+
+## 附录 C. 逐张预览与进度系统 (v2.24)
+
+### C.1 架构概览
+
+```
+后端 (asyncio.gather 并行)          前端 (JS)
+┌─────────────────────┐          ┌─────────────────────┐
+│ batch 0 完成        │ ──WS──→  │ 按钮: ⏳ 1/4        │
+│ batch 2 完成        │ ──WS──→  │ 按钮: ⏳ 2/4        │
+│ batch 1 完成        │ ──WS──→  │ 按钮: ⏳ 3/4        │
+│ batch 3 完成        │ ──WS──→  │ 按钮: ⏳ 4/4        │
+│ HTTP 200 (全部结果) │ ──HTTP→  │ onExecuted + 持久化 │
+└─────────────────────┘          └─────────────────────┘
+```
+
+### C.2 WebSocket 事件协议 (`batchbox:progress`)
+
+后端通过 `server.PromptServer.instance.send_sync()` 发送：
+
+```json
+{
+  "node_id": "12",
+  "batch_index": 0,
+  "completed": 1,
+  "total": 4,
+  "preview": { "filename": "...", "subfolder": "...", "type": "output" }
+}
+```
+
+- `completed` 为服务端累加计数器，反映实际完成数（不依赖 batch 顺序）
+- `batch_index` 用于前端有序插槽，保证图片显示顺序
+- 线程安全：`asyncio.to_thread()` 返回后在事件循环中调用 `send_sync`，无竞态
+
+### C.3 两阶段分离安全设计
+
+| 阶段 | 触发时机 | 操作 | 安全约束 |
+| --- | --- | --- | --- |
+| 阶段 1：逐批显示 | 每个 batch 完成 | 追加 `node.imgs`、更新按钮文字 | ❌ 不动 `imageIndex` / `onExecuted` / `_last_images` |
+| 阶段 2：执行完成 | HTTP 响应返回 | `onExecuted` + 持久化 + 选择重置 | 与 v2.23 完全一致，保持所有守卫机制 |
+
+### C.4 `appendSinglePreview` 安全追加
+
+核心安全逻辑（`dynamic_params.js`）：
+
+```javascript
+// 有序槽位数组，按 batch_index 插入
+node._progressiveSlots[batchIndex] = img;  // 仅已加载的 Image
+// ✅ 关键：filter 保证 node.imgs 永不含 null
+node.imgs = node._progressiveSlots.filter(i => i !== null);
+```
+
+- JS 单线程 → 数组赋值原子，不会被渲染循环打断
+- `img.onload` 回调中才写入 → 保证元素是完全加载的 Image 对象
+- 不触碰 `imageIndex` → 生成中默认 null（缩略图网格模式）
+
+### C.5 预览模式配置
+
+`api_config.yaml` → `node_settings.preview_mode`:
+
+| 值 | 行为 | 前端逻辑 |
+| --- | --- | --- |
+| `progressive` | 完成一张显示一张 | WebSocket 事件触发 `appendSinglePreview` |
+| `wait_all` | 全部完成后一起显示 | WebSocket 仅更新按钮，HTTP 完成后调 `updateNodePreview` |
+
+### C.6 踩坑：`node.imgs = []` 导致画布冻结
+
+**问题**：生成开始时设置 `node.imgs = []` 导致 ComfyUI 画布无法拖动。
+
+**根因**：空数组 `[]` 在 JS 中是 truthy (`Boolean([]) === true`)。ComfyUI 的 `drawImages` 检查 `if (this.imgs)` → truthy → 尝试绘制 → 数组长度 0 → 分配空白 image area → 布局异常 → 全局 FPS 崩溃。
+
+**修复**：不在生成开始时清除 `node.imgs`。progressive 模式的首个 `appendSinglePreview` 回调会自然覆盖旧图。

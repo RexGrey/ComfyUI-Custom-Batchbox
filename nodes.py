@@ -17,6 +17,7 @@ import uuid
 from PIL import Image
 from io import BytesIO
 from typing import Dict, List, Optional, Any, Tuple, Union
+from .adapters.base import APIResponse
 
 import folder_paths  # ComfyUI's folder paths helper
 
@@ -88,6 +89,21 @@ class DynamicImageNodeBase:
     
     def __init__(self):
         self.timeout = 600
+
+    @staticmethod
+    def _parse_extra_params(extra_params_raw: Any) -> Dict[str, Any]:
+        """Parse dynamic params payload safely, returning a dict."""
+        if isinstance(extra_params_raw, dict):
+            return dict(extra_params_raw)
+        if not extra_params_raw:
+            return {}
+        if not isinstance(extra_params_raw, str):
+            return {}
+        try:
+            parsed = json.loads(extra_params_raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
     
     @classmethod
     def get_models_for_category(cls, category: str = "image") -> List[str]:
@@ -131,18 +147,22 @@ class DynamicImageNodeBase:
             # User manually selected a specific endpoint by display_name
             endpoint_info = config_manager.get_endpoint_by_name(model_name, endpoint_override, mode)
         else:
-            # Auto mode: round-robin through all available endpoints
-            endpoints = config_manager.get_api_endpoints(model_name)
-            if not endpoints:
-                print(f"[DynamicImageNode] No endpoints for {model_name}")
-                return None
+            # Auto mode: check setting for strategy
+            node_settings = config_manager.get_node_settings()
+            auto_mode = node_settings.get("auto_endpoint_mode", "priority")
             
-            # Get current index and rotate
-            current_idx = DynamicImageNodeBase._endpoint_index.get(model_name, 0)
-            endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
-            
-            # Update index for next call (rotate)
-            DynamicImageNodeBase._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            if auto_mode == "round_robin":
+                # Round-robin: rotate through all available endpoints
+                endpoints = config_manager.get_api_endpoints(model_name)
+                if not endpoints:
+                    print(f"[DynamicImageNode] No endpoints for {model_name}")
+                    return None
+                current_idx = DynamicImageNodeBase._endpoint_index.get(model_name, 0)
+                endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
+                DynamicImageNodeBase._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            else:
+                # Priority mode: always use highest priority endpoint
+                endpoint_info = config_manager.get_best_endpoint(model_name, mode)
         
         if not endpoint_info:
             print(f"[DynamicImageNode] No endpoint found for {model_name}/{mode}")
@@ -151,6 +171,21 @@ class DynamicImageNodeBase:
         provider = endpoint_info["provider"]
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
+        
+        # Dispatch to Volcengine adapter if api_format is volcengine
+        api_format = endpoint_config.get("api_format", "")
+        if api_format == "volcengine":
+            from .adapters.volcengine import VolcengineAdapter
+            return VolcengineAdapter(
+                provider_config={
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "access_key": provider.access_key,
+                    "secret_key": provider.secret_key
+                },
+                endpoint_config=endpoint_config,
+                mode_config=mode_config
+            )
         
         return GenericAPIAdapter(
             provider_config={
@@ -186,6 +221,9 @@ class DynamicImageNodeBase:
         # If endpoint manually selected (has value), disable failover
         if endpoint_override:
             auto_failover = False
+        
+        # Inject model display name for Account model ID resolution
+        params["_model_display_name"] = model_name
         
         # Try primary endpoint (or manually selected endpoint)
         adapter = self.get_adapter(model_name, mode, endpoint_override)
@@ -255,19 +293,8 @@ class DynamicImageNodeBase:
         except (ValueError, TypeError):
             seed = 0
         
-        # Pre-create saver instance outside threads to avoid import issues
-        saver = None
-        saver_enabled = False
-        try:
-            from .save_settings import SaveSettings
-            save_cfg = config_manager.get_save_settings()
-            saver = SaveSettings(save_cfg)
-            saver_enabled = saver.enabled
-        except Exception as e:
-            print(f"[Batch] Could not initialize saver: {e}")
-        
         def process_single_batch(batch_idx: int):
-            """Process a single batch, save immediately, and return results."""
+            """Process a single batch request and return decoded results."""
             print(f"\n[Batch] {batch_idx+1}/{batch_count} - Model: {model_name}")
             
             current_params = params.copy()
@@ -286,24 +313,10 @@ class DynamicImageNodeBase:
                 for img_bytes in result.images:
                     try:
                         pil_img = Image.open(BytesIO(img_bytes))
-                        pil_img, img_mode = prepare_for_comfyui(pil_img, preserve_alpha=True)
+                        pil_img, _ = prepare_for_comfyui(pil_img, preserve_alpha=True)
                         batch_pil_images.append(pil_img)
                         tensor = pil_to_tensor_rgba(pil_img)
                         batch_tensors.append(tensor)
-                        
-                        # ⚡ IMMEDIATELY SAVE upon receiving image
-                        if saver_enabled and saver:
-                            try:
-                                context = {
-                                    "model": model_name,
-                                    "seed": current_params.get("seed", 0),
-                                    "prompt": current_params.get("prompt", ""),
-                                    "batch": batch_idx + 1,
-                                }
-                                saver.save_image(pil_img, context)
-                            except Exception as save_err:
-                                print(f"[Batch] Immediate save error: {save_err}")
-                            
                     except Exception as e:
                         batch_log += f"Image decode error: {e}\n"
                 
@@ -390,13 +403,10 @@ class DynamicImageNodeBase:
         
         # Parse extra_params and remove seed (we use kwargs.seed separately)
         # This ensures consistent hashing between frontend and backend
-        try:
-            extra_params = json.loads(extra_params_str) if extra_params_str else {}
-            extra_params.pop("seed", None)  # Remove seed from extra_params
-            # Use separators without spaces to match JavaScript JSON.stringify
-            extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
-        except:
-            extra_params_normalized = extra_params_str
+        extra_params = self._parse_extra_params(extra_params_str)
+        extra_params.pop("seed", None)  # Remove seed from extra_params
+        # Use separators without spaces to match JavaScript JSON.stringify
+        extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
         
         # Build hash string from all relevant parameters
         # Note: Seed is handled separately, not from extra_params
@@ -563,6 +573,10 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         cached_hash = kwargs.get("_cached_hash", "")
         extra_params_str = kwargs.get("extra_params", "{}")
         skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        current_hash = cached_hash
+        extra_params = self._parse_extra_params(extra_params_str)
+        if extra_params_str and not extra_params:
+            print("[SmartCache] Failed to parse extra_params, using empty dict")
         
         # Edge case: If extra_params is empty "{}" but we have cache,
         # it means dynamic params aren't loaded yet after restart.
@@ -633,15 +647,10 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         }
         
         # Parse extra dynamic parameters from frontend
-        extra_params_str = kwargs.get("extra_params", "{}")
         print(f"[DEBUG] kwargs: {kwargs}")
         print(f"[DEBUG] extra_params_str: {extra_params_str}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            print(f"[DEBUG] extra_params parsed: {extra_params}")
-            params.update(extra_params)
-        except:
-            pass
+        print(f"[DEBUG] extra_params parsed: {extra_params}")
+        params.update(extra_params)
         
         # Ensure numeric fields are correct type (seed should be int, not string)
         if "seed" in params:
@@ -715,6 +724,9 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         
         print(f"[Generate] Returning selected image {selected_index} of {images_tensor.shape[0]}")
         
+        # Persist a stable hash for subsequent smart-cache comparison.
+        current_hash = self._compute_params_hash(model, prompt, batch_count, kwargs)
+        
         # Return dict with both result tuple and UI data
         return {
             "ui": {
@@ -776,11 +788,7 @@ class DynamicTextGenerationNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         result = self.execute_with_failover(model, params, "text2text")
         
@@ -849,11 +857,7 @@ class DynamicVideoGenerationNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         # Handle image inputs
         if mode == "img2video":
@@ -925,11 +929,7 @@ class DynamicAudioGenerationNode(DynamicImageNodeBase):
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
         result = self.execute_with_failover(model, params, "text2audio")
         
@@ -959,14 +959,12 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
         return {
             "required": {
                 "model": (models, {"default": models[0] if models else None}),
-                "image": ("IMAGE",),
-                "operation": (["upscale", "inpaint", "outpaint", "remove_bg", "enhance", "restore"], {"default": "upscale"}),
+                "image1": ("IMAGE",),
+                "mask": ("MASK",),
             },
             "optional": {
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "scale": ("INT", {"default": 2, "min": 1, "max": 8}),
-                "mask": ("MASK",),
-                "strength": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1}),
             },
             "hidden": {
                 "extra_params": ("STRING", {"default": "{}"}),
@@ -976,51 +974,190 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("edited_image", "response_info", "image_url")
     FUNCTION = "edit"
+    OUTPUT_NODE = True  # Show preview inline like DynamicImageGeneration
     
-    def edit(self, model: str, image: torch.Tensor, operation: str, **kwargs) -> Tuple:
-        """Edit image using selected model and operation"""
+    def edit(self, model: str, image1, mask=None, **kwargs) -> Tuple:
+        """Edit image using selected model — supports 1 image + 1 mask"""
+        operation = "inpaint"
         
-        # Prepare image for upload
-        pil_img = tensor2pil(image)[0]
-        buffered = BytesIO()
-        pil_img.save(buffered, format="PNG")
+        # Volcengine limits: max 4.7MB per image, max 4096x4096 resolution
+        MAX_DIMENSION = 4096
+        MAX_FILE_SIZE = int(4.7 * 1024 * 1024)  # 4.7MB
+        
+        def resize_if_needed(pil_img, max_dim=MAX_DIMENSION):
+            """Resize image if any dimension exceeds max_dim"""
+            w, h = pil_img.size
+            if w > max_dim or h > max_dim:
+                ratio = min(max_dim / w, max_dim / h)
+                new_w, new_h = int(w * ratio), int(h * ratio)
+                pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
+            return pil_img
+        
+        def compress_image(pil_img, max_size=MAX_FILE_SIZE):
+            """Compress image: try PNG first (lossless), fall back to JPEG if over max_size"""
+            buf = BytesIO()
+            pil_img.save(buf, format="PNG")
+            if buf.tell() <= max_size:
+                return buf.getvalue(), "png"
+            for quality in [95, 85, 70, 55]:
+                buf = BytesIO()
+                pil_img.save(buf, format="JPEG", quality=quality)
+                if buf.tell() <= max_size:
+                    return buf.getvalue(), "jpg"
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG", quality=55)
+            return buf.getvalue(), "jpg"
+        
+        # Process the single input image
+        pil_img = tensor2pil(image1)[0]
+        pil_img = resize_if_needed(pil_img)
+        img_bytes, fmt = compress_image(pil_img)
+        mime = "image/png" if fmt == "png" else "image/jpeg"
+        upload_files = [("image1", (f"image1.{fmt}", img_bytes, mime))]
         
         params = {
             "prompt": kwargs.get("prompt", ""),
             "operation": operation,
-            "scale": kwargs.get("scale", 2),
-            "strength": kwargs.get("strength", 0.75),
-            "_upload_files": [("image", ("input.png", buffered.getvalue(), "image/png"))],
+            "_upload_files": upload_files,
         }
         
-        # Handle mask if provided
-        mask = kwargs.get("mask")
+        # Handle mask — MUST be after image in _upload_files for Volcengine
+        # Volcengine expects binary_data_base64 = [image, mask]
+        # Mask format per docs: 8-bit grayscale PNG, no ICC profile
         if mask is not None:
-            mask_img = tensor2pil(mask.unsqueeze(-1).expand(-1, -1, -1, 3))[0]
+            if mask.dim() == 3:
+                mask_2d = mask[0]
+            else:
+                mask_2d = mask
+            # Volcengine: white (255) = edit area, black (0) = keep area
+            # ComfyUI: 1.0 = masked/edit, 0.0 = visible/keep → same direction ✓
+            # CRITICAL: Threshold to pure black/white to prevent API from modifying non-masked areas
+            mask_np = mask_2d.cpu().numpy()
+            mask_np = ((mask_np > 0.5) * 255).astype("uint8")  # Binary threshold
+            mask_img = Image.fromarray(mask_np, mode="L")
+            
+            # Resize mask to match image dimensions
+            if upload_files:
+                img_bytes = upload_files[0][1][1]
+                ref_img = Image.open(BytesIO(img_bytes))
+                if mask_img.size != ref_img.size:
+                    mask_img = mask_img.resize(ref_img.size, Image.NEAREST)
+            
+            # Save as 8-bit grayscale PNG without ICC profile
             mask_buffered = BytesIO()
-            mask_img.save(mask_buffered, format="PNG")
+            mask_img.save(mask_buffered, format="PNG", icc_profile=None)
             params["_upload_files"].append(("mask", ("mask.png", mask_buffered.getvalue(), "image/png")))
         
         # Parse extra dynamic parameters
         extra_params_str = kwargs.get("extra_params", "{}")
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        params.update(self._parse_extra_params(extra_params_str))
         
-        # Select mode based on operation
-        mode = operation  # upscale, inpaint, outpaint, etc.
+        # All editor operations use img2img mode
+        mode = "img2img"
+        batch_count = kwargs.get("batch_count", 1)
         
-        result = self.execute_with_failover(model, params, mode)
+        # Prepare mask compositing data once (shared across all batch items)
+        original_pil = tensor2pil(image1)[0].convert("RGB")
+        mask_binary = None
+        if mask is not None:
+            if mask.dim() == 3:
+                mask_float = mask[0].cpu().numpy()
+            else:
+                mask_float = mask.cpu().numpy()
+            mask_binary = (mask_float > 0.5).astype(np.float32)
         
-        if result.success and result.images:
-            output_tensor = bytes2tensor(result.images[0])
-            url = result.image_urls[0] if result.image_urls else ""
-            return (output_tensor, "Success", url)
+        def composite_result(result_pil, orig_pil, m_binary):
+            """Composite original + edited using mask to prevent color shift"""
+            if m_binary is None:
+                return result_pil
+            result_w, result_h = result_pil.size
+            mb = m_binary.copy()
+            if mb.shape[0] != result_h or mb.shape[1] != result_w:
+                mp = Image.fromarray((mb * 255).astype("uint8"), mode="L")
+                mp = mp.resize((result_w, result_h), Image.NEAREST)
+                mb = np.array(mp).astype(np.float32) / 255.0
+            op = orig_pil
+            if op.size != result_pil.size:
+                op = op.resize(result_pil.size, Image.LANCZOS)
+            orig_np = np.array(op).astype(np.float32)
+            edit_np = np.array(result_pil).astype(np.float32)
+            mask_3d = mb[:, :, np.newaxis]
+            composited = (orig_np * (1 - mask_3d) + edit_np * mask_3d).clip(0, 255).astype("uint8")
+            return Image.fromarray(composited)
+        
+        # Execute batch sequentially (API concurrent limit = 1, entire lifecycle)
+        # With 429 auto-retry: if rate limited, wait and retry automatically
+        import time
+        
+        def execute_with_retry(attempt_num):
+            """Execute with automatic 429 retry"""
+            max_retries = 3
+            for retry in range(max_retries + 1):
+                result = self.execute_with_failover(model, params, mode)
+                if result.success:
+                    return result
+                # Check for 429 rate limit
+                if "429" in str(result.error_message) and retry < max_retries:
+                    wait = 3 * (2 ** retry)  # 3s, 6s, 12s
+                    print(f"[Editor] Rate limited, retrying in {wait}s... ({retry+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                return result
+            return result
+        
+        results = []
+        for i in range(batch_count):
+            print(f"[Editor] Generating {i+1}/{batch_count}...")
+            results.append(execute_with_retry(i))
+        
+        # Process all results
+        output_tensors = []
+        all_previews = []
+        all_urls = []
+        success_count = 0
+        
+        for i, result in enumerate(results):
+            if result.success and result.images:
+                result_pil = Image.open(BytesIO(result.images[0])).convert("RGB")
+                result_pil = composite_result(result_pil, original_pil, mask_binary)
+                output_tensors.append(pil2tensor(result_pil))
+                all_urls.append(result.image_urls[0] if result.image_urls else "")
+                success_count += 1
+                
+                # Auto-save
+                try:
+                    from .save_settings import SaveSettings
+                    from .config_manager import config_manager
+                    save_cfg = config_manager.get_save_settings()
+                    saver = SaveSettings(save_cfg)
+                    if saver.enabled:
+                        context = {"model": model, "seed": i, "prompt": kwargs.get("prompt", ""), "batch": batch_count}
+                        save_result = saver.save_image(result_pil, context)
+                        if save_result and "preview" in save_result:
+                            all_previews.append(save_result["preview"])
+                            continue
+                except Exception as e:
+                    print(f"[Editor AutoSave] Error: {e}")
+                all_previews.extend(save_preview_images([result_pil], prefix="editor_result"))
+            else:
+                print(f"[Editor] Batch {i+1}/{batch_count} failed: {result.error_message}")
+        
+        if output_tensors:
+            # Concatenate all results into batch tensor
+            batch_tensor = torch.cat(output_tensors, dim=0)
+            url_str = " | ".join(all_urls) if all_urls else ""
+            info = f"Success: {success_count}/{batch_count}"
+            
+            return {
+                "ui": {"images": all_previews},
+                "result": (batch_tensor, info, url_str)
+            }
         else:
-            # Return original image on failure
-            return (image, f"Edit failed: {result.error_message}", "")
+            error_msgs = [r.error_message for r in results if not r.success]
+            return {
+                "ui": {"images": []},
+                "result": (image1, f"All {batch_count} edits failed: {'; '.join(error_msgs)}", "")
+            }
 
 
 # ==========================================
@@ -1209,15 +1346,16 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
     FUNCTION = "upscale"
     OUTPUT_NODE = True
     
-    def _get_upscale_model(self) -> str:
-        """Get the model configured for upscaling from upscale_settings."""
+    def _get_upscale_model(self):
+        """Get the model and endpoint configured for upscaling from upscale_settings."""
         settings = config_manager.get_upscale_settings()
         model = settings.get("model", "")
+        endpoint = settings.get("endpoint", "")
         if not model:
             # Fallback: use first available image model
             models = self.get_models_for_category("image")
             model = models[0] if models and models[0] != "No Models Found" else ""
-        return model
+        return model, endpoint
     
     def _build_prompt(self, repair_mode: str, style_prompt: str) -> str:
         """Build the full prompt based on repair mode and style."""
@@ -1242,8 +1380,8 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         style_prompt = kwargs.get("style_prompt", "")
         batch_count = kwargs.get("batch_count", 1)
         
-        # Get model from global upscale_settings
-        model = self._get_upscale_model()
+        # Get model and endpoint from global upscale_settings
+        model, saved_endpoint = self._get_upscale_model()
         if not model:
             return {
                 "ui": {"images": []},
@@ -1342,11 +1480,8 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                     params[key] = val
 
         # Parse extra dynamic parameters (highest priority, overrides defaults)
-        try:
-            extra_params = json.loads(extra_params_str)
-            params.update(extra_params)
-        except:
-            pass
+        extra_params = self._parse_extra_params(extra_params_str)
+        params.update(extra_params)
         
         # Ensure seed is int
         if "seed" in params:
@@ -1355,13 +1490,10 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             except (ValueError, TypeError):
                 params["seed"] = 0
         
-        # Get endpoint override if any
-        endpoint_override = ""
-        try:
-            ep = json.loads(extra_params_str)
-            endpoint_override = ep.get("endpoint_override", "")
-        except:
-            pass
+        # Get endpoint override: saved endpoint from settings, or extra_params override
+        endpoint_override = saved_endpoint
+        if extra_params.get("endpoint_override"):
+            endpoint_override = extra_params.get("endpoint_override")
         
         # ==========================================
         # STEP 3: Call AI model for upscaling

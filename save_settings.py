@@ -170,7 +170,7 @@ class SaveSettings:
         # Get ComfyUI output directory as base
         try:
             base_dir = folder_paths.get_output_directory()
-        except:
+        except Exception:
             base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
         
         # Build output directory
@@ -271,7 +271,7 @@ class SaveSettings:
         # Get ComfyUI output directory as base
         try:
             base_dir = folder_paths.get_output_directory()
-        except:
+        except Exception:
             base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
         
         # Build subfolder path (relative to output directory)

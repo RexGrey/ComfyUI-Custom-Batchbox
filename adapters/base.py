@@ -47,6 +47,9 @@ class APIAdapter(ABC):
     - Handling async polling if needed
     """
     
+    # Class-level counters for round-robin key rotation (thread-safe via GIL)
+    _key_counters: Dict[str, int] = {}
+    
     def __init__(self, provider_config: Dict, endpoint_config: Dict):
         """
         Args:
@@ -64,6 +67,33 @@ class APIAdapter(ABC):
     
     @property
     def api_key(self) -> str:
+        """Get API key with round-robin rotation if multiple keys configured.
+        
+        Supports formats (in priority order):
+          1. api_keys: [{name: "x", key: "...", enabled: true}, ...]  (named, filterable)
+          2. api_keys: ["key1", "key2"]                               (plain list)
+          3. api_key: "single_key"                                    (original)
+        """
+        keys_config = self.provider.get("api_keys", [])
+        if keys_config and isinstance(keys_config, list):
+            # Build list of active keys
+            active_keys = []
+            for item in keys_config:
+                if isinstance(item, dict):
+                    # Named key: {name, key, enabled}
+                    if item.get("enabled", True) and item.get("key"):
+                        active_keys.append(item["key"])
+                elif isinstance(item, str) and item:
+                    # Plain string key
+                    active_keys.append(item)
+            
+            if active_keys:
+                provider_name = self.provider.get("display_name", id(self.provider))
+                counter_key = str(provider_name)
+                idx = APIAdapter._key_counters.get(counter_key, 0)
+                key = active_keys[idx % len(active_keys)]
+                APIAdapter._key_counters[counter_key] = idx + 1
+                return key
         return self.provider.get("api_key", "")
     
     @abstractmethod
