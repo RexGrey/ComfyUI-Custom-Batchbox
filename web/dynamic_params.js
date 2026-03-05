@@ -1384,7 +1384,7 @@ app.registerExtension({
 
       // === IMAGE SELECTION: Save selection state ===
       o.imageSelectionState = {
-        selectedIndex: this._selectedImageIndex || this.properties?._selected_image_index || 0
+        selectedIndex: this._selectedImageIndex ?? this.properties?._selected_image_index ?? 0
       };
     };
 
@@ -1511,8 +1511,9 @@ api.queuePrompt = async function (number, workflowData) {
           nodeData.inputs._skip_hash_check = smartCacheHashCheckEnabled ? "false" : "true";
 
           // === IMAGE SELECTION: Inject _selected_image_index ===
-          const selectedIndex = node._selectedImageIndex || node.properties?._selected_image_index || 0;
-          nodeData.inputs._selected_image_index = parseInt(selectedIndex) || 0;
+          const selectedIndex = node._selectedImageIndex ?? node.properties?._selected_image_index ?? 0;
+          const parsedSelectedIndex = Number.parseInt(selectedIndex, 10);
+          nodeData.inputs._selected_image_index = Number.isNaN(parsedSelectedIndex) ? 0 : parsedSelectedIndex;
 
           // === DYNAMIC LOADING: Check if all_images output is connected ===
           // Output slot 1 is "all_images" (0: selected_image, 1: all_images)

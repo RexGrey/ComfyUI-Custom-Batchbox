@@ -103,6 +103,42 @@ class DynamicImageNodeBase:
         except (json.JSONDecodeError, TypeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _compute_image_inputs_hash(kwargs: Dict[str, Any]) -> str:
+        """
+        Compute a deterministic hash for IMAGE inputs in kwargs.
+        This prevents smart-cache false hits when image content changes.
+        """
+        import hashlib
+
+        image_keys = sorted(
+            k for k, v in kwargs.items()
+            if k.startswith("image") and isinstance(v, torch.Tensor) and v is not None
+        )
+        if not image_keys:
+            return ""
+
+        hasher = hashlib.md5()
+        for key in image_keys:
+            tensor = kwargs[key]
+            hasher.update(key.encode("utf-8"))
+            hasher.update(str(tuple(tensor.shape)).encode("utf-8"))
+            try:
+                tensor_uint8 = (
+                    tensor.detach()
+                    .cpu()
+                    .clamp(0, 1)
+                    .mul(255)
+                    .to(torch.uint8)
+                    .contiguous()
+                )
+                hasher.update(memoryview(tensor_uint8.numpy()))
+            except Exception as e:
+                # Keep hash deterministic even if conversion fails.
+                hasher.update(f"tensor_error:{e}".encode("utf-8"))
+
+        return hasher.hexdigest()
     
     @classmethod
     def get_models_for_category(cls, category: str = "image") -> List[str]:
@@ -391,10 +427,12 @@ class DynamicImageNodeBase:
         extra_params.pop("seed", None)  # Remove seed from extra_params
         # Use separators without spaces to match JavaScript JSON.stringify
         extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
-        
+        image_inputs_hash = self._compute_image_inputs_hash(kwargs)
+
         # Build hash string from all relevant parameters
-        # Note: Seed is handled separately, not from extra_params
-        params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}"
+        # Note: Seed is handled separately, not from extra_params.
+        # Include image_inputs_hash to avoid cache reuse across different input images.
+        params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}|{image_inputs_hash}"
         result_hash = hashlib.md5(params_str.encode()).hexdigest()
         print(f"[DEBUG] Hash input: {params_str}")
         print(f"[DEBUG] Computed hash: {result_hash}")
@@ -466,10 +504,35 @@ class DynamicImageNodeBase:
                     tensor = load_single_image(info)
                     if tensor is not None:
                         tensors.append(tensor)
-                
+
                 if not tensors:
                     return None, None, []
-                
+
+                # Normalize cached tensor sizes before concatenation.
+                # Mixed-size outputs can happen across providers or model settings.
+                if len(tensors) > 1:
+                    import torch.nn.functional as F
+
+                    max_h = max(t.shape[1] for t in tensors)
+                    max_w = max(t.shape[2] for t in tensors)
+                    normalized_tensors = []
+                    for i, tensor in enumerate(tensors):
+                        if tensor.shape[1] != max_h or tensor.shape[2] != max_w:
+                            print(
+                                f"[SmartCache] Resizing cached image {i} from "
+                                f"{tensor.shape[1]}x{tensor.shape[2]} to {max_h}x{max_w}"
+                            )
+                            tensor_nchw = tensor.movedim(-1, 1)  # NHWC -> NCHW
+                            resized_nchw = F.interpolate(
+                                tensor_nchw,
+                                size=(max_h, max_w),
+                                mode="bilinear",
+                                align_corners=False,
+                            )
+                            tensor = resized_nchw.movedim(1, -1)  # NCHW -> NHWC
+                        normalized_tensors.append(tensor)
+                    tensors = normalized_tensors
+
                 all_tensor = torch.cat(tensors, dim=0)
                 selected_tensor = tensors[selected_index] if selected_index < len(tensors) else tensors[0]
                 print(f"[SmartCache] Loaded all {len(tensors)} images (all_images connected)")
@@ -1254,6 +1317,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             "custom_sigma": custom_sigma,
             "repair_mode": repair_mode,
             "style_prompt": style_prompt,
+            "image": image,
         }
         
         params_not_loaded = (extra_params_str == "{}" and last_images_json and cached_hash)
