@@ -144,7 +144,7 @@ class StatusResponseParser:
         for url in urls:
             logger.info(f"Downloading result from: {url}")
             session = get_session()
-            response = session.get(url)
+            response = session.get(url, timeout=(10, 60))
             response.raise_for_status()
             results.append((url, response.content))
         return results

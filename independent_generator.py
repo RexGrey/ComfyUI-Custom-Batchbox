@@ -34,8 +34,15 @@ class IndependentGenerator:
     def __init__(self):
         self.timeout = 600
     
-    def _compute_params_hash(self, model: str, prompt: str, batch_count: int, 
-                              seed: int, extra_params: Optional[Dict]) -> str:
+    def _compute_params_hash(
+        self,
+        model: str,
+        prompt: str,
+        batch_count: int,
+        seed: int,
+        extra_params: Optional[Dict],
+        images_base64: Optional[List[str]] = None,
+    ) -> str:
         """
         Compute a hash of generation parameters.
         Uses the same logic as nodes.py to ensure consistency.
@@ -48,8 +55,23 @@ class IndependentGenerator:
         
         # Use separators without spaces to match JavaScript JSON.stringify
         extra_params_normalized = json.dumps(params_for_hash, sort_keys=True, separators=(',', ':'))
-        
-        params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}"
+
+        # Include image payload hash to avoid cache collisions across different img2img inputs.
+        images_hash = ""
+        if images_base64:
+            import hashlib
+
+            image_hasher = hashlib.md5()
+            for idx, img in enumerate(images_base64):
+                if not isinstance(img, str):
+                    continue
+                img_b64 = img.split(",", 1)[1] if "," in img else img
+                image_hasher.update(f"{idx}:".encode("utf-8"))
+                image_hasher.update(img_b64.encode("utf-8"))
+                image_hasher.update(b";")
+            images_hash = image_hasher.hexdigest()
+
+        params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}|{images_hash}"
         return hashlib.md5(params_str.encode()).hexdigest()
     
     def get_adapter(self, model_name: str, mode: str = "text2img",
@@ -284,7 +306,9 @@ class IndependentGenerator:
             }
         
         # Compute hash using the same logic as nodes.py for consistency
-        params_hash = self._compute_params_hash(model, prompt, batch_count, seed, extra_params)
+        params_hash = self._compute_params_hash(
+            model, prompt, batch_count, seed, extra_params, images_base64
+        )
         
         return {
             "success": True,
