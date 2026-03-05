@@ -14,10 +14,16 @@ from PIL import Image
 
 from .base import APIAdapter, APIResponse, APIError
 from .template_engine import TemplateEngine
-from ..batchbox_logger import (
-    logger, log_request, log_response, log_error,
-    RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
-)
+try:
+    from ..batchbox_logger import (
+        logger, log_request, log_response, log_error,
+        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
+    )
+except ImportError:
+    from batchbox_logger import (
+        logger, log_request, log_response, log_error,
+        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
+    )
 
 
 class GenericAPIAdapter(APIAdapter):
@@ -72,8 +78,18 @@ class GenericAPIAdapter(APIAdapter):
         payload_template = self.mode_config.get("payload_template", {})
         url = f"{self.base_url}{endpoint_path}"
         
-        # Build headers
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        # Build headers - support Account auth mode
+        auth_type = self.endpoint.get("auth_type", "api")
+        if auth_type == "account":
+            # Account mode: use X-Auth-T token from Account singleton
+            try:
+                from ..account import Account
+                account = Account.get_instance()
+                headers = {"X-Auth-T": account.token}
+            except Exception:
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+        else:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
         
         # ─── OSS Cache: Upload images and switch to URL mode ───
         # When use_oss_cache is enabled, upload images to OSS and use JSON+URL
@@ -169,6 +185,9 @@ class GenericAPIAdapter(APIAdapter):
                 # Use the same endpoint path — the API accepts both multipart and JSON
                 # with image_urls in the JSON body
                 logger.debug(f"[OSSCache] JSON payload with image_urls: {payload.get('image_urls', [])}")
+                # Log full payload keys for debugging 422 errors
+                safe_payload = {k: (v if k != 'image_urls' else f'[{len(v)} URLs]') for k, v in payload.items() if not k.startswith('_')}
+                logger.info(f"[DEBUG] 📦 OSS payload keys: {safe_payload}")
             
             request_info["json"] = payload
         elif content_type == "multipart/form-data":
@@ -240,29 +259,155 @@ class GenericAPIAdapter(APIAdapter):
         if "{{model}}" in endpoint_path:
             endpoint_path = endpoint_path.replace("{{model}}", model_name)
         
+        # Support {api_key} placeholder in endpoint path (e.g. Google official API)
+        if "{api_key}" in endpoint_path:
+            endpoint_path = endpoint_path.replace("{api_key}", self.api_key or "")
+        
+        # Support {project_id} placeholder in endpoint path (e.g. Vertex AI)
+        if "{project_id}" in endpoint_path:
+            project_id = self.provider.get("project_id", "")
+            endpoint_path = endpoint_path.replace("{project_id}", project_id)
+        
         url = f"{self.base_url}{endpoint_path}"
         
-        # Build headers (Gemini uses same Bearer token format)
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        # Build headers - support Account auth mode and auth_header_format
+        auth_type = self.endpoint.get("auth_type", "api")
+        auth_header_format = self.endpoint.get("auth_header_format", "bearer")
+        
+        if auth_type == "account":
+            try:
+                from ..account import Account
+                account = Account.get_instance()
+                # Resolve Account-specific model ID from pricing table
+                # The Account service uses numeric IDs, NOT Gemini model names
+                model_display_name = params.get("_model_display_name", "")
+                resolved_model_id = ""
+                if model_display_name:
+                    resolved_model_id = account.resolve_model_id(model_display_name)
+                
+                # Fallback to raw model_name if resolution fails
+                if not resolved_model_id:
+                    resolved_model_id = self.endpoint.get("model_name", "")
+                    logger.warning(f"[Gemini] Using raw model_name as fallback: {resolved_model_id}")
+                
+                # Determine image size from params or default
+                image_size = params.get("image_size", "1K")
+                headers = {
+                    "X-Auth-T": account.token,
+                    "X-Model-ID": resolved_model_id,
+                    "X-Image-Size": image_size,
+                    "Content-Type": "application/json"
+                }
+                logger.info(f"[Gemini] Account headers: X-Model-ID={resolved_model_id}, X-Image-Size={image_size}, token={'✅' if account.token else '❌ empty'}")
+            except Exception:
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
+        elif auth_type == "vertex":
+            # Vertex AI with API key: same as AI Studio (key in URL query param)
+            # auth_type=vertex only affects image strategy (GCS gs:// instead of Files API)
+            headers = {
+                "Content-Type": "application/json"
+            }
+            logger.info("[Gemini] Vertex AI endpoint (API key in URL)")
+        elif auth_header_format == "none":
+            # No Authorization header (e.g. Google official API uses ?key= in URL)
+            headers = {
+                "Content-Type": "application/json"
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
         
         # Build contents array
         prompt = params.get("prompt", "")
         parts = [{"text": prompt}]
         
         # Add images if present (for img2img mode)
+        # Strategy per endpoint type:
+        #   - Vertex AI: GCS gs:// URIs (natively supported)
+        #   - AI Studio: Google Files API file_uri
+        #   - Account proxy: inline_data base64 (doesn't support file_data)
         upload_files = params.get("_upload_files", [])
+        
+        use_cache = self.mode_config.get("use_oss_cache", False) or self.endpoint.get("use_oss_cache", False)
+        
+        # Determine image upload strategy
+        gcs_available = False
+        files_api_available = False
+        
+        if use_cache and upload_files:
+            if auth_type == "vertex":
+                # Vertex AI: use GCS gs:// URIs
+                try:
+                    from ..gcs_cache import gcs_cache
+                    gcs_available = gcs_cache.is_enabled()
+                    if gcs_available:
+                        logger.info("[Gemini] GCS cache enabled for Vertex AI")
+                except Exception:
+                    pass
+            elif auth_type != "account" and self.api_key:
+                # AI Studio: use Files API
+                try:
+                    from ..gemini_files_cache import gemini_files_cache
+                    files_api_available = True
+                    logger.info(f"[Gemini] Files API enabled (key: {self.api_key[:8]}...)")
+                except Exception as e:
+                    logger.warning(f"[Gemini] Files API import failed: {e}")
+        
         for field_name, file_tuple in upload_files:
             # file_tuple can be 3-element (filename, bytes, mime) or 4-element (+ cached base64)
             if len(file_tuple) >= 4:
-                # Use pre-cached base64 to avoid re-encoding per request
                 filename, file_bytes, mime_type, cached_b64 = file_tuple
+            else:
+                filename, file_bytes, mime_type = file_tuple
+                cached_b64 = None
+            
+            # Vertex AI: GCS gs:// URI (natively supported)
+            if gcs_available:
+                try:
+                    gs_uri = gcs_cache.get_or_upload(file_bytes, filename, mime_type)
+                    if gs_uri:
+                        parts.append({
+                            "file_data": {
+                                "mime_type": mime_type,
+                                "file_uri": gs_uri
+                            }
+                        })
+                        logger.info(f"[Gemini] Using GCS cached: {gs_uri}")
+                        continue
+                    else:
+                        logger.warning("[Gemini] GCS upload failed, falling back to inline_data")
+                except Exception as e:
+                    logger.warning(f"[Gemini] GCS error: {e}, falling back to inline_data")
+            
+            # AI Studio: Files API upload and get file_uri
+            if files_api_available:
+                try:
+                    file_uri = gemini_files_cache.get_or_upload(
+                        self.api_key, file_bytes, filename, mime_type
+                    )
+                    if file_uri:
+                        parts.append({
+                            "file_data": {
+                                "mime_type": mime_type,
+                                "file_uri": file_uri
+                            }
+                        })
+                        logger.info(f"[Gemini] Using Files API cached: {file_uri}")
+                        continue
+                    else:
+                        logger.warning("[Gemini] Files API upload failed, falling back to inline_data")
+                except Exception as e:
+                    logger.warning(f"[Gemini] Files API error: {e}, falling back to inline_data")
+            
+            # Fallback: embed image as base64 inline_data
+            if cached_b64:
                 b64_data = cached_b64
             else:
-                # Fallback: encode on the fly
-                filename, file_bytes, mime_type = file_tuple
                 b64_data = base64.b64encode(file_bytes).decode('utf-8')
             
             parts.append({
@@ -294,21 +439,38 @@ class GenericAPIAdapter(APIAdapter):
             image_config["imageSize"] = params["image_size"]
             logger.info(f"[Gemini] Added imageConfig.imageSize: {params['image_size']}")
         if "aspect_ratio" in params and params["aspect_ratio"]:
-            image_config["aspectRatio"] = params["aspect_ratio"]
-            logger.info(f"[Gemini] Added imageConfig.aspectRatio: {params['aspect_ratio']}")
+            # 'auto' is not a valid aspectRatio value for Gemini API, skip for all channels
+            if params["aspect_ratio"] == "auto":
+                logger.info("[Gemini] Skipping aspectRatio='auto' (not a valid Gemini value)")
+            else:
+                image_config["aspectRatio"] = params["aspect_ratio"]
+                logger.info(f"[Gemini] Added imageConfig.aspectRatio: {params['aspect_ratio']}")
         
         # Add imageConfig to generationConfig if not empty
         if image_config:
             generation_config["imageConfig"] = image_config
         
         if "maxOutputTokens" not in generation_config:
-            generation_config["maxOutputTokens"] = 4096
+            generation_config["maxOutputTokens"] = 32768
+        if "temperature" not in generation_config:
+            generation_config["temperature"] = 0.8
+        if "candidateCount" not in generation_config:
+            generation_config["candidateCount"] = 1
         
         # Build payload
         payload = {
             "contents": contents,
             "generationConfig": generation_config
         }
+        
+        # Debug: log payload for Account requests (truncate image data)
+        if auth_type == "account":
+            import json
+            debug_payload = json.dumps(payload, ensure_ascii=False, default=str)
+            # Truncate long base64 data for readability
+            if len(debug_payload) > 500:
+                debug_payload = debug_payload[:500] + "... (truncated)"
+            logger.info(f"[Gemini] Account payload: {debug_payload}")
         
         return {
             "url": url,
@@ -353,7 +515,7 @@ class GenericAPIAdapter(APIAdapter):
         """
         try:
             data = response.json()
-        except:
+        except Exception:
             return APIResponse(
                 success=False,
                 error_message=f"Invalid JSON response: {response.text[:200]}",
@@ -406,14 +568,39 @@ class GenericAPIAdapter(APIAdapter):
         
         Gemini returns images as base64 in:
         candidates[0].content.parts[].inline_data.data
+        
+        Account mode wraps the response in {"data": {...}}, so we unwrap first.
         """
         import base64
         
         images = []
         image_urls = []
         
+        # Account mode: check for Account-specific error format
+        # Account errors have: {"code": -1, "errCode": -1201, "errMsg": "Unknown Model!"}
+        logger.info(f"[Gemini] Response keys: {list(data.keys())}")
+        if "errCode" in data and data.get("code", 0) != 0:
+            err_msg = data.get("errMsg", "Unknown Account error")
+            err_code = data.get("errCode", "?")
+            logger.error(f"[Gemini] Account error: errCode={err_code}, errMsg={err_msg}")
+            return APIResponse(
+                success=False,
+                error_message=f"Account error ({err_code}): {err_msg}",
+                raw_response=data
+            )
+        
+        # Account mode: response is wrapped in {"data": {...}}
+        # Unwrap before parsing candidates
+        if "data" in data and isinstance(data["data"], dict) and "candidates" not in data:
+            logger.info(f"[Gemini] Unwrapping Account response, inner keys: {list(data['data'].keys())}")
+            data = data["data"]
+        
         candidates = data.get("candidates", [])
         if not candidates:
+            # Log truncated response for debugging
+            import json
+            truncated = json.dumps(data, ensure_ascii=False, default=str)[:500]
+            logger.warning(f"[Gemini] No candidates found. Response (truncated): {truncated}")
             return APIResponse(
                 success=False,
                 error_message="No candidates in Gemini response",
@@ -562,7 +749,7 @@ class GenericAPIAdapter(APIAdapter):
                     import base64
                     img_bytes = base64.b64decode(value)
                     result["bytes"].append(img_bytes)
-                except:
+                except Exception:
                     pass
         elif isinstance(value, dict):
             if "url" in value:
@@ -572,7 +759,7 @@ class GenericAPIAdapter(APIAdapter):
                     import base64
                     img_bytes = base64.b64decode(value["b64_json"])
                     result["bytes"].append(img_bytes)
-                except:
+                except Exception:
                     pass
     
     def execute(self, params: Dict, mode: str = "text2img", 
@@ -633,33 +820,24 @@ class GenericAPIAdapter(APIAdapter):
         for attempt in range(retry_config.max_retries + 1):
             try:
                 with RequestTimer(f"API call to {provider_name}") as timer:
-                    # Execute request
+                    # Execute request using configured HTTP method.
+                    request_method = request_info.get("method", "POST").upper()
+                    request_kwargs = {
+                        "headers": request_info["headers"],
+                        "timeout": self.timeout,
+                    }
                     if "json" in request_info:
-                        response = requests.post(
-                            url,
-                            headers=request_info["headers"],
-                            json=request_info["json"],
-                            timeout=self.timeout
-                        )
+                        request_kwargs["json"] = request_info["json"]
                     elif "files" in request_info:
-                        response = requests.post(
-                            url,
-                            headers=request_info["headers"],
-                            data=request_info.get("data", {}),
-                            files=request_info["files"],
-                            timeout=self.timeout
-                        )
+                        request_kwargs["data"] = request_info.get("data", {})
+                        request_kwargs["files"] = request_info["files"]
                     else:
-                        response = requests.request(
-                            request_info["method"],
-                            url,
-                            headers=request_info["headers"],
-                            data=request_info.get("data"),
-                            timeout=self.timeout
-                        )
+                        request_kwargs["data"] = request_info.get("data")
+
+                    response = requests.request(request_method, url, **request_kwargs)
                 
                 # Log response
-                is_success = response.status_code == 200
+                is_success = 200 <= response.status_code < 300
                 log_response(
                     status_code=response.status_code,
                     elapsed=timer.elapsed,
@@ -682,7 +860,8 @@ class GenericAPIAdapter(APIAdapter):
                         log_error(f"Max retries exceeded for {provider_name}")
                 
                 # Check HTTP status
-                if response.status_code != 200:
+                if not is_success:
+                    logger.info(f"⬅️ 📋 Response body: {response.text[:300]}")
                     return APIResponse(
                         success=False,
                         error_message=f"HTTP {response.status_code}: {response.text[:200]}",
@@ -691,6 +870,10 @@ class GenericAPIAdapter(APIAdapter):
                 
                 # Parse response
                 result = self.parse_response(response)
+                
+                # Corrective log: HTTP was 200 but business logic failed
+                if not result.success:
+                    logger.info(f"⬅️ ❌ 解析失败: {result.error_message}")
                 
                 # Handle async polling if needed
                 if result.task_id and result.status == "pending":
@@ -704,6 +887,14 @@ class GenericAPIAdapter(APIAdapter):
                         if img_bytes:
                             result.images.append(img_bytes)
                 
+                # Auto-refresh credits after Account mode generation
+                if result.success and self.endpoint.get("auth_type") == "account":
+                    try:
+                        from ..account import Account
+                        Account.get_instance().fetch_credits()
+                    except Exception:
+                        pass
+
                 return result
                 
             except requests.Timeout:
@@ -745,11 +936,21 @@ class GenericAPIAdapter(APIAdapter):
     def _poll_for_result(self, task_id: str, timeout: int = 600) -> APIResponse:
         """Poll for async task completion"""
         polling_endpoint = self.mode_config.get("polling_endpoint", "/v1/tasks/{task_id}")
+        polling_endpoint = polling_endpoint.replace("{{task_id}}", task_id).replace("{task_id}", task_id)
         status_path = self.mode_config.get("status_path", "data.status")
         success_value = self.mode_config.get("success_value", "SUCCESS")
         response_path = self.mode_config.get("response_path", "data.data.data[*].url")
         
-        poll_url = f"{self.base_url}{polling_endpoint.format(task_id=task_id)}"
+        poll_url = f"{self.base_url}{polling_endpoint}"
+        
+        poll_headers = {"Authorization": f"Bearer {self.api_key}"}
+        if self.endpoint.get("auth_type") == "account":
+            try:
+                from ..account import Account
+                account = Account.get_instance()
+                poll_headers = {"X-Auth-T": account.token}
+            except Exception:
+                poll_headers = {"Authorization": f"Bearer {self.api_key}"}
         
         start_time = time.time()
         
@@ -759,7 +960,7 @@ class GenericAPIAdapter(APIAdapter):
             try:
                 resp = requests.get(
                     poll_url,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=poll_headers,
                     timeout=30
                 )
                 
@@ -771,7 +972,9 @@ class GenericAPIAdapter(APIAdapter):
                 
                 print(f"[GenericAdapter] Poll status: {status}")
                 
-                if status == success_value:
+                normalized_status = str(status).strip().upper() if status is not None else ""
+                normalized_success = str(success_value).strip().upper()
+                if normalized_status == normalized_success:
                     # Extract images from response
                     images_data = self._extract_images_from_path(data, response_path)
                     
@@ -789,7 +992,7 @@ class GenericAPIAdapter(APIAdapter):
                         raw_response=data
                     )
                     
-                elif status in ["FAILURE", "FAILED", "ERROR"]:
+                elif normalized_status in ["FAILURE", "FAILED", "ERROR"]:
                     return APIResponse(
                         success=False,
                         error_message=f"Task failed: {data}",

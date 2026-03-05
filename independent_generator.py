@@ -65,15 +65,22 @@ class IndependentGenerator:
         if endpoint_override:
             endpoint_info = config_manager.get_endpoint_by_name(model_name, endpoint_override, mode)
         else:
-            endpoints = config_manager.get_api_endpoints(model_name)
-            if not endpoints:
-                print(f"[IndependentGenerator] No endpoints for {model_name}")
-                return None
+            # Auto mode: check setting for strategy
+            node_settings = config_manager.get_node_settings()
+            auto_mode = node_settings.get("auto_endpoint_mode", "priority")
             
-            current_idx = IndependentGenerator._endpoint_index.get(model_name, 0)
-            endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
-            
-            IndependentGenerator._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            if auto_mode == "round_robin":
+                # Round-robin: rotate through all available endpoints
+                endpoints = config_manager.get_api_endpoints(model_name)
+                if not endpoints:
+                    print(f"[IndependentGenerator] No endpoints for {model_name}")
+                    return None
+                current_idx = IndependentGenerator._endpoint_index.get(model_name, 0)
+                endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
+                IndependentGenerator._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            else:
+                # Priority mode: always use highest priority endpoint
+                endpoint_info = config_manager.get_best_endpoint(model_name, mode)
         
         if not endpoint_info:
             print(f"[IndependentGenerator] No endpoint found for {model_name}/{mode}")
@@ -82,6 +89,21 @@ class IndependentGenerator:
         provider = endpoint_info["provider"]
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
+        
+        # Dispatch to Volcengine adapter if api_format is volcengine
+        api_format = endpoint_config.get("api_format", "")
+        if api_format == "volcengine":
+            from .adapters.volcengine import VolcengineAdapter
+            return VolcengineAdapter(
+                provider_config={
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "access_key": provider.access_key,
+                    "secret_key": provider.secret_key
+                },
+                endpoint_config=endpoint_config,
+                mode_config=mode_config
+            )
         
         return GenericAPIAdapter(
             provider_config={
@@ -102,6 +124,9 @@ class IndependentGenerator:
         
         if endpoint_override:
             auto_failover = False
+        
+        # Inject model display name for Account model ID resolution
+        params["_model_display_name"] = model_name
         
         adapter = self.get_adapter(model_name, mode, endpoint_override)
         if adapter:
@@ -147,7 +172,8 @@ class IndependentGenerator:
         batch_count: int = 1,
         extra_params: Optional[Dict] = None,
         images_base64: Optional[List[str]] = None,
-        endpoint_override: Optional[str] = None
+        endpoint_override: Optional[str] = None,
+        on_batch_complete: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Generate images independently of ComfyUI's queue.
@@ -165,7 +191,13 @@ class IndependentGenerator:
             Dict with success status, preview images, and error message if any
         """
         # Determine mode
-        mode = "img2img" if images_base64 and len(images_base64) > 0 else "text2img"
+        # For image_editor models, the operation field determines mode
+        # Map editor operations to standard API modes
+        if extra_params and extra_params.get("operation"):
+            # Editor mode: use img2img since all editor operations need an input image
+            mode = "img2img"
+        else:
+            mode = "img2img" if images_base64 and len(images_base64) > 0 else "text2img"
         
         # Build parameters
         params = {
@@ -240,6 +272,13 @@ class IndependentGenerator:
                         batch_log += f"Image decode error: {e}\n"
             else:
                 batch_log += f"Batch {batch_idx+1} failed: {result.error_message}\n"
+            
+            # Fire progress callback (async context — safe for WebSocket send_sync)
+            if on_batch_complete:
+                try:
+                    await on_batch_complete(batch_idx, batch_count, batch_previews)
+                except Exception as e:
+                    print(f"[IndependentGenerator] Progress callback error: {e}")
             
             return (batch_idx, batch_previews, batch_log)
         

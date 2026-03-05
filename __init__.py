@@ -99,10 +99,12 @@ try:
             
             # Save providers to secrets.yaml
             if "providers" in data:
-                config_manager.save_providers(data["providers"])
+                if not config_manager.save_providers(data["providers"]):
+                    return web.json_response({"error": "Failed to save providers"}, status=500)
             
             # Save rest of config to api_config.yaml (providers auto-excluded)
-            config_manager.save_config_data(data)
+            if not config_manager.save_config_data(data):
+                return web.json_response({"error": "Failed to save config"}, status=500)
             
             # Reload to merge providers back into memory
             config_manager.force_reload()
@@ -212,8 +214,10 @@ try:
         try:
             provider_name = request.match_info["provider_name"]
             data = await request.json()
-            config_manager.update_provider(provider_name, data)
-            return web.json_response({"status": "success"})
+            success = config_manager.update_provider(provider_name, data)
+            if success:
+                return web.json_response({"status": "success"})
+            return web.json_response({"error": "Failed to update provider"}, status=500)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -432,6 +436,7 @@ try:
             
             model = data.get("model")
             prompt = data.get("prompt", "")
+            generation_token = data.get("generation_token", "")
             
             if not model:
                 return web.json_response({"success": False, "error": "Model is required"}, status=400)
@@ -439,6 +444,24 @@ try:
                 return web.json_response({"success": False, "error": "Prompt is required"}, status=400)
             
             generator = IndependentGenerator()
+        
+            # Progress callback: send WebSocket event per batch for progressive preview
+            node_id = data.get("node_id", "")
+            completed_count = 0
+            
+            async def on_batch_complete(batch_idx, total, batch_previews):
+                nonlocal completed_count
+                completed_count += 1
+                preview = batch_previews[0] if batch_previews else None
+                server.PromptServer.instance.send_sync("batchbox:progress", {
+                    "node_id": node_id,
+                    "generation_token": generation_token,
+                    "batch_index": batch_idx,
+                    "completed": completed_count,
+                    "total": total,
+                    "preview": preview,
+                })
+            
             result = await generator.generate(
                 model=model,
                 prompt=prompt,
@@ -446,13 +469,14 @@ try:
                 batch_count=data.get("batch_count", 1),
                 extra_params=data.get("extra_params"),
                 images_base64=data.get("images_base64"),
-                endpoint_override=data.get("endpoint_override")
+                endpoint_override=data.get("endpoint_override"),
+                on_batch_complete=on_batch_complete
             )
             
             # Send websocket "executed" event so ComfyUI's image viewer displays the result
             if result.get("success") and result.get("preview_images"):
                 import uuid as _uuid
-                node_id = data.get("node_id", "")
+                # node_id is already defined above
                 if node_id:
                     prompt_id = "independent_" + _uuid.uuid4().hex[:8]
                     last_images_json = json.dumps(result["preview_images"])
@@ -460,6 +484,7 @@ try:
                         "images": result["preview_images"],
                         "_last_images": [last_images_json],
                         "_cached_hash": [result.get("params_hash", "")],
+                        "_batchbox_generation_token": [generation_token],
                     }
                     
                     # 1. Send websocket event for real-time viewer update
@@ -495,7 +520,117 @@ try:
             traceback.print_exc()
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
-    print("[ComfyUI-Custom-Batchbox] API endpoints registered")
+    # ==========================================
+    # 5. Account System API Endpoints
+    # ==========================================
+    
+    # Initialize Account system
+    try:
+        import os
+        import yaml as _yaml
+        from .account import Account
+        
+        _plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        _account = Account.get_instance()
+        
+        # Load account config from secrets.yaml directly
+        _account_config = {}
+        _secrets_path = os.path.join(_plugin_dir, "secrets.yaml")
+        if os.path.exists(_secrets_path):
+            try:
+                with open(_secrets_path, 'r', encoding='utf-8') as _f:
+                    _secrets_data = _yaml.safe_load(_f) or {}
+                if "account" in _secrets_data:
+                    _account_config = _secrets_data["account"]
+            except Exception as _e:
+                print(f"[ComfyUI-Custom-Batchbox] Warning reading secrets.yaml account section: {_e}")
+        
+        _account.configure(_plugin_dir, _account_config)
+        
+        print("[ComfyUI-Custom-Batchbox] Account system initialized")
+    except Exception as e:
+        print(f"[ComfyUI-Custom-Batchbox] Account system init warning: {e}")
+        _account = None
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/login")
+    async def account_login(request):
+        """Trigger WebSocket login flow - opens browser to acggit.com"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            result = account.login()
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/logout")
+    async def account_logout(request):
+        """Logout and clear token"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            result = account.logout()
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.get("/api/batchbox/account/status")
+    async def account_status(request):
+        """Get login status, nickname, credits"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            return web.json_response(account.get_status())
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/credits")
+    async def account_refresh_credits(request):
+        """Refresh credit balance"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            account.fetch_credits()
+            # Return current status (credits will update async)
+            return web.json_response(account.get_status())
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/account/redeem")
+    async def account_redeem(request):
+        """Redeem a credit code"""
+        try:
+            from .account import Account
+            data = await request.json()
+            code = data.get("code", "").strip()
+            if not code:
+                return web.json_response({"error": "Code is required"}, status=400)
+            
+            account = Account.get_instance()
+            result = account.redeem_credits(code)
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.get("/api/batchbox/account/pricing")
+    async def account_pricing(request):
+        """Get model pricing table"""
+        try:
+            from .account import Account
+            account = Account.get_instance()
+            if not account.price_table:
+                account.fetch_credits_price()
+                # Wait a moment for async fetch
+                import asyncio
+                await asyncio.sleep(1.5)
+            return web.json_response({
+                "success": True,
+                "price_table": account.price_table or []
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    print("[ComfyUI-Custom-Batchbox] API endpoints registered (with Account system)")
 
 except Exception as e:
     print(f"[ComfyUI-Custom-Batchbox] Warning: Could not register API endpoints: {e}")

@@ -54,7 +54,8 @@ class TemplateEngine:
         match = re.fullmatch(r'\{\{(\w+)\}\}', template)
         if match:
             var_name = match.group(1)
-            return self._get_value(var_name, params)
+            value = self._get_value(var_name, params)
+            return "" if value is None else value
         
         # Otherwise do string substitution
         def replace_var(match):
