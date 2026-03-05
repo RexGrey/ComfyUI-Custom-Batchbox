@@ -35,6 +35,8 @@ class ProviderConfig:
     display_name: str = ""
     base_url: str = ""
     api_key: Optional[str] = None
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
     rate_limit: int = 60
 
 
@@ -290,11 +292,22 @@ class ConfigManager:
             return None
         
         p = providers[provider_name]
+        
+        # Support both api_key (string) and api_keys (array) formats
+        api_key = p.get("api_key")
+        if not api_key:
+            api_keys = p.get("api_keys", [])
+            if api_keys and isinstance(api_keys, list) and len(api_keys) > 0:
+                first_key = api_keys[0]
+                api_key = first_key.get("key", "") if isinstance(first_key, dict) else str(first_key)
+        
         config = ProviderConfig(
             name=provider_name,
             display_name=p.get("display_name", provider_name),
             base_url=p.get("base_url", "").rstrip('/'),
-            api_key=p.get("api_key"),
+            api_key=api_key,
+            access_key=p.get("access_key"),
+            secret_key=p.get("secret_key"),
             rate_limit=p.get("rate_limit", 60)
         )
         self._set_cached(self._providers_cache, provider_name, config)
@@ -469,7 +482,7 @@ class ConfigManager:
         
         for ep in endpoints:
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
+            if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
                 continue
             
             modes = ep.get("modes", {})
@@ -509,7 +522,7 @@ class ConfigManager:
                 continue
             
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
+            if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
                 continue
             
             modes = ep.get("modes", {})
@@ -548,7 +561,7 @@ class ConfigManager:
         ep = endpoints[actual_idx]
         
         provider = self.get_provider_config(ep.get("provider"))
-        if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
+        if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
             # Try next endpoint
             return self.get_best_endpoint(model_name, mode)
         
@@ -584,7 +597,7 @@ class ConfigManager:
                 continue
             
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or (not provider.api_key and ep.get("auth_type", "api") != "account"):
+            if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
                 continue
             
             modes = ep.get("modes", {})

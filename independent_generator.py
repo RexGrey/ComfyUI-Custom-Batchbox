@@ -112,6 +112,21 @@ class IndependentGenerator:
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
         
+        # Dispatch to Volcengine adapter if api_format is volcengine
+        api_format = endpoint_config.get("api_format", "")
+        if api_format == "volcengine":
+            from .adapters.volcengine import VolcengineAdapter
+            return VolcengineAdapter(
+                provider_config={
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "access_key": provider.access_key,
+                    "secret_key": provider.secret_key
+                },
+                endpoint_config=endpoint_config,
+                mode_config=mode_config
+            )
+        
         return GenericAPIAdapter(
             provider_config={
                 "name": provider.name,
@@ -198,7 +213,13 @@ class IndependentGenerator:
             Dict with success status, preview images, and error message if any
         """
         # Determine mode
-        mode = "img2img" if images_base64 and len(images_base64) > 0 else "text2img"
+        # For image_editor models, the operation field determines mode
+        # Map editor operations to standard API modes
+        if extra_params and extra_params.get("operation"):
+            # Editor mode: use img2img since all editor operations need an input image
+            mode = "img2img"
+        else:
+            mode = "img2img" if images_base64 and len(images_base64) > 0 else "text2img"
         
         # Build parameters
         params = {

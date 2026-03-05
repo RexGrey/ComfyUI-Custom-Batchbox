@@ -185,6 +185,9 @@ class GenericAPIAdapter(APIAdapter):
                 # Use the same endpoint path — the API accepts both multipart and JSON
                 # with image_urls in the JSON body
                 logger.debug(f"[OSSCache] JSON payload with image_urls: {payload.get('image_urls', [])}")
+                # Log full payload keys for debugging 422 errors
+                safe_payload = {k: (v if k != 'image_urls' else f'[{len(v)} URLs]') for k, v in payload.items() if not k.startswith('_')}
+                logger.info(f"[DEBUG] 📦 OSS payload keys: {safe_payload}")
             
             request_info["json"] = payload
         elif content_type == "multipart/form-data":
@@ -858,6 +861,7 @@ class GenericAPIAdapter(APIAdapter):
                 
                 # Check HTTP status
                 if not is_success:
+                    logger.info(f"⬅️ 📋 Response body: {response.text[:300]}")
                     return APIResponse(
                         success=False,
                         error_message=f"HTTP {response.status_code}: {response.text[:200]}",
