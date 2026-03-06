@@ -155,7 +155,7 @@ function addDynamicInput(node, prefix, index, inputType) {
 
     // Restore width after adding input, only update height
     const computedSize = node.computeSize();
-    node.setSize([currentWidth, computedSize[1]]);
+    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
     return true;
 }
 
@@ -178,7 +178,7 @@ function removeDynamicInput(node, inputName) {
 
     // Restore width after removing input, only update height
     const computedSize = node.computeSize();
-    node.setSize([currentWidth, computedSize[1]]);
+    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
     return true;
 }
 
@@ -197,7 +197,7 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
         // No inputs yet, add the first empty slot
         node.addInput(`${prefix}1`, inputType);
         const computedSize = node.computeSize();
-        node.setSize([currentWidth, computedSize[1]]);
+        node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
         return;
     }
 
@@ -254,7 +254,7 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
 
     // Restore width after input modifications, only update height
     const computedSize = node.computeSize();
-    node.setSize([currentWidth, computedSize[1]]);
+    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
 }
 
 /**
@@ -337,7 +337,7 @@ async function initializeDynamicInputs(node) {
                 this.properties = {};
             }
             this.properties._last_images = message._last_images[0];
-            console.log("[Batchbox] Saved preview info to properties");
+            console.debug("[Batchbox] Saved preview info to properties");
 
             // === IMAGE SELECTION: Reset selection on new generation ===
             // Parse images to check if we have multiple
@@ -350,7 +350,7 @@ async function initializeDynamicInputs(node) {
                     if (isNewGeneration && images.length > 1) {
                         this._selectedImageIndex = 0;
                         this.properties._selected_image_index = 0;
-                        console.log("[Batchbox] New generation: reset selection to 0");
+                        console.debug("[Batchbox] New generation: reset selection to 0");
                     }
 
                     // Keep a valid image index for both single and multi outputs.
@@ -360,7 +360,7 @@ async function initializeDynamicInputs(node) {
                     this.imageIndex = selectedIdx;
                     this._selectedImageIndex = selectedIdx;
                     this.properties._selected_image_index = selectedIdx;
-                    console.log(`[Batchbox] Set imageIndex to selected: ${selectedIdx}`);
+                    console.debug(`[Batchbox] Set imageIndex to selected: ${selectedIdx}`);
                 }
             } catch (e) {
                 console.warn("[Batchbox] Failed to parse images for selection:", e);
@@ -373,7 +373,7 @@ async function initializeDynamicInputs(node) {
                 this.properties = {};
             }
             this.properties._cached_hash = message._cached_hash[0];
-            console.log("[Batchbox] Saved params hash to properties:", message._cached_hash[0]);
+            console.debug("[Batchbox] Saved params hash to properties:", message._cached_hash[0]);
         }
 
         // Clear force generate flag
@@ -459,7 +459,7 @@ app.registerExtension({
                 const computedSize = node.computeSize();
                 node.size = [defaultWidth, computedSize[1]];
                 node.setDirtyCanvas(true, true);
-                console.log(`[Batchbox] Set initial width for new ${nodeType}: ${defaultWidth}px`);
+                console.debug(`[Batchbox] Set initial width for new ${nodeType}: ${defaultWidth}px`);
             }
             delete node._batchbox_fresh_create;
 
@@ -508,7 +508,7 @@ app.registerExtension({
                     if (node.properties?._selected_image_index !== undefined) {
                         node._selectedImageIndex = parseInt(node.properties._selected_image_index) || 0;
                         node.imageIndex = node._selectedImageIndex;
-                        console.log(`[Batchbox] Pre-restored image selection: index=${node._selectedImageIndex}`);
+                        console.debug(`[Batchbox] Pre-restored image selection: index=${node._selectedImageIndex}`);
                     }
                 }
             } catch (e) { }
@@ -555,10 +555,8 @@ app.registerExtension({
                 }
             }
 
+            // ⚡ PERF: Single dirty call instead of two
             node.setDirtyCanvas(true, true);
-            if (app.graph) {
-                app.graph.setDirtyCanvas(true, true);
-            }
 
             // Safety net: async operations (onModelChange fetching schema etc.)
             // may complete after this point and add more widgets.
@@ -567,10 +565,10 @@ app.registerExtension({
                 if (!node.graph) return; // Node may have been removed
                 const safetySize = node.computeSize();
                 if (safetySize[1] > node.size[1] + 5) {
-                    node.setSize([node.size[0], safetySize[1]]);
+                    node.size = [node.size[0], safetySize[1]];
                     node.setDirtyCanvas(true, true);
                 }
-            }, 1000);
+            }, 500);  // ⚡ Reduced from 1000ms — widgets settle within 500ms
         }, 100);
     }
 });
@@ -579,17 +577,13 @@ app.registerExtension({
  * Restore preview images from saved node.properties
  */
 function restorePreviewFromProperties(node) {
-    console.log(`[Batchbox] restorePreviewFromProperties called for node ${node.id}, type: ${node.comfyClass || node.type}`);
-    console.log(`[Batchbox] node.properties:`, node.properties);
+    console.debug(`[Batchbox] restorePreviewFromProperties for node ${node.id}`);
 
     // Read from node.properties (saved in workflow JSON)
     const lastImagesData = node.properties?._last_images;
-    if (!lastImagesData) {
-        console.log(`[Batchbox] No _last_images found for node ${node.id}`);
-        return;
-    }
+    if (!lastImagesData) return;
 
-    console.log(`[Batchbox] _last_images data type: ${typeof lastImagesData}, value:`, lastImagesData);
+
 
     try {
         // Handle both formats:
@@ -605,7 +599,7 @@ function restorePreviewFromProperties(node) {
             return;
         }
 
-        console.log(`[Batchbox] Parsed images:`, images);
+
 
         if (images && images.length > 0) {
             // Set image metadata - ComfyUI's OUTPUT_NODE mechanism
@@ -621,11 +615,11 @@ function restorePreviewFromProperties(node) {
                 return imgEl;
             });
 
-            console.log(`[Batchbox] Restored ${images.length} preview image(s) for node ${node.id}`);
+            console.debug(`[Batchbox] Restored ${images.length} preview image(s) for node ${node.id}`);
         }
     } catch (e) {
         console.warn("[Batchbox] Failed to restore preview:", e);
     }
 }
 
-console.log("[ComfyUI-Custom-Batchbox] Dynamic Inputs extension (multi-type) loaded");
+console.debug("[ComfyUI-Custom-Batchbox] Dynamic Inputs extension (multi-type) loaded");

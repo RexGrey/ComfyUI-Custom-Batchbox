@@ -252,6 +252,50 @@ class OSSImageCache:
         
         import oss2
         
+        # ── Smart compression: keep under 45MB for API provider limits (e.g. bltcy 50MB) ──
+        MAX_OSS_IMAGE_SIZE = 45 * 1024 * 1024  # 45MB
+        original_size = len(image_bytes)
+        
+        if original_size > MAX_OSS_IMAGE_SIZE:
+            try:
+                from PIL import Image as PILImage
+                from io import BytesIO
+                
+                pil_img = PILImage.open(BytesIO(image_bytes))
+                # Convert RGBA to RGB for JPEG
+                if pil_img.mode in ("RGBA", "P", "LA"):
+                    pil_img = pil_img.convert("RGB")
+                
+                # Binary search for optimal JPEG quality that stays under limit
+                lo, hi, best_bytes = 70, 98, None
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    buf = BytesIO()
+                    pil_img.save(buf, format="JPEG", quality=mid, optimize=True)
+                    compressed = buf.getvalue()
+                    if len(compressed) <= MAX_OSS_IMAGE_SIZE:
+                        best_bytes = compressed
+                        lo = mid + 1  # Try higher quality
+                    else:
+                        hi = mid - 1  # Need lower quality
+                
+                if best_bytes:
+                    image_bytes = best_bytes
+                    filename = filename.rsplit(".", 1)[0] + ".jpg"
+                    mime_type = "image/jpeg"
+                    logger.info(
+                        f"[OSSCache] 🗜️ Compressed {original_size/1024/1024:.1f}MB → "
+                        f"{len(image_bytes)/1024/1024:.1f}MB (JPEG q={lo-1})"
+                    )
+                else:
+                    logger.warning(
+                        f"[OSSCache] ⚠️ Could not compress {original_size/1024/1024:.1f}MB "
+                        f"under {MAX_OSS_IMAGE_SIZE/1024/1024:.0f}MB even at q=70"
+                    )
+            except Exception as e:
+                logger.warning(f"[OSSCache] ⚠️ Compression failed, uploading original: {e}")
+        # ── End compression ──
+        
         # 1. Compute hash
         file_hash = _compute_hash(image_bytes)
         

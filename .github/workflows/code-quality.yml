@@ -1,0 +1,51 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linters
+        run: pip install flake8
+
+      - name: Run flake8
+        run: |
+          flake8 . \
+            --max-line-length=150 \
+            --exclude=__pycache__,.git,.github,*.db,tests \
+            --ignore=E501,W503,W504,E402,E722,F841,E126,E127,E128,E131,E201,E202,E203,E221,E225,E226,E228,E231,E241,E251,E261,E262,E265,E266,E271,E272,E301,E302,E303,E305,E711,E712,E741,W291,W292,W293,W391 \
+            --count --statistics || true
+
+  js-lint:
+    name: JavaScript Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ESLint
+        run: npm install eslint@8 --no-save
+
+      - name: Run ESLint
+        run: |
+          npx eslint web/*.js \
+            --no-eslintrc \
+            --env browser,es2022 \
+            --parser-options=ecmaVersion:2022,sourceType:module \
+            --rule '{"no-undef":"off","no-unused-vars":"warn","no-redeclare":"error","no-constant-condition":"warn","no-empty":"warn"}' \
+            --format stylish || true

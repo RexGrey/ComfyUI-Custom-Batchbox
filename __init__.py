@@ -82,6 +82,14 @@ try:
     import server
     from aiohttp import web
 
+    # Auto-increase ComfyUI body size limit for multi-image requests
+    # Default is 100MB which is too small for 14 base64-encoded images
+    _BATCHBOX_MAX_BODY = 500 * 1024 * 1024  # 500MB
+    _app = server.PromptServer.instance.app
+    if _app._client_max_size < _BATCHBOX_MAX_BODY:
+        _app._client_max_size = _BATCHBOX_MAX_BODY
+        print(f"[ComfyUI-Custom-Batchbox] Increased max upload size to 500MB")
+
     @server.PromptServer.instance.routes.get("/api/batchbox/config")
     async def get_config(request):
         """Get full configuration"""
@@ -406,6 +414,167 @@ try:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    @server.PromptServer.instance.routes.post("/api/batchbox/generate-blur-upscale")
+    async def generate_blur_upscale(request):
+        """
+        Independent generation for GaussianBlurUpscale — bypasses ComfyUI queue.
+        
+        Handles Gaussian blur preprocessing, model/prompt resolution, and delegates
+        to IndependentGenerator for true concurrent multi-node execution.
+        """
+        try:
+            from .independent_generator import IndependentGenerator
+            from .image_utils import apply_gaussian_blur
+            import json, base64
+            from io import BytesIO
+            from PIL import Image
+
+            chunks = []
+            async for chunk in request.content.iter_any():
+                chunks.append(chunk)
+            body = b''.join(chunks)
+            body_size_mb = len(body) / (1024 * 1024)
+            print(f"[BlurUpscale] Request body size: {body_size_mb:.2f}MB ({len(body)} bytes)")
+            data = json.loads(body)
+
+            node_id = data.get("node_id", "")
+            generation_token = data.get("generation_token", "")
+            blur_intensity = data.get("blur_intensity", "轻 (σ1-3)")
+            custom_sigma = float(data.get("custom_sigma", 0.0))
+            repair_mode = data.get("repair_mode", "直出")
+            style_prompt = data.get("style_prompt", "")
+            seed = int(data.get("seed", 0))
+            batch_count = int(data.get("batch_count", 1))
+            image_base64 = data.get("image_base64", "")
+            endpoint_override_param = data.get("endpoint_override")
+
+            if not image_base64:
+                return web.json_response({"success": False, "error": "image_base64 is required"}, status=400)
+
+            # --- Step 1: Resolve model from upscale_settings ---
+            settings = config_manager.get_upscale_settings()
+            model = settings.get("model", "")
+            saved_endpoint = settings.get("endpoint", "")
+            default_params = settings.get("default_params", {})
+
+            if not model:
+                # Fallback: first available image model
+                raw_cfg = config_manager.get_raw_config()
+                for m_name, m_cfg in raw_cfg.get("models", {}).items():
+                    if m_cfg.get("category") == "image":
+                        model = m_name
+                        break
+
+            if not model:
+                return web.json_response({"success": False, "error": "未配置放大模型，请在 API Manager 中设置"}, status=400)
+
+            # --- Step 2: Build prompt ---
+            REPAIR_PROMPTS = {
+                "直出": "把这张模糊的照片变高清",
+                "降噪": "把这张模糊的照片变高清，让画面变得干净整洁",
+                "风格": "把这张模糊的照片变高清。按照如下风格要求处理：",
+            }
+            BLUR_PRESETS = {
+                "轻 (σ1-3)": 2.0,
+                "中 (σ3-6)": 4.0,
+                "重 (σ6-10)": 7.0,
+            }
+
+            base_prompt = REPAIR_PROMPTS.get(repair_mode, REPAIR_PROMPTS["直出"])
+            if repair_mode == "风格" and style_prompt:
+                prompt = f"{base_prompt}{style_prompt}"
+            else:
+                prompt = base_prompt
+
+            # --- Step 3: Compute sigma ---
+            sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
+
+            # --- Step 4: Decode image, apply Gaussian blur, re-encode ---
+            if "," in image_base64:
+                image_base64 = image_base64.split(",", 1)[1]
+            img_bytes = base64.b64decode(image_base64)
+            pil_img = Image.open(BytesIO(img_bytes))
+            if pil_img.mode not in ("RGB", "RGBA"):
+                pil_img = pil_img.convert("RGB")
+
+            print(f"[BlurUpscale-Independent] Applying Gaussian blur σ={sigma} to {pil_img.size}")
+            blurred_pil = apply_gaussian_blur(pil_img, sigma)
+
+            # Encode blurred image to base64 for IndependentGenerator
+            buf = BytesIO()
+            blurred_pil.save(buf, format="PNG")
+            blurred_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            # --- Step 5: Build extra_params with default_params ---
+            extra_params = dict(default_params) if default_params else {}
+
+            # Endpoint override: manual selection > saved in settings
+            final_endpoint = endpoint_override_param or saved_endpoint or None
+
+            # --- Step 6: Call IndependentGenerator ---
+            generator = IndependentGenerator()
+
+            completed_count = 0
+            async def on_batch_complete(batch_idx, total, batch_previews):
+                nonlocal completed_count
+                completed_count += 1
+                preview = batch_previews[0] if batch_previews else None
+                server.PromptServer.instance.send_sync("batchbox:progress", {
+                    "node_id": node_id,
+                    "generation_token": generation_token,
+                    "batch_index": batch_idx,
+                    "completed": completed_count,
+                    "total": total,
+                    "preview": preview,
+                })
+
+            result = await generator.generate(
+                model=model,
+                prompt=prompt,
+                seed=seed,
+                batch_count=batch_count,
+                extra_params=extra_params,
+                images_base64=[blurred_b64],
+                endpoint_override=final_endpoint,
+                on_batch_complete=on_batch_complete
+            )
+
+            # --- Step 7: Send websocket events for UI update ---
+            if result.get("success") and result.get("preview_images"):
+                import uuid as _uuid
+                if node_id:
+                    prompt_id = "blur_upscale_" + _uuid.uuid4().hex[:8]
+                    last_images_json = json.dumps(result["preview_images"])
+                    output_ui = {
+                        "images": result["preview_images"],
+                        "_last_images": [last_images_json],
+                        "_cached_hash": [result.get("params_hash", "")],
+                        "_batchbox_generation_token": [generation_token],
+                    }
+                    server.PromptServer.instance.send_sync("executed", {
+                        "node": node_id,
+                        "display_node": node_id,
+                        "output": output_ui,
+                        "prompt_id": prompt_id
+                    })
+                    # Write history entry
+                    prompt_queue = server.PromptServer.instance.prompt_queue
+                    with prompt_queue.mutex:
+                        if len(prompt_queue.history) > 10000:
+                            prompt_queue.history.pop(next(iter(prompt_queue.history)))
+                        prompt_queue.history[prompt_id] = {
+                            "prompt": (0, prompt_id, {node_id: {"class_type": "GaussianBlurUpscale", "inputs": {}}}, {}, []),
+                            "outputs": {node_id: output_ui},
+                            "status": {"status_str": "success", "completed": True, "messages": []}
+                        }
+
+            return web.json_response(result)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
     @server.PromptServer.instance.routes.post("/api/batchbox/generate-independent")
     async def generate_independent(request):
         """
@@ -432,6 +601,8 @@ try:
                 chunks.append(chunk)
             
             body = b''.join(chunks)
+            body_size_mb = len(body) / (1024 * 1024)
+            print(f"[Independent] Request body size: {body_size_mb:.2f}MB ({len(body)} bytes)")
             data = json.loads(body)
             
             model = data.get("model")
