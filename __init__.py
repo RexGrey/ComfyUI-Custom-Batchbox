@@ -82,6 +82,14 @@ try:
     import server
     from aiohttp import web
 
+    # Auto-increase ComfyUI body size limit for multi-image requests
+    # Default is 100MB which is too small for 14 base64-encoded images
+    _BATCHBOX_MAX_BODY = 500 * 1024 * 1024  # 500MB
+    _app = server.PromptServer.instance.app
+    if _app._client_max_size < _BATCHBOX_MAX_BODY:
+        _app._client_max_size = _BATCHBOX_MAX_BODY
+        print(f"[ComfyUI-Custom-Batchbox] Increased max upload size to 500MB")
+
     @server.PromptServer.instance.routes.get("/api/batchbox/config")
     async def get_config(request):
         """Get full configuration"""
