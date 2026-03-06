@@ -161,7 +161,7 @@ async function fetchNodeSettings() {
       bypassQueuePromptEnabled = data.node_settings?.bypass_queue_prompt !== false;
       showInCanvasMenuEnabled = data.node_settings?.show_in_canvas_menu !== false;
       smartCacheHashCheckEnabled = data.node_settings?.smart_cache_hash_check !== false;
-      console.log(`[DynamicParams] bypass_queue_prompt: ${bypassQueuePromptEnabled}, smart_cache_hash_check: ${smartCacheHashCheckEnabled}`);
+      console.debug(`[DynamicParams] bypass_queue_prompt: ${bypassQueuePromptEnabled}, smart_cache_hash_check: ${smartCacheHashCheckEnabled}`);
     }
   } catch (e) {
     console.warn('[DynamicParams] Failed to fetch node settings:', e);
@@ -193,7 +193,7 @@ function setCachedSchema(modelName, data) {
 
 function clearSchemaCache() {
   schemaCache.clear();
-  console.log('[DynamicParams] Schema cache cleared');
+  console.debug('[DynamicParams] Schema cache cleared');
 }
 
 async function checkConfigChanged() {
@@ -202,7 +202,7 @@ async function checkConfigChanged() {
     if (response.ok) {
       const data = await response.json();
       if (data.changed && lastConfigMtime > 0) {
-        console.log('[DynamicParams] Config changed, clearing cache');
+        console.debug('[DynamicParams] Config changed, clearing cache');
         clearSchemaCache();
       }
       lastConfigMtime = data.mtime;
@@ -258,8 +258,13 @@ function resizeNodePreservingWidth(node) {
     return;
   }
   const currentWidth = node.size[0];
+  const currentHeight = node.size[1];
   const computedSize = node.computeSize();
-  node.setSize([currentWidth, computedSize[1]]);
+  // Use the LARGER of current height vs computed minimum height
+  // This allows users to manually enlarge nodes (e.g. for longer prompts)
+  // while still growing when new widgets are added
+  const newHeight = Math.max(currentHeight, computedSize[1]);
+  node.setSize([currentWidth, newHeight]);
 }
 
 /**
@@ -284,10 +289,10 @@ function createWidget(node, paramDef, existingWidgets, pendingParams = null) {
     const paramKey = apiName || name;
     if (paramKey in pendingParams) {
       initialValue = pendingParams[paramKey];
-      console.log(`[DynamicParams] Creating ${name} with restored value: ${initialValue}`);
+      console.debug(`[DynamicParams] Creating ${name} with restored value: ${initialValue}`);
     } else if (name in pendingParams) {
       initialValue = pendingParams[name];
-      console.log(`[DynamicParams] Creating ${name} with restored value (legacy): ${initialValue}`);
+      console.debug(`[DynamicParams] Creating ${name} with restored value (legacy): ${initialValue}`);
     }
   }
 
@@ -390,7 +395,7 @@ class DynamicParameterManager {
     }
 
     this.currentModel = modelName;
-    console.log(`[DynamicParams] Model changed to: ${modelName}${forceRefresh ? ' (forced refresh)' : ''}`);
+    console.debug(`[DynamicParams] Model changed to: ${modelName}${forceRefresh ? ' (forced refresh)' : ''}`);
 
     // Fetch schema (use forceRefresh when hot-reloading config)
     const schemaData = await fetchModelSchema(modelName, forceRefresh);
@@ -439,7 +444,7 @@ class DynamicParameterManager {
     const initialEndpoint = pendingState?.selectedEndpoint || options[0];
 
     if (pendingState) {
-      console.log(`[DynamicParams] Creating endpoint widgets with restored state: manual=${initialManualEnabled}, endpoint=${initialEndpoint}`);
+      console.debug(`[DynamicParams] Creating endpoint widgets with restored state: manual=${initialManualEnabled}, endpoint=${initialEndpoint}`);
       // Clear after consumption
       delete this.node._pendingEndpointState;
     }
@@ -477,7 +482,7 @@ class DynamicParameterManager {
     for (const widget of this.node.widgets || []) {
       if (seedWidgetNames.includes(widget.name)) {
         widget.hidden = !visible;
-        console.log(`[DynamicParams] ${widget.name} visibility: ${visible}`);
+        console.debug(`[DynamicParams] ${widget.name} visibility: ${visible}`);
       }
     }
 
@@ -493,7 +498,7 @@ class DynamicParameterManager {
     // This allows creating widgets with correct initial values, preventing "flash"
     const pendingParams = this.node._pendingDynamicParams;
     if (pendingParams) {
-      console.log('[DynamicParams] Found pending params to restore:', Object.keys(pendingParams));
+      console.debug('[DynamicParams] Found pending params to restore:', Object.keys(pendingParams));
       // Clear after consumption to prevent re-use
       delete this.node._pendingDynamicParams;
     }
@@ -710,7 +715,7 @@ async function collectImageInputsBase64(node) {
     const sourceNode = getSourceNode(input.link);
     if (!sourceNode) continue;
 
-    console.log(`[BatchBox] Checking source node: ${sourceNode.type} (${sourceNode.id})`);
+    console.debug(`[BatchBox] Checking source node: ${sourceNode.type} (${sourceNode.id})`);
 
     // Case 1: LoadImage node - fetch directly from ComfyUI
     if (sourceNode.type === "LoadImage" || sourceNode.comfyClass === "LoadImage") {
@@ -724,7 +729,7 @@ async function collectImageInputsBase64(node) {
             const blob = await response.blob();
             const base64 = await blobToBase64(blob);
             images.push(base64);
-            console.log(`[BatchBox] Loaded image from LoadImage node: ${filename}`);
+            console.debug(`[BatchBox] Loaded image from LoadImage node: ${filename}`);
           }
         } catch (e) {
           console.error(`[BatchBox] Failed to load image from LoadImage:`, e);
@@ -737,7 +742,7 @@ async function collectImageInputsBase64(node) {
         const img = sourceNode.imgs[0];
         const base64 = await imageElementToBase64(img);
         images.push(base64);
-        console.log(`[BatchBox] Loaded cached image from node ${sourceNode.id}`);
+        console.debug(`[BatchBox] Loaded cached image from node ${sourceNode.id}`);
       } catch (e) {
         console.error(`[BatchBox] Failed to get cached image:`, e);
       }
@@ -752,7 +757,7 @@ async function collectImageInputsBase64(node) {
           const blob = await response.blob();
           const base64 = await blobToBase64(blob);
           images.push(base64);
-          console.log(`[BatchBox] Loaded image from node output`);
+          console.debug(`[BatchBox] Loaded image from node output`);
         }
       } catch (e) {
         console.error(`[BatchBox] Failed to load output image:`, e);
@@ -830,7 +835,7 @@ function collectNodeParams(node) {
 function updateNodePreview(node, previewImages, paramsHash = null) {
   if (!previewImages || previewImages.length === 0) return;
 
-  console.log(`[BatchBox] Node ${node.id}: Loading ${previewImages.length} preview image(s)...`);
+  console.debug(`[BatchBox] Node ${node.id}: Loading ${previewImages.length} preview image(s)...`);
 
   // Set the images property (used by ComfyUI's OUTPUT_NODE mechanism)
   node.images = previewImages;
@@ -849,7 +854,7 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
       // Store loaded image in temporary array
       loadingImgs[index] = img;
       loadedCount++;
-      console.log(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
+      console.debug(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
 
       // Only update node.imgs when ALL images are loaded
       // This prevents ComfyUI from trying to render null elements
@@ -879,7 +884,7 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
       }
     };
 
-    console.log(`[BatchBox] Node ${node.id}: Loading image ${index}: ${url}`);
+    console.debug(`[BatchBox] Node ${node.id}: Loading image ${index}: ${url}`);
     img.src = url;
   });
 
@@ -894,7 +899,7 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
   // Save params hash for smart cache (if provided)
   if (paramsHash) {
     node.properties._cached_hash = paramsHash;
-    console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
+    console.debug(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
   }
 
   // === IMAGE SELECTION: Set default selection after generation ===
@@ -904,13 +909,13 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
   if (previewImages.length > 1) {
     node.imageIndex = 0;
     node.properties._selected_image_index = 0;
-    console.log(`[BatchBox] Node ${node.id}: New generation - selection reset to 0`);
+    console.debug(`[BatchBox] Node ${node.id}: New generation - selection reset to 0`);
   }
 
   // Note: We don't force redraw here since imgs aren't set yet
   // The redraw will happen in the onload callback when all images are ready
 
-  console.log(`[BatchBox] Node ${node.id}: Preview update initiated`);
+  console.debug(`[BatchBox] Node ${node.id}: Preview update initiated`);
 }
 
 /**
@@ -927,23 +932,31 @@ function appendSinglePreview(node, previewInfo, batchIndex, totalBatches) {
   const img = new Image();
 
   img.onload = () => {
-    // Initialize ordered slot arrays on first call
-    if (!node._progressiveSlots) {
-      node._progressiveSlots = new Array(totalBatches).fill(null);
-      node._progressiveInfos = new Array(totalBatches).fill(null);
+    // Use STAGING buffer — don't touch node.imgs until all images are ready
+    if (!node._progressiveStagingSlots) {
+      node._progressiveStagingSlots = new Array(totalBatches).fill(null);
+      node._progressiveStagingInfos = new Array(totalBatches).fill(null);
     }
 
-    // Place loaded image in its correct slot
-    node._progressiveSlots[batchIndex] = img;
-    node._progressiveInfos[batchIndex] = previewInfo;
+    // Place loaded image in its correct staging slot
+    node._progressiveStagingSlots[batchIndex] = img;
+    node._progressiveStagingInfos[batchIndex] = previewInfo;
 
-    // ✅ CRITICAL SAFETY: only collect non-null elements → node.imgs never contains null
-    node.imgs = node._progressiveSlots.filter(i => i !== null);
-    node.images = node._progressiveInfos.filter(i => i !== null);
+    // Count how many slots are filled
+    const filledCount = node._progressiveStagingSlots.filter(i => i !== null).length;
 
-    requestNodeCanvasRefresh(node);
-
-    console.log(`[BatchBox] Node ${node.id}: Progressive image ${batchIndex + 1}/${totalBatches} loaded`);
+    // Only swap into node.imgs when ALL images have arrived
+    if (filledCount >= totalBatches) {
+      node.imgs = node._progressiveStagingSlots.filter(i => i !== null);
+      node.images = node._progressiveStagingInfos.filter(i => i !== null);
+      // Also update legacy progressive pointers for cleanup
+      node._progressiveSlots = node._progressiveStagingSlots;
+      node._progressiveInfos = node._progressiveStagingInfos;
+      requestNodeCanvasRefresh(node);
+      console.debug(`[BatchBox] Node ${node.id}: All ${totalBatches} images ready, swapped preview`);
+    } else {
+      console.debug(`[BatchBox] Node ${node.id}: Progressive image ${filledCount}/${totalBatches} staged (not yet shown)`);
+    }
   };
 
   img.onerror = (e) => {
@@ -1029,7 +1042,9 @@ async function executeIndependent(node) {
       endpoint_override: params.dynamicParams?.endpoint_override || null
     };
 
-    console.log("[BatchBox] Starting independent generation:", requestBody.model);
+    const bodyStr = JSON.stringify(requestBody);
+    const bodySizeMB = (new Blob([bodyStr]).size / (1024 * 1024)).toFixed(2);
+    console.log(`[BatchBox] Starting independent generation: ${requestBody.model}, payload: ${bodySizeMB}MB, images: ${imagesBase64.length}`);
 
     // Call independent generation API
     const response = await api.fetchApi("/api/batchbox/generate-independent", {
@@ -1037,14 +1052,19 @@ async function executeIndependent(node) {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(requestBody)
+      body: bodyStr
     });
+
+    // Handle 413 specifically
+    if (response.status === 413) {
+      throw new Error(`请求体过大 (${bodySizeMB}MB)，超过服务器限制。请减小输入图片尺寸或数量。`);
+    }
 
     const result = await response.json();
 
     if (result.success) {
-      console.log("[BatchBox] result.preview_images count:", Array.isArray(result.preview_images) ? result.preview_images.length : 0);
-      console.log("[BatchBox] Backend params_hash:", result.params_hash);
+      console.debug("[BatchBox] result.preview_images count:", Array.isArray(result.preview_images) ? result.preview_images.length : 0);
+      console.debug("[BatchBox] Backend params_hash:", result.params_hash);
 
       // Use the hash computed by backend for consistency
       const paramsHash = result.params_hash;
@@ -1056,7 +1076,7 @@ async function executeIndependent(node) {
       node.properties._last_size = JSON.stringify(node.size);
       if (paramsHash) {
         node.properties._cached_hash = paramsHash;
-        console.log(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
+        console.debug(`[BatchBox] Node ${node.id}: Saved params hash: ${paramsHash}`);
       }
       node._selectedImageIndex = 0;
       node.properties._selected_image_index = 0;
@@ -1081,6 +1101,8 @@ async function executeIndependent(node) {
   } finally {
     delete node._progressiveSlots;
     delete node._progressiveInfos;
+    delete node._progressiveStagingSlots;
+    delete node._progressiveStagingInfos;
     // Remove WebSocket listener
     api.removeEventListener("batchbox:progress", progressHandler);
     // Reset generating state
@@ -1107,7 +1129,7 @@ function randomizeSeedAndExecute(node) {
     // Generate random seed (0 to 2147483647)
     const randomSeed = Math.floor(Math.random() * 2147483647);
     seedWidget.value = randomSeed;
-    console.log(`[BatchBox] Randomized seed to: ${randomSeed}`);
+    console.debug(`[BatchBox] Randomized seed to: ${randomSeed}`);
   }
 
   // Find seed control widget (生成后控制) and set it to 'fixed'
@@ -1116,7 +1138,7 @@ function randomizeSeedAndExecute(node) {
     const controlWidget = node.widgets?.find((w) => w.name === controlName);
     if (controlWidget) {
       controlWidget.value = "fixed";
-      console.log(`[BatchBox] Set ${controlName} to fixed`);
+      console.debug(`[BatchBox] Set ${controlName} to fixed`);
       break;
     }
   }
@@ -1347,7 +1369,7 @@ app.registerExtension({
               if (!selfNode.properties) selfNode.properties = {};
               selfNode.properties._selected_image_index = value;
 
-              console.log(`[BatchBox] Node ${selfNode.id}: Selection saved: ${value}`);
+              console.debug(`[BatchBox] Node ${selfNode.id}: Selection saved: ${value}`);
             }
           }
         },
@@ -1355,7 +1377,7 @@ app.registerExtension({
         enumerable: true
       });
 
-      console.log('[DynamicParams] onNodeCreated END, prompt value:', this.widgets?.find(w => w.name === "prompt")?.value);
+      console.debug('[DynamicParams] onNodeCreated END');
     };
 
     // Serialize dynamic params
@@ -1402,20 +1424,20 @@ app.registerExtension({
       // This elegant approach creates widgets with correct values, preventing UI flash
       if (o.dynamicParams) {
         this._pendingDynamicParams = o.dynamicParams;
-        console.log('[DynamicParams] Stored pending params for widget creation:', Object.keys(o.dynamicParams));
+        console.debug('[DynamicParams] Stored pending params for widget creation:', Object.keys(o.dynamicParams));
       }
 
       // Store pending endpoint state for restoration when endpoint widgets are created
       // The actual restoration happens in updateEndpointSelector
       if (o.endpointState) {
         this._pendingEndpointState = o.endpointState;
-        console.log('[DynamicParams] Stored pending endpoint state for widget creation');
+        console.debug('[DynamicParams] Stored pending endpoint state for widget creation');
       }
 
       // Restore collapsed groups state (must happen before widgets are created)
       if (o.collapsedGroups && this._dynamicParamManager) {
         this._dynamicParamManager.collapsedGroups = new Set(o.collapsedGroups);
-        console.log('[DynamicParams] Restored collapsed groups:', o.collapsedGroups);
+        console.debug('[DynamicParams] Restored collapsed groups:', o.collapsedGroups);
       }
 
       // === IMAGE SELECTION: Restore selection state ===
@@ -1425,11 +1447,11 @@ app.registerExtension({
         if (this.imgs && this.imgs.length > 0) {
           this.imageIndex = this._selectedImageIndex;
         }
-        console.log(`[DynamicParams] Restored image selection: index=${this._selectedImageIndex}`);
+        console.debug(`[DynamicParams] Restored image selection: index=${this._selectedImageIndex}`);
       } else if (this.properties?._selected_image_index !== undefined) {
         // Fallback: restore from properties
         this._selectedImageIndex = parseInt(this.properties._selected_image_index) || 0;
-        console.log(`[DynamicParams] Restored image selection from properties: index=${this._selectedImageIndex}`);
+        console.debug(`[DynamicParams] Restored image selection from properties: index=${this._selectedImageIndex}`);
       }
     };
   },
@@ -1662,3 +1684,68 @@ window.batchboxAPI = {
   collectImageInputsBase64,
   updateNodePreview,
 };
+
+// ================================================================
+// PANIC RECOVERY: Ctrl+\
+// Fixes intermittent "infinite mirror" rendering glitch on some PCs.
+// Forces a full canvas reset without restarting ComfyUI.
+// ================================================================
+document.addEventListener("keydown", (e) => {
+  // Ctrl+\ (backslash) — not used by any browser
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === "\\") {
+    e.preventDefault();
+    e.stopPropagation();
+    console.warn("[Batchbox] 🚨 PANIC RECOVERY triggered (Ctrl+\\)");
+
+    try {
+      // 1. Remove all Batchbox DOM overlays (modals, backdrops, panels)
+      document.querySelectorAll(
+        ".batchbox-modal-overlay, .blur-custom-backdrop, .blur-style-backdrop, .blur-editor-backdrop"
+      ).forEach(el => el.remove());
+
+      // 2. Force stop all canvas animations/pending refreshes on every node
+      if (app.graph && app.graph._nodes) {
+        for (const node of app.graph._nodes) {
+          delete node._batchboxCanvasRefreshPending;
+          delete node._progressiveSlots;
+          delete node._progressiveInfos;
+          delete node._progressiveStagingSlots;
+          delete node._progressiveStagingInfos;
+        }
+      }
+
+      // 3. Force LiteGraph canvas re-render
+      if (app.canvas) {
+        app.canvas.dirty_canvas = true;
+        app.canvas.dirty_bgcanvas = true;
+        // Reset transform to prevent stuck zoom/pan
+        if (app.canvas.ds) {
+          // Keep current offset/scale but force recalculation
+          app.canvas.ds.computeVisibleArea();
+        }
+        app.canvas.draw(true, true);
+      }
+
+      // 4. Re-trigger graph dirty
+      if (app.graph) {
+        app.graph.setDirtyCanvas(true, true);
+      }
+
+      console.warn("[Batchbox] ✅ Canvas recovery complete");
+
+      // Show brief visual feedback
+      const toast = document.createElement("div");
+      toast.textContent = "✅ 画布已恢复 (Ctrl+\\)";
+      toast.style.cssText = `
+        position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+        background: #1a3a2a; color: #4ade80; padding: 12px 24px;
+        border-radius: 8px; border: 1px solid #4ade80; font-size: 14px;
+        z-index: 999999; pointer-events: none; font-family: sans-serif;
+      `;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
+    } catch (err) {
+      console.error("[Batchbox] Panic recovery error:", err);
+    }
+  }
+});

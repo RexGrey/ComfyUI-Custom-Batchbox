@@ -73,16 +73,18 @@ function collectNodeDeps(nodeId, allOutputs, filtered) {
 }
 
 async function executeScopedToNode(node) {
+  // One-shot wrapper: patches api.queuePrompt for exactly ONE call,
+  // then restores immediately — so other nodes aren't blocked.
   const orig = api.queuePrompt;
   api.queuePrompt = async function (index, prompt) {
+    // Restore IMMEDIATELY (before awaiting) so other nodes can queue
+    api.queuePrompt = orig;
     if (prompt.output) {
       const filtered = {};
       collectNodeDeps(String(node.id), prompt.output, filtered);
       prompt.output = filtered;
     }
-    const result = await orig.apply(api, [index, prompt]);
-    api.queuePrompt = orig;
-    return result;
+    return await orig.apply(api, [index, prompt]);
   };
   try {
     await app.queuePrompt();
@@ -772,11 +774,30 @@ async function getInputImageBase64(node) {
     const linkInfo = app.graph.links[inputLink];
     if (linkInfo) {
       const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+
+      // Method 1: Use cached preview image (srcNode.imgs)
       if (srcNode?.imgs?.length > 0 && srcNode.imgs[0].src) {
         return await imgToBase64(srcNode.imgs[0].src);
       }
+
+      // Method 2: LoadImage node — get image via ComfyUI /view API using widget filename
+      if (srcNode) {
+        const imageWidget = srcNode.widgets?.find(w =>
+          w.name === "image" && typeof w.value === "string" && w.value
+        );
+        if (imageWidget) {
+          try {
+            const filename = imageWidget.value;
+            const viewUrl = `/view?filename=${encodeURIComponent(filename)}&type=input`;
+            return await imgToBase64(viewUrl);
+          } catch (e) {
+            console.warn("[BlurUpscale] Failed to fetch via /view API:", e);
+          }
+        }
+      }
     }
   }
+  // Method 3: Use current node's own cached images
   if (node.imgs?.length > 0 && node.imgs[0].src) {
     return await imgToBase64(node.imgs[0].src);
   }
@@ -792,21 +813,26 @@ async function imgToBase64(src) {
 }
 
 function makeDraggable(el, handle) {
-  let ox = 0, oy = 0, dragging = false;
-  handle.addEventListener("mousedown", (e) => {
-    if (e.target.tagName === "BUTTON") return;
-    dragging = true;
-    const rect = el.getBoundingClientRect();
-    ox = e.clientX - rect.left; oy = e.clientY - rect.top;
-    handle.style.cursor = "grabbing"; e.preventDefault();
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
+  let ox = 0, oy = 0;
+  // ⚡ PERF: Only attach mousemove/mouseup during active drag, remove on mouseup
+  const onMouseMove = (e) => {
     el.style.left = `${e.clientX - ox}px`;
     el.style.top = `${e.clientY - oy}px`;
     el.style.transform = "none";
+  };
+  const onMouseUp = () => {
+    handle.style.cursor = "grab";
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+  };
+  handle.addEventListener("mousedown", (e) => {
+    if (e.target.tagName === "BUTTON") return;
+    const rect = el.getBoundingClientRect();
+    ox = e.clientX - rect.left; oy = e.clientY - rect.top;
+    handle.style.cursor = "grabbing"; e.preventDefault();
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
   });
-  document.addEventListener("mouseup", () => { dragging = false; handle.style.cursor = "grab"; });
 }
 
 
@@ -949,15 +975,94 @@ app.registerExtension({
 
       // --- Add "▶ 开始生成" button ---
       if (!node.widgets?.find(w => w._isGenerateButton)) {
-        const generateBtn = node.addWidget("button", "▶ 开始生成", null, () => {
-          // Randomize seed before execution
+        const generateBtn = node.addWidget("button", "▶ 开始生成", null, async () => {
+          // Prevent double-click
+          if (generateBtn._isGenerating) return;
+
+          // Update button state
+          generateBtn._isGenerating = true;
+          generateBtn.name = "⏳ 生成中...";
+          node.setDirtyCanvas(true, true);
+
+          // Randomize seed
           const seedWidget = node.widgets?.find(w => w.name === "seed");
           if (seedWidget) {
             seedWidget.value = Math.floor(Math.random() * 2147483647);
           }
-          // Scoped execution: only queue this node + its upstream deps
-          // so unrelated nodes with invalid configs won't block execution
-          executeScopedToNode(node);
+
+          // Try independent generation (concurrent), fallback to queue
+          try {
+            const imageB64 = await getInputImageBase64(node);
+            if (!imageB64) {
+              throw new Error("无法获取输入图片，请确保已连接加载图像节点");
+            }
+
+            const generationToken = `blur_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+            // Collect widget values
+            const getVal = (name, def) => node.widgets?.find(w => w.name === name)?.value ?? def;
+
+            // Check endpoint override from toggle + selector
+            const toggleW = node.widgets?.find(w => w.name === "手动选择端点");
+            const selectorW = node.widgets?.find(w => w.name === "endpoint_selector");
+            const endpointOverride = (toggleW?.value && selectorW) ? selectorW.value : null;
+
+            const requestBody = {
+              node_id: String(node.id),
+              generation_token: generationToken,
+              blur_intensity: getVal("blur_intensity", "轻 (σ1-3)"),
+              custom_sigma: parseFloat(getVal("custom_sigma", 0)),
+              repair_mode: getVal("repair_mode", "直出"),
+              style_prompt: getVal("style_prompt", ""),
+              seed: getVal("seed", 0),
+              batch_count: getVal("batch_count", 1),
+              image_base64: imageB64,
+              endpoint_override: endpointOverride,
+            };
+
+            // Register progress listener
+            const nodeIdStr = String(node.id);
+            const progressHandler = (event) => {
+              const d = event.detail;
+              if (String(d.node_id) !== nodeIdStr) return;
+              if (d.generation_token && d.generation_token !== generationToken) return;
+              generateBtn.name = `⏳ 生成中 ${d.completed}/${d.total}`;
+              node.setDirtyCanvas(true, true);
+            };
+            api.addEventListener("batchbox:progress", progressHandler);
+
+            console.log("[BlurUpscale] Starting independent generation...");
+            const response = await api.fetchApi("/api/batchbox/generate-blur-upscale", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(requestBody)
+            });
+
+            const result = await response.json();
+            api.removeEventListener("batchbox:progress", progressHandler);
+
+            if (result.success) {
+              console.log("[BlurUpscale] Generation complete:", result.response_info);
+              // Store cache metadata
+              if (!node.properties) node.properties = {};
+              node.properties._last_images = JSON.stringify(result.preview_images);
+              if (result.params_hash) {
+                node.properties._cached_hash = result.params_hash;
+              }
+            } else {
+              console.error("[BlurUpscale] Generation failed:", result.error);
+              alert(`生成失败: ${result.error}`);
+            }
+          } catch (e) {
+            console.error("[BlurUpscale] Independent generation error:", e);
+            // Fallback: use ComfyUI queue
+            console.log("[BlurUpscale] Falling back to queue execution");
+            executeScopedToNode(node);
+          } finally {
+            generateBtn._isGenerating = false;
+            generateBtn.name = "▶ 开始生成";
+            node.setDirtyCanvas(true, true);
+          }
         });
         generateBtn._isGenerateButton = true;
         generateBtn._isGenerating = false;
@@ -969,6 +1074,26 @@ app.registerExtension({
           widgets.splice(btnIndex, 1);
           widgets.splice(1, 0, generateBtn);
         }
+
+        // Listen for execution complete (for Queue Prompt fallback path)
+        // ⚡ PERF: Store refs for cleanup in onRemoved (prevent listener accumulation)
+        const onExecuted = (e) => {
+          if (String(e.detail?.node) === String(node.id)) {
+            generateBtn._isGenerating = false;
+            generateBtn.name = "▶ 开始生成";
+            node.setDirtyCanvas(true, true);
+          }
+        };
+        const onExecutionError = () => {
+          generateBtn._isGenerating = false;
+          generateBtn.name = "▶ 开始生成";
+          node.setDirtyCanvas(true, true);
+        };
+        api.addEventListener("executed", onExecuted);
+        api.addEventListener("execution_error", onExecutionError);
+        // Store refs for cleanup
+        node._blurExecutedHandler = onExecuted;
+        node._blurExecutionErrorHandler = onExecutionError;
       }
 
       // --- Spacer widget to reserve space for canvas-drawn UI ---
@@ -1067,14 +1192,14 @@ app.registerExtension({
 
       // --- Inject endpoint_override into extra_params before execution ---
       const origExecute = node.onExecute;
-      node.onExecute = function() {
+      node.onExecute = function () {
         if (origExecute) origExecute.apply(this, arguments);
         const toggleW = node.widgets?.find(w => w.name === "手动选择端点");
         const selectorW = node.widgets?.find(w => w.name === "endpoint_selector");
         const epWidget = node.widgets?.find(w => w.name === "extra_params");
         if (epWidget) {
           let existing = {};
-          try { existing = JSON.parse(epWidget.value || "{}"); } catch {}
+          try { existing = JSON.parse(epWidget.value || "{}"); } catch { }
           if (toggleW?.value && selectorW) {
             existing.endpoint_override = selectorW.value;
           } else {
@@ -1092,6 +1217,27 @@ app.registerExtension({
       // Draw custom buttons inside the spacer area.
       // Image preview is handled natively by LiteGraph AFTER the spacer.
       const origDraw = node.onDrawForeground;
+
+      // ⚡ PERF: Cache widget refs ONCE outside the per-frame draw loop.
+      // onDrawForeground runs 30-60× /sec — find() would be extremely wasteful.
+      let _cachedBlurWidget = null;
+      let _cachedModeWidget = null;
+      let _cachedStyleWidget = null;
+      let _widgetCacheValid = false;
+
+      function ensureWidgetCache() {
+        if (_widgetCacheValid && _cachedBlurWidget && _cachedModeWidget) return;
+        const widgets = node.widgets;
+        if (!widgets) return;
+        _cachedBlurWidget = widgets.find(w => w.name === "blur_intensity") || null;
+        _cachedModeWidget = widgets.find(w => w.name === "repair_mode") || null;
+        _cachedStyleWidget = widgets.find(w => w.name === "style_prompt") || null;
+        _widgetCacheValid = true;
+      }
+
+      // ⚡ PERF: Pre-compute style entries once (Object.entries is allocation-heavy)
+      const _styleEntries = Object.entries(stylePresets);
+
       node.onDrawForeground = function (ctx) {
         if (origDraw) origDraw.apply(this, arguments);
 
@@ -1102,8 +1248,11 @@ app.registerExtension({
         let startY = (spacer.last_y || 30) + 4;
         node._blurUI.drawStartY = startY;
 
+        // ⚡ Lazy-init widget cache (widgets may not exist at node creation time)
+        ensureWidgetCache();
+
         // 1. Blur Intensity
-        const blurVal = node.widgets?.find(w => w.name === "blur_intensity")?.value || "轻 (σ1-3)";
+        const blurVal = _cachedBlurWidget?.value || "轻 (σ1-3)";
         node._blurUI.blurGroupY = startY;
         const h1 = drawButtonGroup(ctx, padding, startY, innerW, BLUR_PRESETS, blurVal, "模糊程度", {
           bgActive: COLORS.bgActive, borderActive: COLORS.borderActive,
@@ -1112,12 +1261,12 @@ app.registerExtension({
         startY += h1;
 
         // 2. Repair Mode
-        const modeVal = node.widgets?.find(w => w.name === "repair_mode")?.value || "直出";
+        const modeVal = _cachedModeWidget?.value || "直出";
         node._blurUI.modeGroupY = startY;
         // If style is selected, initialize _selectedStyleName from style_prompt (for load/reload)
         if (modeVal === "风格" && !node._blurUI._selectedStyleName) {
-          const sp = node.widgets?.find(w => w.name === "style_prompt")?.value || "";
-          for (const [sName, sPrompt] of Object.entries(stylePresets)) {
+          const sp = _cachedStyleWidget?.value || "";
+          for (const [sName, sPrompt] of _styleEntries) {
             if (sp === sPrompt) { node._blurUI._selectedStyleName = sName; break; }
           }
         }
@@ -1165,6 +1314,13 @@ app.registerExtension({
         closeCustomPanel();
         closeStylePopup();
         closeStyleEditor();
+        // ⚡ PERF: Remove api event listeners to prevent leaks
+        if (node._blurExecutedHandler) {
+          api.removeEventListener("executed", node._blurExecutedHandler);
+        }
+        if (node._blurExecutionErrorHandler) {
+          api.removeEventListener("execution_error", node._blurExecutionErrorHandler);
+        }
       };
     };
   },
