@@ -1938,7 +1938,9 @@ class BatchboxManager {
                 if (isEdit && data.name !== editName) {
                     delete this.config.presets[editName];
                 }
-                this.renderPresets(this.panels["presets"]);
+                if (this.panels["presets"]) {
+                    this.renderPresets(this.panels["presets"]);
+                }
                 this.showToast(isEdit ? "预设已更新" : "预设已添加", "success");
                 return true;
             }
@@ -2820,7 +2822,9 @@ class BatchboxManager {
                     this.renderModels(this.panels["models"]);
                 } else {
                     delete this.config.presets[name];
-                    this.renderPresets(this.panels["presets"]);
+                    if (this.panels["presets"]) {
+                        this.renderPresets(this.panels["presets"]);
+                    }
                 }
                 this.showToast(`${typeLabel} "${name}" 已删除`, "success");
             }
