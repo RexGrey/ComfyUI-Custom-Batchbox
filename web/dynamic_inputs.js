@@ -155,7 +155,7 @@ function addDynamicInput(node, prefix, index, inputType) {
 
     // Restore width after adding input, only update height
     const computedSize = node.computeSize();
-    node.setSize([currentWidth, computedSize[1]]);
+    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
     return true;
 }
 
@@ -178,7 +178,7 @@ function removeDynamicInput(node, inputName) {
 
     // Restore width after removing input, only update height
     const computedSize = node.computeSize();
-    node.setSize([currentWidth, computedSize[1]]);
+    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
     return true;
 }
 
@@ -197,7 +197,7 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
         // No inputs yet, add the first empty slot
         node.addInput(`${prefix}1`, inputType);
         const computedSize = node.computeSize();
-        node.setSize([currentWidth, computedSize[1]]);
+        node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
         return;
     }
 
@@ -254,7 +254,7 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
 
     // Restore width after input modifications, only update height
     const computedSize = node.computeSize();
-    node.setSize([currentWidth, computedSize[1]]);
+    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
 }
 
 /**
