@@ -88,11 +88,10 @@ class APIAdapter(ABC):
                     active_keys.append(item)
             
             if active_keys:
-                provider_name = self.provider.get("display_name", id(self.provider))
-                counter_key = str(provider_name)
-                idx = APIAdapter._key_counters.get(counter_key, 0)
-                key = active_keys[idx % len(active_keys)]
-                APIAdapter._key_counters[counter_key] = idx + 1
+                import random
+                key = random.choice(active_keys)
+                provider_name = self.provider.get("display_name", self.provider.get("name", "?"))
+                print(f"[APIAdapter] 🔑 Using key ...{key[-6:]} for {provider_name} ({len(active_keys)} keys available)")
                 return key
         return self.provider.get("api_key", "")
     
