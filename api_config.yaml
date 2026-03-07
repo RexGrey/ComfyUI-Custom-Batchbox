@@ -368,7 +368,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-2k
-      use_oss_cache: true
+      use_oss_cache: false  # 国内API，不走OSS
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -438,7 +438,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-4k
-      use_oss_cache: true
+      use_oss_cache: false  # 国内API，不走OSS
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -582,7 +582,7 @@ models:
       provider: 柏拉图
       priority: 4
       model_name: nano-banana-2
-      use_oss_cache: true
+      use_oss_cache: false  # 国内API，不走OSS
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -856,7 +856,7 @@ models:
       provider: 柏拉图
       priority: 2
       model_name: doubao-seedream-4-0-250828
-      use_oss_cache: true
+      use_oss_cache: false  # 国内API，不走OSS
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -923,7 +923,7 @@ models:
       provider: 柏拉图
       priority: 2
       model_name: doubao-seedream-4-5-251128
-      use_oss_cache: true
+      use_oss_cache: false  # 国内API，不走OSS
       modes:
         text2img:
           endpoint: /v1/images/generations

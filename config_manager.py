@@ -887,7 +887,7 @@ class ConfigManager:
             "default_width": 500,  # Default node width in pixels
             "bypass_queue_prompt": True,  # Whether to exclude BatchBox nodes from global Queue Prompt
             "smart_cache_hash_check": True,  # Whether to check param hash for cache invalidation
-            "auto_endpoint_mode": "priority",  # 'priority' (always use top endpoint) or 'round_robin' (rotate)
+            "auto_endpoint_mode": "random",  # 'priority' (固定优先级) | 'round_robin' (轮流) | 'random' (随机，多机均匀分配)
             "pricing_strategy": "bestPrice",  # 'bestPrice' (低价优先) or 'bestBalance' (稳定优先)
             "preview_mode": "progressive",  # 'progressive' (逐张载入) or 'wait_all' (全部完成后载入)
         }
