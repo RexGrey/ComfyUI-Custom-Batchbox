@@ -106,13 +106,31 @@ class GenericAPIAdapter(APIAdapter):
                         image_urls = []
                         all_uploaded = True
                         
+                        # Calculate per-image size budget
+                        # API providers typically limit total image payload to ~50MB
+                        API_TOTAL_LIMIT = 50 * 1024 * 1024  # 50MB total
+                        SAFETY_MARGIN = 5 * 1024 * 1024     # 5MB safety
+                        num_images = len(upload_files)
+                        per_image_budget = (API_TOTAL_LIMIT - SAFETY_MARGIN) // max(num_images, 1)
+                        # Clamp: min 2MB, max 45MB per image
+                        per_image_budget = max(2 * 1024 * 1024, min(per_image_budget, 45 * 1024 * 1024))
+                        
+                        if num_images > 1:
+                            logger.info(
+                                f"[OSSCache] 📊 {num_images} images, "
+                                f"per-image budget: {per_image_budget/1024/1024:.1f}MB"
+                            )
+                        
                         for field_name, file_tuple in upload_files:
                             # file_tuple: (filename, bytes, mime) or (filename, bytes, mime, cached_b64)
                             filename = file_tuple[0]
                             file_bytes = file_tuple[1]
                             mime_type = file_tuple[2] if len(file_tuple) > 2 else "image/png"
                             
-                            oss_url = oss_cache.get_or_upload(file_bytes, filename, mime_type)
+                            oss_url = oss_cache.get_or_upload(
+                                file_bytes, filename, mime_type,
+                                max_size=per_image_budget
+                            )
                             if oss_url:
                                 image_urls.append(oss_url)
                             else:
