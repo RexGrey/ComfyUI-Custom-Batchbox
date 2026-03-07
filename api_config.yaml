@@ -382,26 +382,6 @@ models:
           content_type: multipart/form-data
           response_type: sync
           response_path: data[0].url
-    - display_name: Leex
-      provider: Leex
-      priority: 2
-      model_name: gemini-3-pro-image-preview
-      api_format: gemini
-      auth_header_format: none
-      extra_params:
-        responseModalities:
-        - IMAGE
-      modes:
-        text2img:
-          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
-          method: POST
-          content_type: application/json
-          response_type: sync
-        img2img:
-          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
-          method: POST
-          content_type: application/json
-          response_type: sync
   Nano Banana Pro 4K:
     display_name: 🖼️ Nano Banana Pro 4K
     category: image
@@ -472,26 +452,6 @@ models:
           content_type: multipart/form-data
           response_type: sync
           response_path: data[0].url
-    - display_name: Leex
-      provider: Leex
-      priority: 2
-      model_name: gemini-3-pro-image-preview
-      api_format: gemini
-      auth_header_format: none
-      extra_params:
-        responseModalities:
-        - IMAGE
-      modes:
-        text2img:
-          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
-          method: POST
-          content_type: application/json
-          response_type: sync
-        img2img:
-          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
-          method: POST
-          content_type: application/json
-          response_type: sync
   NanoBananaPro:
     display_name: 🍌 Nano Banana Pro (Gemini 3 Pro)
     category: image
@@ -618,26 +578,6 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
-    - display_name: Leex
-      provider: Leex
-      priority: 3
-      model_name: gemini-3-pro-image-preview
-      api_format: gemini
-      auth_header_format: none
-      extra_params:
-        responseModalities:
-        - IMAGE
-      modes:
-        text2img:
-          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
-          method: POST
-          content_type: application/json
-          response_type: sync
-        img2img:
-          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
-          method: POST
-          content_type: application/json
-          response_type: sync
     - display_name: 柏拉图
       provider: 柏拉图
       priority: 4
