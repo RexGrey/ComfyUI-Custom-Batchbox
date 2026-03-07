@@ -368,7 +368,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-2k
-      use_oss_cache: false  # 国内API，不走OSS
+      use_oss_cache: false
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -382,6 +382,26 @@ models:
           content_type: multipart/form-data
           response_type: sync
           response_path: data[0].url
+    - display_name: Leex
+      provider: Leex
+      priority: 2
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
   Nano Banana Pro 4K:
     display_name: 🖼️ Nano Banana Pro 4K
     category: image
@@ -438,7 +458,7 @@ models:
       provider: 柏拉图
       priority: 1
       model_name: nano-banana-2-4k
-      use_oss_cache: false  # 国内API，不走OSS
+      use_oss_cache: false
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -452,6 +472,26 @@ models:
           content_type: multipart/form-data
           response_type: sync
           response_path: data[0].url
+    - display_name: Leex
+      provider: Leex
+      priority: 2
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
   NanoBananaPro:
     display_name: 🍌 Nano Banana Pro (Gemini 3 Pro)
     category: image
@@ -578,11 +618,31 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
+    - display_name: Leex
+      provider: Leex
+      priority: 3
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
     - display_name: 柏拉图
       provider: 柏拉图
       priority: 4
       model_name: nano-banana-2
-      use_oss_cache: false  # 国内API，不走OSS
+      use_oss_cache: false
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -856,7 +916,7 @@ models:
       provider: 柏拉图
       priority: 2
       model_name: doubao-seedream-4-0-250828
-      use_oss_cache: false  # 国内API，不走OSS
+      use_oss_cache: false
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -923,7 +983,7 @@ models:
       provider: 柏拉图
       priority: 2
       model_name: doubao-seedream-4-5-251128
-      use_oss_cache: false  # 国内API，不走OSS
+      use_oss_cache: false
       modes:
         text2img:
           endpoint: /v1/images/generations
@@ -1005,7 +1065,7 @@ models:
       basic:
         prompt:
           type: string
-          default: '删除'
+          default: 删除
       advanced: {}
     api_endpoints:
     - display_name: 即梦AI (新版)
@@ -1042,25 +1102,19 @@ save_settings:
   fallback_format: png
 model_order:
   image:
-  # --- Banana Pro 系列 (Gemini 3 Pro) ---
   - NanoBananaPro
   - Nano Banana Pro 2k
   - Nano Banana Pro 4K
-  # --- Banana 系列 ---
   - NanoBanana2
   - NanoBanana
-  # --- Seedream 系列 (豆包/即梦) ---
   - SeedReam_v50(文生图)
   - Seedream_v45
   - Seedream_v4
-  # --- OpenAI 系列 ---
   - gpt4o_image(文生图)
   - dalle3(文生图)
   - sora_image(文生图)
-  # --- Flux 系列 ---
   - flux_dev(文生图)
   - flux_schnell(文生图)
-  # --- 其他 ---
   - midjourney(文生图)
 node_settings:
   default_width: 480
