@@ -196,6 +196,15 @@ class DynamicImageNodeBase:
                 current_idx = DynamicImageNodeBase._endpoint_index.get(model_name, 0)
                 endpoint_info = config_manager.get_endpoint_by_index(model_name, current_idx, mode)
                 DynamicImageNodeBase._endpoint_index[model_name] = (current_idx + 1) % len(endpoints)
+            elif auto_mode == "random":
+                # Random: randomly pick an endpoint for even distribution across machines
+                import random
+                endpoints = config_manager.get_api_endpoints(model_name)
+                if not endpoints:
+                    print(f"[DynamicImageNode] No endpoints for {model_name}")
+                    return None
+                random_idx = random.randrange(len(endpoints))
+                endpoint_info = config_manager.get_endpoint_by_index(model_name, random_idx, mode)
             else:
                 # Priority mode: always use highest priority endpoint
                 endpoint_info = config_manager.get_best_endpoint(model_name, mode)
@@ -207,6 +216,8 @@ class DynamicImageNodeBase:
         provider = endpoint_info["provider"]
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
+        ep_display = endpoint_config.get("display_name") or provider.name
+        print(f"[DynamicImageNode] 🎯 Using endpoint: {ep_display} ({'manual' if endpoint_override else 'auto'})")
         
         # Dispatch to Volcengine adapter if api_format is volcengine
         api_format = endpoint_config.get("api_format", "")

@@ -235,7 +235,8 @@ class OSSImageCache:
         return self._ensure_initialized()
     
     def get_or_upload(self, image_bytes: bytes, filename: str = "image.png", 
-                       mime_type: str = "image/png") -> Optional[str]:
+                       mime_type: str = "image/png",
+                       max_size: int = 0) -> Optional[str]:
         """
         Get cached URL or upload image to OSS.
         
@@ -243,6 +244,7 @@ class OSSImageCache:
             image_bytes: Raw image data
             filename: Original filename (for extension detection)
             mime_type: MIME type of the image
+            max_size: Max image size in bytes (0 = use default 45MB)
             
         Returns:
             Public OSS URL, or None if upload fails
@@ -252,8 +254,9 @@ class OSSImageCache:
         
         import oss2
         
-        # ── Smart compression: keep under 45MB for API provider limits (e.g. bltcy 50MB) ──
-        MAX_OSS_IMAGE_SIZE = 45 * 1024 * 1024  # 45MB
+        # ── Smart compression: keep under size limit for API provider limits ──
+        DEFAULT_MAX = 45 * 1024 * 1024  # 45MB default (bltcy single-image limit is 50MB)
+        MAX_OSS_IMAGE_SIZE = max_size if max_size > 0 else DEFAULT_MAX
         original_size = len(image_bytes)
         
         if original_size > MAX_OSS_IMAGE_SIZE:
