@@ -210,6 +210,62 @@ def authenticated_client(client):
     return client
 ```
 
+## Module-Level Mocking for Collection-Time Imports
+
+When modules import external dependencies at the top level (e.g., `import folder_paths` in
+ComfyUI plugins), fixtures run too late — the import fails during collection. Mock at module
+level in conftest.py **before any project imports**.
+
+```python
+# tests/conftest.py — TOP of file, before any project imports
+import sys
+from unittest.mock import MagicMock
+from types import ModuleType
+
+# 1. Mock unavailable dependencies BEFORE collection
+if "folder_paths" not in sys.modules:
+    _mock = MagicMock()
+    _mock.get_output_directory.return_value = "/tmp/output"
+    sys.modules["folder_paths"] = _mock
+
+# 2. Register fake package hierarchy for relative imports
+import os
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_pkg = os.path.basename(_root)
+
+if _pkg not in sys.modules:
+    _fake = ModuleType(_pkg)
+    _fake.__path__ = [_root]
+    sys.modules[_pkg] = _fake
+
+# Sub-packages
+for subpkg in ["adapters", "account"]:
+    fqn = f"{_pkg}.{subpkg}"
+    if fqn not in sys.modules:
+        m = ModuleType(fqn)
+        m.__path__ = [os.path.join(_root, subpkg)]
+        sys.modules[fqn] = m
+
+# 3. Register modules used via relative imports
+import my_module as _mm
+sys.modules.setdefault(f"{_pkg}.my_module", _mm)
+```
+
+**Key rules:**
+- **Order**: mock external deps → register package → register sub-modules
+- **`sys.modules.setdefault`**: avoid overwriting already-imported modules
+- **Singleton reset**: use autouse fixture to reset `ClassName._INSTANCE = None`
+
+### Singleton Reset Fixture
+
+```python
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    MyClass._INSTANCE = None
+    yield
+    MyClass._INSTANCE = None
+```
+
 ## Fixture Best Practices
 
 1. **Single responsibility** - Each fixture does one thing

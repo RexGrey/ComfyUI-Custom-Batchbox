@@ -1,6 +1,6 @@
 ---
 name: python-pytest-ops
-description: "pytest testing patterns for Python. Triggers on: pytest, fixture, mark, parametrize, mock, conftest, test coverage, unit test, integration test, pytest.raises."
+description: "pytest testing patterns for Python. Triggers on: pytest, fixture, mark, parametrize, mock, conftest, test coverage, unit test, integration test, pytest.raises, relative import, ImportError attempted relative import, sys.modules fake package, importlib.import_module, patch.object."
 compatibility: "pytest 7.0+, Python 3.9+. Some features require pytest-asyncio, pytest-mock, pytest-cov."
 allowed-tools: "Read Write Bash"
 depends-on: []
@@ -167,6 +167,21 @@ def client(app):
 | `pytest --lf` | Rerun last failed |
 | `pytest --cov=src` | Coverage report |
 | `pytest -n auto` | Parallel (pytest-xdist) |
+
+## Testing Packages with Relative Imports (No pip install)
+
+When testing uninstalled Python packages that use relative imports (`from .config import X`,
+`from ..logger import Y`), pytest will fail with `ImportError: attempted relative import`.
+
+**Solution (3 steps in conftest.py):**
+
+1. **Mock external deps at module level** — before collection, not in fixtures
+2. **Register fake package hierarchy** via `sys.modules` + `ModuleType`
+3. **Import in tests** via `importlib.import_module(f"{pkg}.module")`
+4. **Use `patch.object`** instead of `@patch("module.attr")` for mocking
+
+See `./references/fixtures-advanced.md` § "Module-Level Mocking" and
+`./references/mocking-patterns.md` § "patch.object for Package-Imported Modules".
 
 ## Additional Resources
 
