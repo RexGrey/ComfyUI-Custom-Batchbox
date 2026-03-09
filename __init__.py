@@ -5,68 +5,93 @@ A ComfyUI custom node package for dynamic AI image generation
 with multi-provider support.
 """
 
-from .nodes import (
-    NanoBananaPro,
-    DynamicImageGenerationNode,
-    DynamicTextGenerationNode,
-    DynamicVideoGenerationNode,
-    DynamicAudioGenerationNode,
-    DynamicImageEditorNode,
-    GaussianBlurUpscaleNode,
-    create_dynamic_node
-)
-from .config_manager import config_manager
+_PACKAGE_BOOTSTRAP_AVAILABLE = True
+
+try:
+    from .nodes import (
+        NanoBananaPro,
+        DynamicImageGenerationNode,
+        DynamicTextGenerationNode,
+        DynamicVideoGenerationNode,
+        DynamicAudioGenerationNode,
+        DynamicImageEditorNode,
+        GaussianBlurUpscaleNode,
+        create_dynamic_node
+    )
+    from .config_manager import config_manager
+except ImportError:
+    if __package__:
+        raise
+
+    # Pytest may import this file directly as a standalone module during
+    # collection, where package-relative imports are unavailable.
+    _PACKAGE_BOOTSTRAP_AVAILABLE = False
+    NanoBananaPro = None
+    DynamicImageGenerationNode = None
+    DynamicTextGenerationNode = None
+    DynamicVideoGenerationNode = None
+    DynamicAudioGenerationNode = None
+    DynamicImageEditorNode = None
+    GaussianBlurUpscaleNode = None
+    create_dynamic_node = None
+    config_manager = None
 
 # ==========================================
 # 1. Base Node Mappings
 # ==========================================
-NODE_CLASS_MAPPINGS = {
-    # Legacy/Universal
-    "NanoBananaPro": NanoBananaPro,
-    # Category-specific dynamic nodes
-    "DynamicImageGeneration": DynamicImageGenerationNode,
-    "DynamicTextGeneration": DynamicTextGenerationNode,
-    "DynamicVideoGeneration": DynamicVideoGenerationNode,
-    "DynamicAudioGeneration": DynamicAudioGenerationNode,
-    "DynamicImageEditor": DynamicImageEditorNode,
-    "GaussianBlurUpscale": GaussianBlurUpscaleNode,
-}
+NODE_CLASS_MAPPINGS = {}
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "NanoBananaPro": "🍌 Nano Banana Pro (Universal)",
-    "DynamicImageGeneration": "🎨 Dynamic Image Generation",
-    "DynamicTextGeneration": "📝 Dynamic Text Generation",
-    "DynamicVideoGeneration": "🎬 Dynamic Video Generation",
-    "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
-    "DynamicImageEditor": "🔧 Dynamic Image Editor",
-    "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
-}
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
+if _PACKAGE_BOOTSTRAP_AVAILABLE:
+    NODE_CLASS_MAPPINGS = {
+        # Legacy/Universal
+        "NanoBananaPro": NanoBananaPro,
+        # Category-specific dynamic nodes
+        "DynamicImageGeneration": DynamicImageGenerationNode,
+        "DynamicTextGeneration": DynamicTextGenerationNode,
+        "DynamicVideoGeneration": DynamicVideoGenerationNode,
+        "DynamicAudioGeneration": DynamicAudioGenerationNode,
+        "DynamicImageEditor": DynamicImageEditorNode,
+        "GaussianBlurUpscale": GaussianBlurUpscaleNode,
+    }
+
+    NODE_DISPLAY_NAME_MAPPINGS = {
+        "NanoBananaPro": "🍌 Nano Banana Pro (Universal)",
+        "DynamicImageGeneration": "🎨 Dynamic Image Generation",
+        "DynamicTextGeneration": "📝 Dynamic Text Generation",
+        "DynamicVideoGeneration": "🎬 Dynamic Video Generation",
+        "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
+        "DynamicImageEditor": "🔧 Dynamic Image Editor",
+        "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
+    }
 
 # ==========================================
 # 2. Dynamic Node Registration
 # ==========================================
-try:
-    config_manager.load_config()
-    
-    # Register dynamic nodes from config
-    models = config_manager.get_models()
-    raw_config = config_manager.get_raw_config()
-    
-    for model_name in models:
-        model_config = raw_config.get("models", {}).get(model_name, {})
+if _PACKAGE_BOOTSTRAP_AVAILABLE:
+    try:
+        config_manager.load_config()
         
-        # Check if model has dynamic_node definition (legacy support)
-        if "dynamic_node" in model_config:
-            cls_name, disp_name, cls_obj = create_dynamic_node(
-                model_name, 
-                model_config["dynamic_node"]
-            )
-            NODE_CLASS_MAPPINGS[cls_name] = cls_obj
-            NODE_DISPLAY_NAME_MAPPINGS[cls_name] = disp_name
-            print(f"[ComfyUI-Custom-Batchbox] Registered dynamic node: {disp_name}")
+        # Register dynamic nodes from config
+        models = config_manager.get_models()
+        raw_config = config_manager.get_raw_config()
+        
+        for model_name in models:
+            model_config = raw_config.get("models", {}).get(model_name, {})
+            
+            # Check if model has dynamic_node definition (legacy support)
+            if "dynamic_node" in model_config:
+                cls_name, disp_name, cls_obj = create_dynamic_node(
+                    model_name, 
+                    model_config["dynamic_node"]
+                )
+                NODE_CLASS_MAPPINGS[cls_name] = cls_obj
+                NODE_DISPLAY_NAME_MAPPINGS[cls_name] = disp_name
+                print(f"[ComfyUI-Custom-Batchbox] Registered dynamic node: {disp_name}")
 
-except Exception as e:
-    print(f"[ComfyUI-Custom-Batchbox] Error loading dynamic nodes: {e}")
+    except Exception as e:
+        print(f"[ComfyUI-Custom-Batchbox] Error loading dynamic nodes: {e}")
 
 # ==========================================
 # 3. Web Directory for Frontend Extensions
