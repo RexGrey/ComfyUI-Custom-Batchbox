@@ -79,8 +79,9 @@ class TestGenericAPIAdapter:
         if "json" in request:
             assert request["json"].get("model") == "test-model"
 
-    @patch('requests.post')
-    def test_execute_success(self, mock_post, adapter):
+    @patch.object(GenericAPIAdapter, "_download_image", return_value=b"fake-image")
+    @patch('requests.request')
+    def test_execute_success(self, mock_request, _mock_download, adapter):
         """Test successful API execution"""
         mock_response = Mock()
         mock_response.status_code = 200
@@ -88,30 +89,30 @@ class TestGenericAPIAdapter:
             "data": [{"url": "https://example.com/image.png"}]
         }
         mock_response.text = '{"data": [{"url": "https://example.com/image.png"}]}'
-        mock_post.return_value = mock_response
+        mock_request.return_value = mock_response
         
         result = adapter.execute({"prompt": "test"}, "text2img")
         
         assert result.success is True
         assert len(result.image_urls) > 0
     
-    @patch('requests.post')
-    def test_execute_http_error(self, mock_post, adapter):
+    @patch('requests.request')
+    def test_execute_http_error(self, mock_request, adapter):
         """Test handling of HTTP errors"""
         mock_response = Mock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
-        mock_post.return_value = mock_response
+        mock_request.return_value = mock_response
         
         result = adapter.execute({"prompt": "test"}, "text2img")
         
         assert result.success is False
         assert "500" in result.error_message
     
-    @patch('requests.post')
-    def test_execute_timeout(self, mock_post, adapter):
+    @patch('requests.request')
+    def test_execute_timeout(self, mock_request, adapter):
         """Test handling of request timeout"""
-        mock_post.side_effect = requests.Timeout()
+        mock_request.side_effect = requests.Timeout()
         
         result = adapter.execute({"prompt": "test"}, "text2img")
         
