@@ -56,6 +56,21 @@ async function saveStylePresets() {
   }
 }
 
+function requestNodeCanvasRefresh(node) {
+  if (!node) return;
+  if (node._batchboxCanvasRefreshPending) return;
+  node._batchboxCanvasRefreshPending = true;
+
+  requestAnimationFrame(() => {
+    node._batchboxCanvasRefreshPending = false;
+    if (!node.graph) return;
+    node.setDirtyCanvas(true, true);
+    if (app.graph) {
+      app.graph.setDirtyCanvas(true, true);
+    }
+  });
+}
+
 // ================================================================
 // SECTION 1.5: SCOPED EXECUTION (only queue target node + deps)
 // ================================================================
@@ -1027,7 +1042,7 @@ app.registerExtension({
               if (String(d.node_id) !== nodeIdStr) return;
               if (d.generation_token && d.generation_token !== generationToken) return;
               generateBtn.name = `⏳ 生成中 ${d.completed}/${d.total}`;
-              node.setDirtyCanvas(true, true);
+              requestNodeCanvasRefresh(node);
             };
             api.addEventListener("batchbox:progress", progressHandler);
 
