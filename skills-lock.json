@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "skills": {
+    "comfyui-api": {
+      "source": "mckruz/comfyui-expert",
+      "sourceType": "github",
+      "computedHash": "cbaa85659a4214ac87929d769a6298d48aee7b2d7a1d58f016866a173920e7b8"
+    },
+    "comfyui-inventory": {
+      "source": "mckruz/comfyui-expert",
+      "sourceType": "github",
+      "computedHash": "42db9d0c3d4a02a34bbc127aceefefda26f78f2e67835ed423e79f71accb1484"
+    },
+    "comfyui-prompt-engineer": {
+      "source": "mckruz/comfyui-expert",
+      "sourceType": "github",
+      "computedHash": "793d557899b2a4e67223f3f4663f5ff516c34c4b3feb63961d5dc7b4580bc18d"
+    },
+    "comfyui-troubleshooter": {
+      "source": "mckruz/comfyui-expert",
+      "sourceType": "github",
+      "computedHash": "622ba86ef473fee7b685d3a64fde24ba4490eab746238dd773ba2d80473235ff"
+    },
+    "comfyui-video-pipeline": {
+      "source": "mckruz/comfyui-expert",
+      "sourceType": "github",
+      "computedHash": "84e370d87c9d2dc8ee3aa74c1288c051a8dfc2608c73394f71c0b1289129dcc2"
+    },
+    "comfyui-workflow-builder": {
+      "source": "mckruz/comfyui-expert",
+      "sourceType": "github",
+      "computedHash": "499e18bf3fcd2a9cc1694c3813fd00f89069a561e1fb8fc5735f23e392fffe77"
+    },
+    "python-pytest-ops": {
+      "source": "0xdarkmatter/claude-mods",
+      "sourceType": "github",
+      "computedHash": "1fec15ab550d05de1a2a9b916406887da1a22ce77119b2de1adc15e9266cd3c3"
+    }
+  }
+}
