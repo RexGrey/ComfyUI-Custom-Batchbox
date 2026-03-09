@@ -293,6 +293,36 @@ def test_mock_datetime(mocker):
     assert "2024-01-15" in result
 ```
 
+## patch.object for Package-Imported Modules
+
+When a module is imported via `importlib.import_module()` (needed for relative imports),
+`@patch("module.attr")` fails because `patch()` tries to re-import the module. Use
+`patch.object` on the already-imported module object instead.
+
+```python
+import importlib
+import os
+from unittest.mock import patch
+
+_pkg = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_mod = importlib.import_module(f"{_pkg}.adapters.my_adapter")
+
+MyAdapter = _mod.MyAdapter
+
+# WRONG — will fail with ImportError
+# @patch("my_adapter.config_manager")
+
+# CORRECT — patches on the already-imported module
+@patch.object(_mod, "config_manager")
+def test_something(mock_cm):
+    mock_cm.get_config.return_value = {"key": "value"}
+    adapter = MyAdapter()
+    assert adapter.config == {"key": "value"}
+```
+
+**When to use**: Any test file that uses `importlib.import_module` to import the module
+under test. This is the standard pattern for testing uninstalled packages with relative imports.
+
 ## Best Practices
 
 1. **Patch where used** - Not where defined
