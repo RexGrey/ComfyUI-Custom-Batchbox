@@ -47,9 +47,6 @@ class APIAdapter(ABC):
     - Handling async polling if needed
     """
     
-    # Class-level counters for round-robin key rotation (thread-safe via GIL)
-    _key_counters: Dict[str, int] = {}
-    
     def __init__(self, provider_config: Dict, endpoint_config: Dict):
         """
         Args:
@@ -67,7 +64,7 @@ class APIAdapter(ABC):
     
     @property
     def api_key(self) -> str:
-        """Get API key with round-robin rotation if multiple keys configured.
+        """Get API key with random selection if multiple keys configured.
         
         Supports formats (in priority order):
           1. api_keys: [{name: "x", key: "...", enabled: true}, ...]  (named, filterable)
