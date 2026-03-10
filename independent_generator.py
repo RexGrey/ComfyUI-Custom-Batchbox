@@ -125,7 +125,7 @@ class IndependentGenerator:
         else:
             # Auto mode: check setting for strategy
             node_settings = config_manager.get_node_settings()
-            auto_mode = node_settings.get("auto_endpoint_mode", "priority")
+            auto_mode = node_settings.get("auto_endpoint_mode", "random")
             
             if auto_mode == "round_robin":
                 # Round-robin: rotate through all available endpoints
