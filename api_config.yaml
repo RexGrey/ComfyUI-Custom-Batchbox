@@ -1062,7 +1062,7 @@ node_settings:
   show_in_canvas_menu: true
   smart_cache_hash_check: true
   pricing_strategy: bestBalance
-  auto_endpoint_mode: round_robin
+  auto_endpoint_mode: random
   preview_mode: progressive
 upscale_settings:
   model: NanoBananaPro
