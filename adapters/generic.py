@@ -72,6 +72,9 @@ class GenericAPIAdapter(APIAdapter):
     
     def _build_openai_request(self, params: Dict, mode: str = "text2img") -> Dict:
         """Build request for OpenAI-compatible APIs."""
+        # Pick API key ONCE (self.api_key returns random key each call)
+        _current_key = self.api_key or ""
+        used_key = _current_key  # Track for blacklisting on failure
         endpoint_path = self.mode_config.get("endpoint", "")
         method = self.mode_config.get("method", "POST")
         content_type = self.mode_config.get("content_type", "application/json")
@@ -87,9 +90,9 @@ class GenericAPIAdapter(APIAdapter):
                 account = Account.get_instance()
                 headers = {"X-Auth-T": account.token}
             except Exception:
-                headers = {"Authorization": f"Bearer {self.api_key}"}
+                headers = {"Authorization": f"Bearer {_current_key}"}
         else:
-            headers = {"Authorization": f"Bearer {self.api_key}"}
+            headers = {"Authorization": f"Bearer {_current_key}"}
         
         # ─── OSS Cache: Upload images and switch to URL mode ───
         # When use_oss_cache is enabled, upload images to OSS and use JSON+URL
@@ -193,6 +196,7 @@ class GenericAPIAdapter(APIAdapter):
             "url": url,
             "method": method,
             "headers": headers,
+            "_used_key": used_key,
         }
         
         if content_type == "application/json":
@@ -270,6 +274,11 @@ class GenericAPIAdapter(APIAdapter):
         """
         import base64
         
+        # Pick API key ONCE for the entire request (URL + Files API + tracking)
+        # CRITICAL: self.api_key is a property that returns a random key each call!
+        _current_key = self.api_key or ""
+        used_key = _current_key  # Track for blacklisting on failure
+        
         endpoint_path = self.mode_config.get("endpoint", "")
         model_name = self.endpoint.get("model_name", "")
         
@@ -279,7 +288,7 @@ class GenericAPIAdapter(APIAdapter):
         
         # Support {api_key} placeholder in endpoint path (e.g. Google official API)
         if "{api_key}" in endpoint_path:
-            endpoint_path = endpoint_path.replace("{api_key}", self.api_key or "")
+            endpoint_path = endpoint_path.replace("{api_key}", _current_key)
         
         # Support {project_id} placeholder in endpoint path (e.g. Vertex AI)
         if "{project_id}" in endpoint_path:
@@ -309,7 +318,7 @@ class GenericAPIAdapter(APIAdapter):
                     logger.warning(f"[Gemini] Using raw model_name as fallback: {resolved_model_id}")
                 
                 # Determine image size from params or default
-                image_size = params.get("image_size", "1K")
+                image_size = params.get("image_size", "2K")
                 headers = {
                     "X-Auth-T": account.token,
                     "X-Model-ID": resolved_model_id,
@@ -319,7 +328,7 @@ class GenericAPIAdapter(APIAdapter):
                 logger.info(f"[Gemini] Account headers: X-Model-ID={resolved_model_id}, X-Image-Size={image_size}, token={'✅' if account.token else '❌ empty'}")
             except Exception:
                 headers = {
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {_current_key}",
                     "Content-Type": "application/json"
                 }
         elif auth_type == "vertex":
@@ -336,7 +345,7 @@ class GenericAPIAdapter(APIAdapter):
             }
         else:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {_current_key}",
                 "Content-Type": "application/json"
             }
         
@@ -367,12 +376,12 @@ class GenericAPIAdapter(APIAdapter):
                         logger.info("[Gemini] GCS cache enabled for Vertex AI")
                 except Exception:
                     pass
-            elif auth_type != "account" and self.api_key:
+            elif auth_type != "account" and _current_key:
                 # AI Studio: use Files API
                 try:
                     from ..gemini_files_cache import gemini_files_cache
                     files_api_available = True
-                    logger.info(f"[Gemini] Files API enabled (key: {self.api_key[:8]}...)")
+                    logger.info(f"[Gemini] Files API enabled (key: {_current_key[:8]}...)")
                 except Exception as e:
                     logger.warning(f"[Gemini] Files API import failed: {e}")
         
@@ -406,7 +415,7 @@ class GenericAPIAdapter(APIAdapter):
             if files_api_available:
                 try:
                     file_uri = gemini_files_cache.get_or_upload(
-                        self.api_key, file_bytes, filename, mime_type
+                        _current_key, file_bytes, filename, mime_type
                     )
                     if file_uri:
                         parts.append({
@@ -494,7 +503,8 @@ class GenericAPIAdapter(APIAdapter):
             "url": url,
             "method": "POST",
             "headers": headers,
-            "json": payload
+            "json": payload,
+            "_used_key": used_key,
         }
 
     
@@ -796,7 +806,9 @@ class GenericAPIAdapter(APIAdapter):
         if retry_config is None:
             retry_config = RetryConfig(max_retries=3, initial_delay=1.0)
         
-        # Build request
+        # Build request (saved params for potential rebuild on key retry)
+        _saved_params = params
+        _saved_mode = mode
         import time as _time
         _build_start = _time.time()
         request_info = self.build_request(params, mode)
@@ -863,8 +875,16 @@ class GenericAPIAdapter(APIAdapter):
                     success=is_success
                 )
                 
-                # Check if we should retry
+                # Check if we should retry (with key blacklisting on 429)
                 if response.status_code in RETRYABLE_STATUS_CODES:
+                    # Blacklist this key if it's a quota/rate limit issue
+                    if response.status_code == 429:
+                        used_key = request_info.get("_used_key", "")
+                        if used_key:
+                            self.blacklist_key(used_key, "429 quota exceeded")
+                            # Rebuild request with fresh key
+                            request_info = self.build_request(_saved_params, _saved_mode)
+                            url = request_info["url"]
                     if attempt < retry_config.max_retries:
                         delay = calculate_delay(attempt, retry_config)
                         logger.warning(
@@ -880,6 +900,18 @@ class GenericAPIAdapter(APIAdapter):
                 # Check HTTP status
                 if not is_success:
                     logger.info(f"⬅️ 📋 Response body: {response.text[:300]}")
+                    # Blacklist key if expired or invalid
+                    resp_text = response.text.lower()
+                    if "expired" in resp_text or "api key not valid" in resp_text:
+                        used_key = request_info.get("_used_key", "")
+                        if used_key:
+                            self.blacklist_key(used_key, f"HTTP {response.status_code}: key expired/invalid")
+                            # Rebuild request with fresh key and retry
+                            if attempt < retry_config.max_retries:
+                                request_info = self.build_request(_saved_params, _saved_mode)
+                                url = request_info["url"]
+                                logger.warning(f"🔄 Retrying with different key...")
+                                continue
                     return APIResponse(
                         success=False,
                         error_message=f"HTTP {response.status_code}: {response.text[:200]}",

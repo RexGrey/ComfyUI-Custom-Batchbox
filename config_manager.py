@@ -35,8 +35,10 @@ class ProviderConfig:
     display_name: str = ""
     base_url: str = ""
     api_key: Optional[str] = None
+    api_keys: Optional[list] = None  # Full key list for rotation/blacklisting
     access_key: Optional[str] = None
     secret_key: Optional[str] = None
+    project_id: Optional[str] = None
     rate_limit: int = 60
 
 
@@ -306,8 +308,10 @@ class ConfigManager:
             display_name=p.get("display_name", provider_name),
             base_url=p.get("base_url", "").rstrip('/'),
             api_key=api_key,
+            api_keys=p.get("api_keys", []),
             access_key=p.get("access_key"),
             secret_key=p.get("secret_key"),
+            project_id=p.get("project_id"),
             rate_limit=p.get("rate_limit", 60)
         )
         self._set_cached(self._providers_cache, provider_name, config)
@@ -462,12 +466,15 @@ class ConfigManager:
     # ==========================================
     
     def get_api_endpoints(self, model_name: str) -> List[Dict]:
-        """Get all API endpoints for a model, sorted by priority"""
+        """Get all API endpoints for a model, sorted by priority.
+        Endpoints with enabled: false are excluded."""
         model_config = self.get_model_config(model_name)
         if not model_config:
             return []
         
         endpoints = model_config.get("api_endpoints", [])
+        # Filter out disabled endpoints (enabled defaults to True if not specified)
+        endpoints = [ep for ep in endpoints if ep.get("enabled", True)]
         return sorted(endpoints, key=lambda x: x.get("priority", 999))
     
     def get_best_endpoint(self, model_name: str, mode: str = "text2img") -> Optional[Dict]:

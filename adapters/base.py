@@ -61,36 +61,61 @@ class APIAdapter(ABC):
     @property
     def base_url(self) -> str:
         return self.provider.get("base_url", "").rstrip('/')
+    # Class-level key blacklist: {key_suffix: expiry_timestamp}
+    # Keys that returned 429/expired are skipped for 1 hour
+    _bad_keys: Dict[str, float] = {}
+    _BAD_KEY_TTL = 3600  # 1 hour
     
     @property
     def api_key(self) -> str:
-        """Get API key with random selection if multiple keys configured.
+        """Get API key with random selection, skipping blacklisted keys.
         
         Supports formats (in priority order):
           1. api_keys: [{name: "x", key: "...", enabled: true}, ...]  (named, filterable)
           2. api_keys: ["key1", "key2"]                               (plain list)
           3. api_key: "single_key"                                    (original)
         """
+        import random
+        import time
+        
         keys_config = self.provider.get("api_keys", [])
         if keys_config and isinstance(keys_config, list):
             # Build list of active keys
             active_keys = []
             for item in keys_config:
                 if isinstance(item, dict):
-                    # Named key: {name, key, enabled}
                     if item.get("enabled", True) and item.get("key"):
                         active_keys.append(item["key"])
                 elif isinstance(item, str) and item:
-                    # Plain string key
                     active_keys.append(item)
             
             if active_keys:
-                import random
-                key = random.choice(active_keys)
+                # Filter out blacklisted keys (always use CLASS-level dict, never instance)
+                now = time.time()
+                bad = APIAdapter._bad_keys  # explicit class reference
+                good_keys = [k for k in active_keys if k not in bad or bad[k] < now]
+                
+                # Clean expired entries IN-PLACE (don't reassign to avoid shadowing)
+                expired = [k for k, t in bad.items() if t < now]
+                for k in expired:
+                    del bad[k]
+                
+                # Use good keys if available, fall back to all keys if all blacklisted
+                pool = good_keys if good_keys else active_keys
+                key = random.choice(pool)
                 provider_name = self.provider.get("display_name", self.provider.get("name", "?"))
-                print(f"[APIAdapter] 🔑 Using key ...{key[-6:]} for {provider_name} ({len(active_keys)} keys available)")
+                skipped = len(active_keys) - len(good_keys)
+                skip_info = f", {skipped} blacklisted" if skipped else ""
+                print(f"[APIAdapter] 🔑 Using key ...{key[-6:]} for {provider_name} ({len(pool)}/{len(active_keys)} keys{skip_info})")
                 return key
         return self.provider.get("api_key", "")
+    
+    @classmethod
+    def blacklist_key(cls, key: str, reason: str = ""):
+        """Temporarily blacklist a key (e.g. quota exceeded, expired)."""
+        import time
+        cls._bad_keys[key] = time.time() + cls._BAD_KEY_TTL
+        print(f"[APIAdapter] ⛔ Key ...{key[-6:]} blacklisted for 1h ({reason})")
     
     @abstractmethod
     def build_request(self, params: Dict, mode: str = "text2img") -> Dict:
