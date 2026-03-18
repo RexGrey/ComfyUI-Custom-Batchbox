@@ -149,10 +149,14 @@ class GeminiFilesCache:
         self._ensure_db()
 
         # 1. Check cache (fast path, no lock needed)
-        file_hash = _compute_hash(image_bytes)
+        #    Include api_key suffix in hash so different keys get separate cache entries.
+        #    Google Files API is key-scoped: files uploaded with key A can't be accessed with key B.
+        image_hash = _compute_hash(image_bytes)
+        key_suffix = api_key[-8:] if api_key else "nokey"
+        file_hash = f"{image_hash}_{key_suffix}"
         cached_uri = self._db.get(file_hash)
         if cached_uri:
-            logger.info(f"[FilesAPI] ✅ Cache hit: {file_hash[:12]}... (saved upload)")
+            logger.info(f"[FilesAPI] ✅ Cache hit: {image_hash[:12]}... (saved upload)")
             return cached_uri
 
         # 2. Acquire per-hash lock to prevent parallel duplicate uploads
@@ -166,7 +170,7 @@ class GeminiFilesCache:
             # Re-check cache after acquiring lock (another thread may have uploaded)
             cached_uri = self._db.get(file_hash)
             if cached_uri:
-                logger.info(f"[FilesAPI] ✅ Cache hit (after wait): {file_hash[:12]}... (saved upload)")
+                logger.info(f"[FilesAPI] ✅ Cache hit (after wait): {image_hash[:12]}... (saved upload)")
                 return cached_uri
 
             # Actually upload

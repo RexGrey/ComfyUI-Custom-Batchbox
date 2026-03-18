@@ -804,6 +804,38 @@ async function imageElementToBase64(img) {
 }
 
 /**
+ * Create a lightweight thumbnail Image for preview display.
+ * Downscales to maxSize while keeping aspect ratio.
+ * Prevents canvas lag with many large images.
+ * @param {HTMLImageElement} fullImg - The full-resolution loaded image
+ * @param {number} maxSize - Max width or height in pixels (default 512)
+ * @returns {HTMLImageElement} A new Image element with thumbnail data
+ */
+function createPreviewThumbnail(fullImg, maxSize = 512) {
+  const w = fullImg.naturalWidth || fullImg.width;
+  const h = fullImg.naturalHeight || fullImg.height;
+
+  // Skip if already small enough
+  if (w <= maxSize && h <= maxSize) return fullImg;
+
+  const scale = Math.min(maxSize / w, maxSize / h);
+  const tw = Math.round(w * scale);
+  const th = Math.round(h * scale);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = tw;
+  canvas.height = th;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(fullImg, 0, 0, tw, th);
+
+  const thumbImg = new Image();
+  thumbImg.src = canvas.toDataURL("image/jpeg", 0.85);
+  // Preserve original URL for potential full-res access
+  thumbImg._originalSrc = fullImg.src;
+  return thumbImg;
+}
+
+/**
  * Collect all parameters from a node
  * @param {Object} node - The node
  * @returns {Object} Parameters object
@@ -851,8 +883,10 @@ function updateNodePreview(node, previewImages, paramsHash = null) {
     const img = new Image();
 
     img.onload = () => {
-      // Store loaded image in temporary array
-      loadingImgs[index] = img;
+      // Downscale to thumbnail for preview display (reduces canvas memory)
+      const thumb = createPreviewThumbnail(img);
+      // Store thumbnail in temporary array
+      loadingImgs[index] = thumb;
       loadedCount++;
       console.debug(`[BatchBox] Node ${node.id}: Image ${loadedCount}/${previewImages.length} loaded`);
 
@@ -932,6 +966,8 @@ function appendSinglePreview(node, previewInfo, batchIndex, totalBatches) {
   const img = new Image();
 
   img.onload = () => {
+    // Downscale to thumbnail for preview display
+    const thumb = createPreviewThumbnail(img);
     // Use STAGING buffer — don't touch node.imgs until all images are ready
     if (!node._progressiveStagingSlots) {
       node._progressiveStagingSlots = new Array(totalBatches).fill(null);
@@ -939,7 +975,7 @@ function appendSinglePreview(node, previewInfo, batchIndex, totalBatches) {
     }
 
     // Place loaded image in its correct staging slot
-    node._progressiveStagingSlots[batchIndex] = img;
+    node._progressiveStagingSlots[batchIndex] = thumb;
     node._progressiveStagingInfos[batchIndex] = previewInfo;
 
     // Count how many slots are filled
