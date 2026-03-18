@@ -153,11 +153,38 @@ class IndependentGenerator:
             print(f"[IndependentGenerator] No endpoint found for {model_name}/{mode}")
             return None
 
-        adapter = self._build_adapter_from_endpoint_info(endpoint_info)
-        if adapter:
-            route_mode = "manual" if endpoint_override else "auto"
-            print(f"[IndependentGenerator] Endpoint selection mode: {route_mode}")
-        return adapter
+        provider = endpoint_info["provider"]
+        mode_config = endpoint_info["config"]
+        endpoint_config = endpoint_info["endpoint_config"]
+        ep_display = endpoint_config.get("display_name") or provider.name
+        print(f"[IndependentGenerator] 🎯 Using endpoint: {ep_display} ({'manual' if endpoint_override else 'auto'})")
+
+        # Dispatch to Volcengine adapter if api_format is volcengine
+        api_format = endpoint_config.get("api_format", "")
+        if api_format == "volcengine":
+            from .adapters.volcengine import VolcengineAdapter
+            return VolcengineAdapter(
+                provider_config={
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "access_key": provider.access_key,
+                    "secret_key": provider.secret_key
+                },
+                endpoint_config=endpoint_config,
+                mode_config=mode_config
+            )
+
+        return GenericAPIAdapter(
+            provider_config={
+                "name": provider.name,
+                "base_url": provider.base_url,
+                "api_key": provider.api_key,
+                "api_keys": provider.api_keys or [],
+                "project_id": provider.project_id or "",
+            },
+            endpoint_config=endpoint_config,
+            mode_config=mode_config
+        )
     
     def execute_with_failover(self, model_name: str, params: Dict[str, Any],
                                mode: str = "text2img",
@@ -186,9 +213,17 @@ class IndependentGenerator:
             )
             
             for alt in alternatives:
-                alt_adapter = self._build_adapter_from_endpoint_info(alt)
-                if not alt_adapter:
-                    continue
+                alt_adapter = GenericAPIAdapter(
+                    provider_config={
+                        "name": alt["provider"].name,
+                        "base_url": alt["provider"].base_url,
+                        "api_key": alt["provider"].api_key,
+                        "api_keys": alt["provider"].api_keys or [],
+                        "project_id": alt["provider"].project_id or "",
+                    },
+                    endpoint_config=alt["endpoint_config"],
+                    mode_config=alt["config"]
+                )
                 
                 print(f"[IndependentGenerator] Trying alternative: {alt['provider'].name}")
                 result = alt_adapter.execute(params, mode)
