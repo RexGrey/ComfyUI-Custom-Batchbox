@@ -327,6 +327,15 @@ models:
         prompt:
           type: string
           default: ''
+        分辨率:
+          type: select
+          default: 2K
+          api_name: image_size
+          options:
+          - value: 1K
+            label: 1K
+          - value: 2K
+            label: 2K
         比例:
           type: select
           default: auto
@@ -364,9 +373,31 @@ models:
           default: '0'
           api_name: seed
     api_endpoints:
-    - display_name: 柏拉图
-      provider: 柏拉图
+    - display_name: Google 官方 API
+      provider: google_official
       priority: 1
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+    - display_name: 柏拉图
+      enabled: true
+      provider: 柏拉图
+      priority: 2
       model_name: nano-banana-2-2k
       use_oss_cache: false
       modes:
@@ -397,6 +428,15 @@ models:
         prompt:
           type: string
           default: ''
+        分辨率:
+          type: select
+          default: 4K
+          api_name: image_size
+          options:
+          - value: 2K
+            label: 2K
+          - value: 4K
+            label: 4K
         比例:
           type: select
           default: auto
@@ -434,9 +474,31 @@ models:
           default: '0'
           api_name: seed
     api_endpoints:
-    - display_name: 柏拉图
-      provider: 柏拉图
+    - display_name: Google 官方 API
+      provider: google_official
       priority: 1
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+    - display_name: 柏拉图
+      enabled: true
+      provider: 柏拉图
+      priority: 2
       model_name: nano-banana-2-4k
       use_oss_cache: false
       modes:
@@ -512,8 +574,9 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
+      enabled: true
       provider: acggit_account
-      priority: 1
+      priority: 2
       model_name: gemini-3-pro-image-preview
       auth_type: account
       api_format: gemini
@@ -535,7 +598,7 @@ models:
           use_oss_cache: true
     - display_name: Google 官方 API
       provider: google_official
-      priority: 2
+      priority: 1
       model_name: gemini-3-pro-image-preview
       api_format: gemini
       base_url: https://generativelanguage.googleapis.com/v1beta
@@ -579,6 +642,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: 柏拉图
+      enabled: true
       provider: 柏拉图
       priority: 4
       model_name: nano-banana-2
@@ -666,6 +730,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
+      enabled: true
       provider: acggit_account
       priority: 1
       model_name: gemini-3.1-flash-image-preview
@@ -758,6 +823,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
+      enabled: true
       provider: acggit_account
       priority: 1
       model_name: gemini-2.5-flash-image
@@ -834,6 +900,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
+      enabled: true
       provider: acggit_account
       priority: 1
       model_name: doubao-seedream-4-0-250828
@@ -853,6 +920,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: 柏拉图
+      enabled: true
       provider: 柏拉图
       priority: 2
       model_name: doubao-seedream-4-0-250828
@@ -901,6 +969,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
+      enabled: true
       provider: acggit_account
       priority: 1
       model_name: doubao-seedream-4-5-251128
@@ -920,6 +989,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: 柏拉图
+      enabled: true
       provider: 柏拉图
       priority: 2
       model_name: doubao-seedream-4-5-251128
@@ -963,6 +1033,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: 柏拉图
+      enabled: true
       provider: 柏拉图
       priority: 1
       model_name: doubao-seedream-5-0-260128
@@ -1062,7 +1133,7 @@ node_settings:
   show_in_canvas_menu: true
   smart_cache_hash_check: true
   pricing_strategy: bestBalance
-  auto_endpoint_mode: random
+  auto_endpoint_mode: priority
   preview_mode: progressive
 upscale_settings:
   model: NanoBananaPro
