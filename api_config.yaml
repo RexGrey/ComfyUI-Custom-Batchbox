@@ -618,30 +618,28 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
-    - display_name: Vertex AI
-      enabled: false  # 2026-03-19 test: API keys still not supported (401)
+    - display_name: Vertex AI Express
+      enabled: true
       provider: vertex_ai
       priority: 3
       model_name: gemini-3-pro-image-preview
-      auth_type: vertex
       api_format: gemini
-      base_url: https://us-central1-aiplatform.googleapis.com/v1
+      base_url: https://aiplatform.googleapis.com/v1
       auth_header_format: none
       extra_params:
         responseModalities:
         - IMAGE
       modes:
         text2img:
-          endpoint: /projects/{project_id}/locations/us-central1/publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          endpoint: /publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
           method: POST
           content_type: application/json
           response_type: sync
         img2img:
-          endpoint: /projects/{project_id}/locations/us-central1/publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          endpoint: /publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
           method: POST
           content_type: application/json
           response_type: sync
-          use_oss_cache: true
     - display_name: 柏拉图
       enabled: true
       provider: 柏拉图
