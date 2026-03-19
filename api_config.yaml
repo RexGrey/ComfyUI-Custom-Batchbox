@@ -619,6 +619,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: Vertex AI
+      enabled: false  # Vertex AI requires OAuth2, not API keys
       provider: vertex_ai
       priority: 3
       model_name: gemini-3-pro-image-preview
