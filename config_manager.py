@@ -467,7 +467,9 @@ class ConfigManager:
     
     def get_api_endpoints(self, model_name: str) -> List[Dict]:
         """Get all API endpoints for a model, sorted by priority.
-        Endpoints with enabled: false are excluded."""
+        Endpoints with enabled: false are excluded.
+        Same-priority endpoints are randomly shuffled for load balancing."""
+        import random
         model_config = self.get_model_config(model_name)
         if not model_config:
             return []
@@ -475,7 +477,21 @@ class ConfigManager:
         endpoints = model_config.get("api_endpoints", [])
         # Filter out disabled endpoints (enabled defaults to True if not specified)
         endpoints = [ep for ep in endpoints if ep.get("enabled", True)]
-        return sorted(endpoints, key=lambda x: x.get("priority", 999))
+        sorted_eps = sorted(endpoints, key=lambda x: x.get("priority", 999))
+        
+        # Shuffle endpoints within each priority group for load balancing
+        result = []
+        i = 0
+        while i < len(sorted_eps):
+            priority = sorted_eps[i].get("priority", 999)
+            group = []
+            while i < len(sorted_eps) and sorted_eps[i].get("priority", 999) == priority:
+                group.append(sorted_eps[i])
+                i += 1
+            random.shuffle(group)
+            result.extend(group)
+        
+        return result
     
     def get_best_endpoint(self, model_name: str, mode: str = "text2img") -> Optional[Dict]:
         """

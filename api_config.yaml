@@ -576,7 +576,7 @@ models:
     - display_name: Account 稳定通道
       enabled: true
       provider: acggit_account
-      priority: 2
+      priority: 3
       model_name: gemini-3-pro-image-preview
       auth_type: account
       api_format: gemini
@@ -621,7 +621,7 @@ models:
     - display_name: Vertex AI Express
       enabled: true
       provider: vertex_ai
-      priority: 3
+      priority: 1
       model_name: gemini-3-pro-image-preview
       api_format: gemini
       base_url: https://aiplatform.googleapis.com/v1
@@ -643,7 +643,7 @@ models:
     - display_name: 柏拉图
       enabled: true
       provider: 柏拉图
-      priority: 4
+      priority: 2
       model_name: nano-banana-2
       use_oss_cache: false
       modes:
