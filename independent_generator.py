@@ -33,6 +33,42 @@ class IndependentGenerator:
     
     def __init__(self):
         self.timeout = 600
+
+    def _build_adapter_from_endpoint_info(self, endpoint_info: Optional[Dict[str, Any]]) -> Optional[GenericAPIAdapter]:
+        """Create the correct adapter class for a resolved endpoint."""
+        if not endpoint_info:
+            return None
+
+        provider = endpoint_info["provider"]
+        mode_config = endpoint_info["config"]
+        endpoint_config = endpoint_info["endpoint_config"]
+        ep_display = endpoint_config.get("display_name") or provider.name
+        print(f"[IndependentGenerator] 🎯 Using endpoint: {ep_display}")
+
+        api_format = endpoint_config.get("api_format", "")
+        if api_format == "volcengine":
+            from .adapters.volcengine import VolcengineAdapter
+
+            return VolcengineAdapter(
+                provider_config={
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "access_key": provider.access_key,
+                    "secret_key": provider.secret_key,
+                },
+                endpoint_config=endpoint_config,
+                mode_config=mode_config,
+            )
+
+        return GenericAPIAdapter(
+            provider_config={
+                "name": provider.name,
+                "base_url": provider.base_url,
+                "api_key": provider.api_key,
+            },
+            endpoint_config=endpoint_config,
+            mode_config=mode_config,
+        )
     
     def _compute_params_hash(
         self,
@@ -116,13 +152,13 @@ class IndependentGenerator:
         if not endpoint_info:
             print(f"[IndependentGenerator] No endpoint found for {model_name}/{mode}")
             return None
-        
+
         provider = endpoint_info["provider"]
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
         ep_display = endpoint_config.get("display_name") or provider.name
         print(f"[IndependentGenerator] 🎯 Using endpoint: {ep_display} ({'manual' if endpoint_override else 'auto'})")
-        
+
         # Dispatch to Volcengine adapter if api_format is volcengine
         api_format = endpoint_config.get("api_format", "")
         if api_format == "volcengine":
@@ -137,7 +173,7 @@ class IndependentGenerator:
                 endpoint_config=endpoint_config,
                 mode_config=mode_config
             )
-        
+
         return GenericAPIAdapter(
             provider_config={
                 "name": provider.name,
