@@ -103,12 +103,17 @@ class APIAdapter(ABC):
                 # Use good keys if available, fall back to all keys if all blacklisted
                 pool = good_keys if good_keys else active_keys
                 key = random.choice(pool)
+                # Key numbering: stable index based on config order (1-based)
+                key_num = active_keys.index(key) + 1 if key in active_keys else "?"
                 provider_name = self.provider.get("display_name", self.provider.get("name", "?"))
                 skipped = len(active_keys) - len(good_keys)
                 skip_info = f", {skipped} blacklisted" if skipped else ""
-                print(f"[APIAdapter] 🔑 Using key ...{key[-6:]} for {provider_name} ({len(pool)}/{len(active_keys)} keys{skip_info})")
+                print(f"[APIAdapter] 🔑 Key#{key_num} ...{key[-6:]} for {provider_name} ({len(pool)}/{len(active_keys)} keys{skip_info})")
                 return key
         return self.provider.get("api_key", "")
+    
+    # Store active_keys list for key number lookup in blacklist_key
+    _last_active_keys: list = []
     
     @classmethod
     def blacklist_key(cls, key: str, reason: str = ""):
