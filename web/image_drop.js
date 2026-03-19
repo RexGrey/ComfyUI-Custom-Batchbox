@@ -135,12 +135,32 @@ app.registerExtension({
 
             // Get canvas coordinates from drop position
             const graphCanvas = app.canvas;
-            const rect = canvasEl.getBoundingClientRect();
-            const clientX = e.clientX - rect.left;
-            const clientY = e.clientY - rect.top;
             const [canvasX, canvasY] = graphCanvas.convertEventToCanvasOffset(e);
 
-            // Process each image file: upload then create node
+            // Check if drop landed on an existing LoadImage node
+            const nodeUnderCursor = app.graph.getNodeOnPos(canvasX, canvasY);
+
+            if (imageFiles.length === 1 && nodeUnderCursor && nodeUnderCursor.type === "LoadImage") {
+                // Single image dropped onto LoadImage node → replace its image
+                const file = imageFiles[0];
+                console.log(`[ImageDrop] Replacing image in node #${nodeUnderCursor.id}: ${file.name}`);
+                const uploadedName = await uploadImageToInput(file);
+                if (uploadedName) {
+                    const imageWidget = nodeUnderCursor.widgets?.find(w => w.name === "image");
+                    if (imageWidget) {
+                        imageWidget.value = uploadedName;
+                        if (imageWidget.callback) {
+                            imageWidget.callback(uploadedName);
+                        }
+                    }
+                    nodeUnderCursor.setDirtyCanvas(true, true);
+                    app.graph.setDirtyCanvas(true, true);
+                    console.log(`[ImageDrop] ✅ Replaced image in node #${nodeUnderCursor.id}: ${uploadedName}`);
+                }
+                return;
+            }
+
+            // Not on a LoadImage node → create new node(s)
             // Space nodes vertically with ~220px gap
             for (let i = 0; i < imageFiles.length; i++) {
                 const file = imageFiles[i];
