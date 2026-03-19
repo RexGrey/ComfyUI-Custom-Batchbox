@@ -619,7 +619,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: Vertex AI
-      enabled: true
+      enabled: false  # 2026-03-19 test: API keys still not supported (401)
       provider: vertex_ai
       priority: 3
       model_name: gemini-3-pro-image-preview
