@@ -521,7 +521,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
@@ -780,7 +780,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
@@ -873,7 +873,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
@@ -944,7 +944,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
