@@ -65,6 +65,8 @@ class IndependentGenerator:
                 "name": provider.name,
                 "base_url": provider.base_url,
                 "api_key": provider.api_key,
+                "api_keys": provider.api_keys or [],
+                "project_id": provider.project_id or "",
             },
             endpoint_config=endpoint_config,
             mode_config=mode_config,

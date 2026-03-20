@@ -91,6 +91,15 @@ class GenericAPIAdapter(APIAdapter):
                 headers = {"X-Auth-T": account.token}
             except Exception:
                 headers = {"Authorization": f"Bearer {_current_key}"}
+        elif auth_type == "service_account":
+            # Vertex AI proper: OAuth2 Bearer token from Service Account JSON
+            try:
+                from ..vertex_sa_auth import get_access_token
+                sa_json = self.endpoint.get("service_account_json") or self.provider.get("service_account_json", "")
+                token = get_access_token(sa_json)
+                headers = {"Authorization": f"Bearer {token}"} if token else {"Authorization": f"Bearer {_current_key}"}
+            except Exception:
+                headers = {"Authorization": f"Bearer {_current_key}"}
         else:
             headers = {"Authorization": f"Bearer {_current_key}"}
         
@@ -338,6 +347,32 @@ class GenericAPIAdapter(APIAdapter):
                 "Content-Type": "application/json"
             }
             logger.info("[Gemini] Vertex AI endpoint (API key in URL)")
+        elif auth_type == "service_account":
+            # Vertex AI proper: OAuth2 Bearer token from Service Account JSON (multi-file rotation)
+            try:
+                from ..vertex_sa_auth import get_random_sa_token
+                sa_token, sa_project_id, sa_name = get_random_sa_token(self.provider)
+                if sa_token:
+                    headers = {
+                        "Authorization": f"Bearer {sa_token}",
+                        "Content-Type": "application/json"
+                    }
+                    # Replace {project_id} in URL with the SA's project_id
+                    if sa_project_id and "{project_id}" in url:
+                        url = url.replace("{project_id}", sa_project_id)
+                    logger.info(f"[Gemini] Vertex AI SA: {sa_name} (project={sa_project_id}, token ...{sa_token[-6:]})")
+                else:
+                    headers = {
+                        "Authorization": f"Bearer {_current_key}",
+                        "Content-Type": "application/json"
+                    }
+                    logger.warning("[Gemini] SA token failed, falling back to API key")
+            except Exception as e:
+                headers = {
+                    "Authorization": f"Bearer {_current_key}",
+                    "Content-Type": "application/json"
+                }
+                logger.warning(f"[Gemini] SA auth error: {e}, falling back to API key")
         elif auth_header_format == "none":
             # No Authorization header (e.g. Google official API uses ?key= in URL)
             headers = {
@@ -444,7 +479,7 @@ class GenericAPIAdapter(APIAdapter):
                 }
             })
         
-        contents = [{"parts": parts}]
+        contents = [{"role": "user", "parts": parts}]
         
         # Build generationConfig from mode_config or endpoint config
         generation_config = self.mode_config.get("generation_config", {}).copy()

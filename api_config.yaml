@@ -521,7 +521,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
@@ -576,7 +576,7 @@ models:
     - display_name: Account 稳定通道
       enabled: true
       provider: acggit_account
-      priority: 2
+      priority: 4
       model_name: gemini-3-pro-image-preview
       auth_type: account
       api_format: gemini
@@ -618,33 +618,54 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
-    - display_name: Vertex AI
+    - display_name: Vertex AI Express
+      enabled: true
       provider: vertex_ai
-      priority: 3
+      priority: 2
       model_name: gemini-3-pro-image-preview
-      auth_type: vertex
       api_format: gemini
-      base_url: https://us-central1-aiplatform.googleapis.com/v1
+      base_url: https://aiplatform.googleapis.com/v1
       auth_header_format: none
       extra_params:
         responseModalities:
         - IMAGE
       modes:
         text2img:
-          endpoint: /projects/{project_id}/locations/us-central1/publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          endpoint: /publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
           method: POST
           content_type: application/json
           response_type: sync
         img2img:
-          endpoint: /projects/{project_id}/locations/us-central1/publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          endpoint: /publishers/google/models/gemini-3-pro-image-preview:generateContent?key={api_key}
           method: POST
           content_type: application/json
           response_type: sync
-          use_oss_cache: true
+    - display_name: Vertex AI 正式版
+      enabled: true
+      provider: vertex_ai_sa
+      priority: 1
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      auth_type: service_account
+      auth_header_format: bearer
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /projects/{project_id}/locations/global/publishers/google/models/gemini-3-pro-image-preview:generateContent
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /projects/{project_id}/locations/global/publishers/google/models/gemini-3-pro-image-preview:generateContent
+          method: POST
+          content_type: application/json
+          response_type: sync
     - display_name: 柏拉图
       enabled: true
       provider: 柏拉图
-      priority: 4
+      priority: 3
       model_name: nano-banana-2
       use_oss_cache: false
       modes:
@@ -781,7 +802,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
@@ -874,7 +895,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
@@ -945,7 +966,7 @@ models:
     show_seed_widget: false
     dynamic_inputs:
       image:
-        max: 12
+        max: 14
         type: IMAGE
         label: 图片
     parameter_schema:
