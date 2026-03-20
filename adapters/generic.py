@@ -444,7 +444,7 @@ class GenericAPIAdapter(APIAdapter):
                 }
             })
         
-        contents = [{"parts": parts}]
+        contents = [{"role": "user", "parts": parts}]
         
         # Build generationConfig from mode_config or endpoint config
         generation_config = self.mode_config.get("generation_config", {}).copy()
