@@ -2,13 +2,38 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# 敏感配置文件 - 包含 API 密钥
+# ===== 敏感文件 - 绝对不能上传 =====
+
+# API 密钥配置
 secrets.yaml
+
+# Account 登录凭据 (token, email)
+.auth.json
+
+# Service Account JSON keys (Google Cloud)
+service_accounts/
+*.service_account.json
+
+# GCS 凭据
+gcs_credentials*.json
 
 # 运行时缓存数据库
 *.db
 *.db-shm
 *.db-wal
-# Service Account JSON keys (sensitive)
-service_accounts/
 
+# 环境变量文件
+.env
+.env.*
+
+# 私钥文件
+*.pem
+*.p12
+*.key
+*.pfx
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
