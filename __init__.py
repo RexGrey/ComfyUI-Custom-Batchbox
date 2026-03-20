@@ -189,7 +189,7 @@ try:
             # Default max_image_inputs based on model category:
             # image/image_editor models commonly accept multiple reference images
             category = model_config.get("category", "") if model_config else ""
-            default_max_images = 9 if category in ("image", "image_editor") else 1
+            default_max_images = 14 if category in ("image", "image_editor") else 1
             max_image_inputs = model_config.get("max_image_inputs", default_max_images) if model_config else 1
             
             # Also return flattened version for easier frontend processing
