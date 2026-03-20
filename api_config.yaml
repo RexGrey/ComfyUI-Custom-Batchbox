@@ -640,6 +640,28 @@ models:
           method: POST
           content_type: application/json
           response_type: sync
+    - display_name: Vertex AI 正式版
+      enabled: true
+      provider: vertex_ai_sa
+      priority: 1
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      auth_type: service_account
+      auth_header_format: bearer
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /projects/{project_id}/locations/global/publishers/google/models/gemini-3-pro-image-preview:generateContent
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /projects/{project_id}/locations/global/publishers/google/models/gemini-3-pro-image-preview:generateContent
+          method: POST
+          content_type: application/json
+          response_type: sync
     - display_name: 柏拉图
       enabled: true
       provider: 柏拉图

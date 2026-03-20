@@ -9,3 +9,6 @@ secrets.yaml
 *.db
 *.db-shm
 *.db-wal
+# Service Account JSON keys (sensitive)
+service_accounts/
+
