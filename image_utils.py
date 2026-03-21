@@ -249,7 +249,45 @@ def validate_for_api(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 5: GAUSSIAN BLUR PROCESSING
+# SECTION 5: ASPECT RATIO DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Standard aspect ratios ordered by value (width/height)
+_STANDARD_RATIOS = [
+    ("9:16", 9 / 16),
+    ("2:3",  2 / 3),
+    ("3:4",  3 / 4),
+    ("4:5",  4 / 5),
+    ("1:1",  1.0),
+    ("5:4",  5 / 4),
+    ("4:3",  4 / 3),
+    ("3:2",  3 / 2),
+    ("16:9", 16 / 9),
+    ("21:9", 21 / 9),
+]
+
+
+def detect_aspect_ratio(width: int, height: int) -> str:
+    """
+    Detect the closest standard aspect ratio from image dimensions.
+
+    Returns a string like "16:9", "1:1", "3:4", etc.
+    """
+    if width <= 0 or height <= 0:
+        return "1:1"
+    ratio = width / height
+    best_label = "1:1"
+    best_diff = float("inf")
+    for label, std_ratio in _STANDARD_RATIOS:
+        diff = abs(ratio - std_ratio)
+        if diff < best_diff:
+            best_diff = diff
+            best_label = label
+    return best_label
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 6: GAUSSIAN BLUR PROCESSING
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def apply_gaussian_blur(pil_image: Image.Image, sigma: float) -> Image.Image:

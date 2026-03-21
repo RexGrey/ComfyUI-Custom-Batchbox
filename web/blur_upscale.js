@@ -1007,8 +1007,16 @@ app.registerExtension({
 
           // Try independent generation (concurrent), fallback to queue
           try {
-            const imageB64 = await getInputImageBase64(node);
-            if (!imageB64) {
+            // Collect all connected image inputs via shared API
+            let imagesBase64 = [];
+            if (window.batchboxAPI?.collectImageInputsBase64) {
+              imagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+            } else {
+              // Fallback to legacy single-image method
+              const singleB64 = await getInputImageBase64(node);
+              if (singleB64) imagesBase64 = [singleB64];
+            }
+            if (imagesBase64.length === 0) {
               throw new Error("无法获取输入图片，请确保已连接加载图像节点");
             }
 
@@ -1031,7 +1039,8 @@ app.registerExtension({
               style_prompt: getVal("style_prompt", ""),
               seed: getVal("seed", 0),
               batch_count: getVal("batch_count", 1),
-              image_base64: imageB64,
+              aspect_ratio: getVal("aspect_ratio", "auto"),
+              images_base64: imagesBase64,
               endpoint_override: endpointOverride,
             };
 

@@ -469,12 +469,19 @@ try:
             repair_mode = data.get("repair_mode", "直出")
             style_prompt = data.get("style_prompt", "")
             seed = int(data.get("seed", 0))
-            batch_count = int(data.get("batch_count", 1))
-            image_base64 = data.get("image_base64", "")
+            batch_count = min(int(data.get("batch_count", 1)), 10)  # 安全上限
+            aspect_ratio_widget = data.get("aspect_ratio", "auto")
             endpoint_override_param = data.get("endpoint_override")
 
-            if not image_base64:
-                return web.json_response({"success": False, "error": "image_base64 is required"}, status=400)
+            # Support both new multi-image format and legacy single-image format
+            images_base64 = data.get("images_base64") or []
+            if not images_base64:
+                legacy = data.get("image_base64", "")
+                if legacy:
+                    images_base64 = [legacy]
+
+            if not images_base64:
+                return web.json_response({"success": False, "error": "images_base64 is required"}, status=400)
 
             # --- Step 1: Resolve model from upscale_settings ---
             settings = config_manager.get_upscale_settings()
@@ -514,24 +521,40 @@ try:
             # --- Step 3: Compute sigma ---
             sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
 
-            # --- Step 4: Decode image, apply Gaussian blur, re-encode ---
-            if "," in image_base64:
-                image_base64 = image_base64.split(",", 1)[1]
-            img_bytes = base64.b64decode(image_base64)
-            pil_img = Image.open(BytesIO(img_bytes))
-            if pil_img.mode not in ("RGB", "RGBA"):
-                pil_img = pil_img.convert("RGB")
+            # --- Step 4: Decode images, apply Gaussian blur, re-encode ---
+            blurred_b64_list = []
+            for idx, img_b64 in enumerate(images_base64):
+                if "," in img_b64:
+                    img_b64 = img_b64.split(",", 1)[1]
+                img_bytes = base64.b64decode(img_b64)
+                pil_img = Image.open(BytesIO(img_bytes))
+                if pil_img.mode not in ("RGB", "RGBA"):
+                    pil_img = pil_img.convert("RGB")
 
-            print(f"[BlurUpscale-Independent] Applying Gaussian blur σ={sigma} to {pil_img.size}")
-            blurred_pil = apply_gaussian_blur(pil_img, sigma)
+                print(f"[BlurUpscale-Independent] Applying Gaussian blur σ={sigma} to image {idx+1}/{len(images_base64)} {pil_img.size}")
+                blurred_pil = apply_gaussian_blur(pil_img, sigma)
 
-            # Encode blurred image to base64 for IndependentGenerator
-            buf = BytesIO()
-            blurred_pil.save(buf, format="PNG")
-            blurred_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                buf = BytesIO()
+                blurred_pil.save(buf, format="PNG")
+                blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
 
             # --- Step 5: Build extra_params with default_params ---
             extra_params = dict(default_params) if default_params else {}
+
+            # Apply widget aspect_ratio (overrides default_params)
+            if aspect_ratio_widget and aspect_ratio_widget != "auto":
+                extra_params["aspect_ratio"] = aspect_ratio_widget
+
+            # Resolve aspect_ratio='auto' from first input image dimensions
+            if extra_params.get("aspect_ratio") in (None, "auto") and images_base64:
+                from .image_utils import detect_aspect_ratio
+                # Use the first decoded PIL image (before blur) to get dimensions
+                first_b64 = images_base64[0]
+                if "," in first_b64:
+                    first_b64 = first_b64.split(",", 1)[1]
+                first_img = Image.open(BytesIO(base64.b64decode(first_b64)))
+                extra_params["aspect_ratio"] = detect_aspect_ratio(first_img.width, first_img.height)
+                print(f"[BlurUpscale-Independent] Auto aspect_ratio: {first_img.size} → {extra_params['aspect_ratio']}")
 
             # Endpoint override: manual selection > saved in settings
             final_endpoint = endpoint_override_param or saved_endpoint or None
@@ -559,7 +582,7 @@ try:
                 seed=seed,
                 batch_count=batch_count,
                 extra_params=extra_params,
-                images_base64=[blurred_b64],
+                images_base64=blurred_b64_list,
                 endpoint_override=final_endpoint,
                 on_batch_complete=on_batch_complete
             )
@@ -662,7 +685,7 @@ try:
                 model=model,
                 prompt=prompt,
                 seed=data.get("seed", 0),
-                batch_count=data.get("batch_count", 1),
+                batch_count=min(int(data.get("batch_count", 1)), 20),  # 安全上限
                 extra_params=data.get("extra_params"),
                 images_base64=data.get("images_base64"),
                 endpoint_override=data.get("endpoint_override"),

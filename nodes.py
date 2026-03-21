@@ -607,7 +607,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
             "required": {
                 "model": (models, {"default": models[0] if models else None}),
                 "prompt": ("STRING", {"multiline": True}),
-                "batch_count": ("INT", {"default": 1, "min": 1, "max": 100}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 20}),
             },
             "optional": {
                 # Parameters are now fully dynamic from YAML schema
@@ -1042,7 +1042,7 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
             },
             "optional": {
                 "prompt": ("STRING", {"multiline": True, "default": ""}),
-                "batch_count": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 20, "step": 1}),
             },
             "hidden": {
                 "extra_params": ("STRING", {"default": "{}"}),
@@ -1258,7 +1258,7 @@ class NanoBananaPro(DynamicImageNodeBase):
             "required": {
                 "preset": (presets, {"default": presets[0] if presets else None}),
                 "auto_switch_provider": ("BOOLEAN", {"default": False, "label_on": "Enabled", "label_off": "Disabled"}),
-                "batch_count": ("INT", {"default": 1, "min": 1, "max": 100}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 20}),
                 "prompt": ("STRING", {"multiline": True}),
                 "mode": (["auto", "text2img", "img2img"], {"default": "auto"}),
                 "aspect_ratio": (["auto", "16:9", "4:3", "4:5", "3:2", "1:1", "2:3", "3:4", "5:4", "9:16", "21:9"], {"default": "auto"}),
@@ -1398,15 +1398,15 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image": ("IMAGE",),
                 "blur_intensity": (list(cls.BLUR_PRESETS.keys()), {"default": "轻 (σ1-3)"}),
                 "repair_mode": (list(cls.REPAIR_PROMPTS.keys()), {"default": "直出"}),
-            },
-            "optional": {
                 "custom_sigma": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 15.0, "step": 0.5}),
                 "style_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "batch_count": ("INT", {"default": 1, "min": 1, "max": 10}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647}),
+            },
+            "optional": {
+                "image1": ("IMAGE",),
             },
             "hidden": {
                 "extra_params": ("STRING", {"default": "{}"}),
@@ -1450,13 +1450,28 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             return custom_sigma
         return self.BLUR_PRESETS.get(blur_intensity, 2.0)
     
-    def upscale(self, image: torch.Tensor, blur_intensity: str, repair_mode: str, **kwargs) -> Dict:
+    def upscale(self, blur_intensity: str, repair_mode: str, **kwargs) -> Dict:
         """Apply Gaussian blur preprocessing and upscale via AI model."""
         from .image_utils import apply_gaussian_blur_tensor
-        
+
+        # Collect all connected image inputs (image1, image2, ...)
+        image_tensors = []
+        for key in sorted(kwargs.keys()):
+            if key.startswith("image") and isinstance(kwargs[key], torch.Tensor):
+                image_tensors.append(kwargs[key])
+
+        # Use first image as primary (for blur preview output and cache hash)
+        image = image_tensors[0] if image_tensors else None
+        if image is None:
+            empty = torch.zeros(1, 64, 64, 3)
+            return {
+                "ui": {"images": []},
+                "result": (empty, empty, empty, "错误：未连接输入图片")
+            }
+
         custom_sigma = kwargs.get("custom_sigma", 0.0)
         style_prompt = kwargs.get("style_prompt", "")
-        batch_count = kwargs.get("batch_count", 1)
+        batch_count = min(int(kwargs.get("batch_count", 1)), 10)  # 安全上限
         
         # Get model and endpoint from global upscale_settings
         model, saved_endpoint = self._get_upscale_model()
@@ -1534,17 +1549,21 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
         
         # ==========================================
-        # STEP 2: Prepare blurred image for API upload
+        # STEP 2: Prepare blurred images for API upload
         # ==========================================
-        # Use first image in batch for upload
-        blurred_pil = tensor2pil(blurred_tensor)[0]
-        buffered = BytesIO()
-        blurred_pil.save(buffered, format="PNG")
-        
+        upload_files = []
+        for i, img_tensor in enumerate(image_tensors):
+            blurred_t = blurred_tensor if i == 0 else apply_gaussian_blur_tensor(img_tensor, sigma)
+            blurred_pil = tensor2pil(blurred_t)[0]
+            buffered = BytesIO()
+            blurred_pil.save(buffered, format="PNG")
+            field_name = "image" if i == 0 else f"image{i + 1}"
+            upload_files.append((field_name, (f"blurred_input_{i}.png", buffered.getvalue(), "image/png")))
+
         params = {
             "prompt": prompt,
             "seed": kwargs.get("seed", 0),
-            "_upload_files": [("image", ("blurred_input.png", buffered.getvalue(), "image/png"))],
+            "_upload_files": upload_files,
         }
 
         # Merge default params from upscale_settings (lower priority than existing params)
@@ -1561,7 +1580,15 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         # Parse extra dynamic parameters (highest priority, overrides defaults)
         extra_params = self._parse_extra_params(extra_params_str)
         params.update(extra_params)
-        
+
+        # Resolve aspect_ratio='auto' from input image dimensions
+        if params.get("aspect_ratio") in (None, "auto"):
+            from .image_utils import detect_aspect_ratio
+            # image tensor shape: [B, H, W, C]
+            h, w = image.shape[1], image.shape[2]
+            params["aspect_ratio"] = detect_aspect_ratio(w, h)
+            print(f"[GaussianBlurUpscale] Auto aspect_ratio: {w}x{h} → {params['aspect_ratio']}")
+
         # Ensure seed is int
         if "seed" in params:
             try:
@@ -1660,7 +1687,7 @@ def create_dynamic_node(preset_name: str, node_def: Dict):
     
     # Ensure batch_count exists
     if "batch_count" not in processed_required:
-        processed_required["batch_count"] = ("INT", {"default": 1, "min": 1, "max": 100})
+        processed_required["batch_count"] = ("INT", {"default": 1, "min": 1, "max": 20})
     
     # Process optional parameters
     processed_optional = {}

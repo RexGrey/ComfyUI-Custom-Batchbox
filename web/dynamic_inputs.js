@@ -28,8 +28,16 @@ const DYNAMIC_INPUT_NODES = [
     "DynamicImageGeneration",
     "DynamicVideoGeneration",
     "DynamicAudioGeneration",
-    "DynamicTextGeneration"
+    "DynamicTextGeneration",
+    "GaussianBlurUpscale"
 ];
+
+// Fixed dynamic_inputs config for nodes that don't have a model widget
+const NODE_FIXED_DYNAMIC_INPUTS = {
+    "GaussianBlurUpscale": {
+        image: { max: 10, type: "IMAGE", label: "图片" }
+    }
+};
 
 // Cache for node settings (default_width, etc.)
 let nodeSettingsCache = null;
@@ -270,8 +278,13 @@ async function updateAllDynamicInputs(node) {
         }
     }
 
-    const config = modelName ? await getDynamicInputsConfig(modelName) : {};
-    // Debug logging removed to avoid console spam
+    let config;
+    if (modelName) {
+        config = await getDynamicInputsConfig(modelName);
+    } else {
+        const nodeType = node.comfyClass || node.type;
+        config = NODE_FIXED_DYNAMIC_INPUTS[nodeType] || {};
+    }
 
     // Process each configured input type
     for (const [key, typeConfig] of Object.entries(config)) {
