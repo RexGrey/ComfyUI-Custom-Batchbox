@@ -1401,6 +1401,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 "blur_intensity": (list(cls.BLUR_PRESETS.keys()), {"default": "轻 (σ1-3)"}),
                 "repair_mode": (list(cls.REPAIR_PROMPTS.keys()), {"default": "直出"}),
                 "custom_sigma": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 15.0, "step": 0.5}),
+                "aspect_ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9"], {"default": "auto"}),
                 "style_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "batch_count": ("INT", {"default": 1, "min": 1, "max": 10}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647}),
@@ -1576,6 +1577,11 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             for key, val in default_params.items():
                 if key not in params:
                     params[key] = val
+
+        # Apply aspect_ratio from widget (overrides default_params)
+        widget_ratio = kwargs.get("aspect_ratio", "auto")
+        if widget_ratio and widget_ratio != "auto":
+            params["aspect_ratio"] = widget_ratio
 
         # Parse extra dynamic parameters (highest priority, overrides defaults)
         extra_params = self._parse_extra_params(extra_params_str)
