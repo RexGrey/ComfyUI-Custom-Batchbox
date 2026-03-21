@@ -988,6 +988,17 @@ app.registerExtension({
       // Retry: ComfyUI may add control_after_generate AFTER onNodeCreated
       setTimeout(() => { hideAllManaged(); node.setDirtyCanvas?.(true); }, 100);
 
+      // --- Remove non-image input slots (prevent combo/widget connectors overlapping image inputs) ---
+      setTimeout(() => {
+        if (node.inputs) {
+          for (let i = node.inputs.length - 1; i >= 0; i--) {
+            if (node.inputs[i].name && !node.inputs[i].name.startsWith("image")) {
+              node.removeInput(i);
+            }
+          }
+        }
+      }, 50);
+
       // --- Add "▶ 开始生成" button ---
       if (!node.widgets?.find(w => w._isGenerateButton)) {
         const generateBtn = node.addWidget("button", "▶ 开始生成", null, async () => {
