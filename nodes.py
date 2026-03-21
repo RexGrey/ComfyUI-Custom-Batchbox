@@ -1473,6 +1473,10 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         custom_sigma = kwargs.get("custom_sigma", 0.0)
         style_prompt = kwargs.get("style_prompt", "")
         batch_count = min(int(kwargs.get("batch_count", 1)), 10)  # 安全上限
+
+        # Save first input image as node preview (show input, not generated output)
+        input_preview = save_preview_images(tensor2pil(image[:1]), prefix="blur_input")
+        input_preview_json = json.dumps(input_preview) if input_preview else ""
         
         # Get model and endpoint from global upscale_settings
         model, saved_endpoint = self._get_upscale_model()
@@ -1536,7 +1540,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
                 return {
                     "ui": {
-                        "images": preview_results,
+                        "images": input_preview,
                         "_last_images": [last_images_json],
                         "_cached_hash": [cached_hash],
                     },
@@ -1665,7 +1669,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         
         return {
             "ui": {
-                "images": preview_results,
+                "images": input_preview,
                 "_last_images": [last_images_json],
                 "_cached_hash": [current_hash],
             },
