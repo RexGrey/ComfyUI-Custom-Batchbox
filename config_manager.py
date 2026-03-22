@@ -360,7 +360,7 @@ class ConfigManager:
         if "model_order" not in self._config:
             self._config["model_order"] = {}
         self._config["model_order"][category] = order
-        self.save_config()
+        self.save_config_data(self._config)
     
     def _sort_models_by_order(self, model_names: List[str], category: str) -> List[str]:
         """Sort model names according to configured order"""

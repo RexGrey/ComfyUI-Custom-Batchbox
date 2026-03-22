@@ -129,7 +129,15 @@ class TestConfigManager(unittest.TestCase):
         
         video_models = manager.get_models("video")
         self.assertEqual(len(video_models), 0)
-    
+
+    def test_set_model_order_persists_configuration(self):
+        """Test that setting model order persists to disk and reloads"""
+        manager = ConfigManager(self.temp_config_path)
+        manager.set_model_order("image", ["test_model"])
+
+        reloaded_manager = ConfigManager(self.temp_config_path)
+        self.assertEqual(reloaded_manager.get_model_order("image"), ["test_model"])
+
     def test_get_model_config(self):
         """Test getting full model config"""
         manager = ConfigManager(self.temp_config_path)

@@ -766,55 +766,49 @@ function closeStyleEditor() {
   }
 }
 
-function getInputImageSrc(node) {
+function getLinkedInputImageUrl(node) {
   const inputLink = node.inputs?.[0]?.link;
-  if (inputLink && app.graph) {
-    const linkInfo = app.graph.links[inputLink];
-    if (linkInfo) {
-      const srcNode = app.graph.getNodeById(linkInfo.origin_id);
-      if (srcNode?.imgs?.length > 0 && srcNode.imgs[0].src) {
-        return srcNode.imgs[0].src;
-      }
-    }
+  if (!inputLink || !app.graph) {
+    return null;
   }
-  if (node.imgs?.length > 0 && node.imgs[0].src) {
-    return node.imgs[0].src;
+
+  const linkInfo = app.graph.links[inputLink];
+  if (!linkInfo) {
+    return null;
   }
+
+  const srcNode = app.graph.getNodeById(linkInfo.origin_id);
+  if (!srcNode) {
+    return null;
+  }
+
+  if (srcNode.imgs?.length > 0 && srcNode.imgs[0].src) {
+    return srcNode.imgs[0].src;
+  }
+
+  const previewInfo = srcNode.images?.[0];
+  if (previewInfo?.filename) {
+    return `/view?filename=${encodeURIComponent(previewInfo.filename)}&subfolder=${encodeURIComponent(previewInfo.subfolder || "")}&type=${previewInfo.type || "output"}`;
+  }
+
+  const imageWidget = srcNode.widgets?.find(w =>
+    w.name === "image" && typeof w.value === "string" && w.value
+  );
+  if (imageWidget) {
+    return `/view?filename=${encodeURIComponent(imageWidget.value)}&type=input`;
+  }
+
   return null;
 }
 
+function getInputImageSrc(node) {
+  return getLinkedInputImageUrl(node);
+}
+
 async function getInputImageBase64(node) {
-  const inputLink = node.inputs?.[0]?.link;
-  if (inputLink && app.graph) {
-    const linkInfo = app.graph.links[inputLink];
-    if (linkInfo) {
-      const srcNode = app.graph.getNodeById(linkInfo.origin_id);
-
-      // Method 1: Use cached preview image (srcNode.imgs)
-      if (srcNode?.imgs?.length > 0 && srcNode.imgs[0].src) {
-        return await imgToBase64(srcNode.imgs[0].src);
-      }
-
-      // Method 2: LoadImage node — get image via ComfyUI /view API using widget filename
-      if (srcNode) {
-        const imageWidget = srcNode.widgets?.find(w =>
-          w.name === "image" && typeof w.value === "string" && w.value
-        );
-        if (imageWidget) {
-          try {
-            const filename = imageWidget.value;
-            const viewUrl = `/view?filename=${encodeURIComponent(filename)}&type=input`;
-            return await imgToBase64(viewUrl);
-          } catch (e) {
-            console.warn("[BlurUpscale] Failed to fetch via /view API:", e);
-          }
-        }
-      }
-    }
-  }
-  // Method 3: Use current node's own cached images
-  if (node.imgs?.length > 0 && node.imgs[0].src) {
-    return await imgToBase64(node.imgs[0].src);
+  const imageUrl = getLinkedInputImageUrl(node);
+  if (imageUrl) {
+    return await imgToBase64(imageUrl);
   }
   return null;
 }

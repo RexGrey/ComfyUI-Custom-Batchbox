@@ -455,6 +455,9 @@ class DynamicImageNodeBase:
         # Parse extra_params and remove seed (we use kwargs.seed separately)
         # This ensures consistent hashing between frontend and backend
         extra_params = self._parse_extra_params(extra_params_str)
+        hash_extras = kwargs.get("_hash_extras")
+        if isinstance(hash_extras, dict):
+            extra_params.update(hash_extras)
         extra_params.pop("seed", None)  # Remove seed from extra_params
         # Use separators without spaces to match JavaScript JSON.stringify
         extra_params_normalized = json.dumps(extra_params, sort_keys=True, separators=(',', ':'))
@@ -1500,21 +1503,23 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         cached_hash = kwargs.get("_cached_hash", "")
         extra_params_str = kwargs.get("extra_params", "{}")
         skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        aspect_ratio = kwargs.get("aspect_ratio", "auto")
         
         # Build kwargs dict for hash computation (include upscale-specific params)
         hash_kwargs = {
             "extra_params": extra_params_str,
             "seed": kwargs.get("seed", 0),
-            "blur_intensity": blur_intensity,
-            "custom_sigma": custom_sigma,
-            "repair_mode": repair_mode,
-            "style_prompt": style_prompt,
             "image": image,
+            "_hash_extras": {
+                "blur_intensity": blur_intensity,
+                "custom_sigma": custom_sigma,
+                "repair_mode": repair_mode,
+                "style_prompt": style_prompt,
+                "aspect_ratio": aspect_ratio,
+            },
         }
-        
-        params_not_loaded = (extra_params_str == "{}" and last_images_json and cached_hash)
-        
-        if params_not_loaded or skip_hash_check:
+
+        if skip_hash_check:
             need_api_call = force_generate or not last_images_json
         else:
             current_hash = self._compute_params_hash(model, prompt, batch_count, hash_kwargs)
