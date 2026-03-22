@@ -1521,24 +1521,43 @@ api.queuePrompt = async function (number, workflowData) {
         batchboxNodeIds.add(String(node.id));
       }
 
-      if (node._dynamicParamManager && node.widgets) {
+      if (node.widgets) {
         // Track BatchBox nodes
 
         // Update extra_params widget
         // IMPORTANT: If widgets aren't restored yet (after restart), use pending params
         const extraParamsWidget = node.widgets.find(w => w.name === "extra_params");
         if (extraParamsWidget) {
-          let dynamicParams = node._dynamicParamManager.collectDynamicParams();
+          if (node._dynamicParamManager) {
+            let dynamicParams = node._dynamicParamManager.collectDynamicParams();
 
-          // If collected params are empty but we have pending params (saved in workflow),
-          // use those instead. This fixes the "first execution after restart" issue.
-          if (Object.keys(dynamicParams).length === 0 && node._pendingDynamicParams) {
-            dynamicParams = node._pendingDynamicParams;
-            console.log(`[DynamicParams] node ${node.id}: Using pending params (widgets not ready yet)`);
+            // If collected params are empty but we have pending params (saved in workflow),
+            // use those instead. This fixes the "first execution after restart" issue.
+            if (Object.keys(dynamicParams).length === 0 && node._pendingDynamicParams) {
+              dynamicParams = node._pendingDynamicParams;
+              console.log(`[DynamicParams] node ${node.id}: Using pending params (widgets not ready yet)`);
+            }
+
+            extraParamsWidget.value = JSON.stringify(dynamicParams);
+            console.log(`[DynamicParams] node ${node.id} extra_params:`, extraParamsWidget.value);
+          } else if (isBatchboxButtonNode(node)) {
+            let extraParams = {};
+            try {
+              extraParams = JSON.parse(extraParamsWidget.value || "{}");
+            } catch {
+              extraParams = {};
+            }
+
+            const toggleWidget = node.widgets?.find(w => w.name === "手动选择端点");
+            const selectorWidget = node.widgets?.find(w => w.name === "endpoint_selector");
+            if (toggleWidget?.value && selectorWidget?.value) {
+              extraParams.endpoint_override = selectorWidget.value;
+            } else {
+              delete extraParams.endpoint_override;
+            }
+
+            extraParamsWidget.value = JSON.stringify(extraParams);
           }
-
-          extraParamsWidget.value = JSON.stringify(dynamicParams);
-          console.log(`[DynamicParams] node ${node.id} extra_params:`, extraParamsWidget.value);
         }
       }
     }
@@ -1556,6 +1575,7 @@ api.queuePrompt = async function (number, workflowData) {
 
       const nodeId = String(node.id);
       const nodeData = workflowData.output[nodeId];
+      const extraParamsWidget = node.widgets?.find(w => w.name === "extra_params");
 
       if (nodeData && nodeData.inputs) {
         if (hasDynamicParams) {
@@ -1566,6 +1586,8 @@ api.queuePrompt = async function (number, workflowData) {
             dynamicParams = node._pendingDynamicParams;
           }
           nodeData.inputs.extra_params = JSON.stringify(dynamicParams);
+        } else if (extraParamsWidget) {
+          nodeData.inputs.extra_params = extraParamsWidget.value || "{}";
         }
 
         // Inject _force_generate

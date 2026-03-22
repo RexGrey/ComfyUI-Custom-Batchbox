@@ -311,3 +311,41 @@ class TestGenerate:
         assert result["success"] is False
         assert "Batch 1 failed: no provider" in result["error"]
         assert "Batch 2 failed: no provider" in result["error"]
+
+    def test_generate_hash_uses_only_successfully_decoded_images(self):
+        valid_png = self._png_bytes()
+        valid_b64 = "data:image/png;base64," + base64.b64encode(valid_png).decode("ascii")
+        invalid_b64 = "data:image/png;base64,not-valid-base64!!!"
+
+        seen_upload_counts = []
+
+        def execute_side_effect(model, params, mode, endpoint_override):
+            seen_upload_counts.append(len(params.get("_upload_files", [])))
+            return APIResponse(success=True, images=[valid_png])
+
+        with patch.object(self.gen, "execute_with_failover", side_effect=execute_side_effect):
+            with patch.object(
+                self.gen,
+                "_save_single_image",
+                return_value={"filename": "ok.png", "subfolder": "", "type": "output"},
+            ):
+                result = asyncio.run(
+                    self.gen.generate(
+                        "model_a",
+                        "prompt",
+                        seed=10,
+                        batch_count=1,
+                        images_base64=[valid_b64, invalid_b64],
+                    )
+                )
+
+        assert result["success"] is True
+        assert seen_upload_counts == [1]
+        assert result["params_hash"] == self.gen._compute_params_hash(
+            "model_a",
+            "prompt",
+            1,
+            10,
+            None,
+            images_base64=[valid_b64],
+        )

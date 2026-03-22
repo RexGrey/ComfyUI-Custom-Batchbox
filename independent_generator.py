@@ -42,9 +42,6 @@ class IndependentGenerator:
         provider = endpoint_info["provider"]
         mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
-        ep_display = endpoint_config.get("display_name") or provider.name
-        print(f"[IndependentGenerator] 🎯 Using endpoint: {ep_display}")
-
         api_format = endpoint_config.get("api_format", "")
         if api_format == "volcengine":
             from .adapters.volcengine import VolcengineAdapter
@@ -161,37 +158,10 @@ class IndependentGenerator:
             return None
 
         provider = endpoint_info["provider"]
-        mode_config = endpoint_info["config"]
         endpoint_config = endpoint_info["endpoint_config"]
         ep_display = endpoint_config.get("display_name") or provider.name
         print(f"[IndependentGenerator] 🎯 Using endpoint: {ep_display} ({'manual' if endpoint_override else 'auto'})")
-
-        # Dispatch to Volcengine adapter if api_format is volcengine
-        api_format = endpoint_config.get("api_format", "")
-        if api_format == "volcengine":
-            from .adapters.volcengine import VolcengineAdapter
-            return VolcengineAdapter(
-                provider_config={
-                    "name": provider.name,
-                    "base_url": provider.base_url,
-                    "access_key": provider.access_key,
-                    "secret_key": provider.secret_key
-                },
-                endpoint_config=endpoint_config,
-                mode_config=mode_config
-            )
-
-        return GenericAPIAdapter(
-            provider_config={
-                "name": provider.name,
-                "base_url": provider.base_url,
-                "api_key": provider.api_key,
-                "api_keys": provider.api_keys or [],
-                "project_id": provider.project_id or "",
-            },
-            endpoint_config=endpoint_config,
-            mode_config=mode_config
-        )
+        return self._build_adapter_from_endpoint_info(endpoint_info)
     
     def execute_with_failover(self, model_name: str, params: Dict[str, Any],
                                mode: str = "text2img",
@@ -220,17 +190,7 @@ class IndependentGenerator:
             )
             
             for alt in alternatives:
-                alt_adapter = GenericAPIAdapter(
-                    provider_config={
-                        "name": alt["provider"].name,
-                        "base_url": alt["provider"].base_url,
-                        "api_key": alt["provider"].api_key,
-                        "api_keys": alt["provider"].api_keys or [],
-                        "project_id": alt["provider"].project_id or "",
-                    },
-                    endpoint_config=alt["endpoint_config"],
-                    mode_config=alt["config"]
-                )
+                alt_adapter = self._build_adapter_from_endpoint_info(alt)
                 
                 print(f"[IndependentGenerator] Trying alternative: {alt['provider'].name}")
                 result = alt_adapter.execute(params, mode)
@@ -294,6 +254,8 @@ class IndependentGenerator:
         # Handle image inputs for img2img
         # MEMORY OPTIMIZATION: Decode once, encode once, share across all batch requests
         shared_upload_files = None
+        successful_image_indices: List[int] = []
+        successful_hash_images: List[str] = []
         if mode == "img2img" and images_base64:
             shared_upload_files = []
             for i, img_b64 in enumerate(images_base64):
@@ -304,6 +266,8 @@ class IndependentGenerator:
                     
                     # Decode ONCE - this bytes object is shared by all batches
                     img_bytes = base64.b64decode(img_b64)
+                    successful_image_indices.append(i)
+                    successful_hash_images.append(img_b64)
                     
                     # Store BOTH bytes (for multipart) and pre-encoded base64 (for JSON APIs like Gemini)
                     # The 4th element is cached base64 to avoid re-encoding per request
@@ -386,6 +350,16 @@ class IndependentGenerator:
                 "preview_images": []
             }
         
+        effective_hash_images = None
+        if hash_images_base64 is not None:
+            effective_hash_images = [
+                hash_images_base64[idx]
+                for idx in successful_image_indices
+                if idx < len(hash_images_base64)
+            ]
+        elif successful_hash_images:
+            effective_hash_images = successful_hash_images
+
         # Compute hash using the same logic as nodes.py for consistency
         params_hash = self._compute_params_hash(
             model,
@@ -393,9 +367,9 @@ class IndependentGenerator:
             batch_count,
             seed,
             extra_params,
-            images_base64,
+            effective_hash_images,
             hash_extras=hash_extras,
-            hash_images_base64=hash_images_base64,
+            hash_images_base64=effective_hash_images,
         )
         
         return {

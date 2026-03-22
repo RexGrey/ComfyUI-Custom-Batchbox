@@ -36,7 +36,7 @@ def get_access_token(json_path: str) -> Optional[str]:
     Caches the credential and auto-refreshes when expired.
     Returns None if the file is missing or the library is unavailable.
     """
-    abs_path = os.path.abspath(json_path)
+    abs_path = _resolve_path(json_path)
 
     with _lock:
         if abs_path in _token_cache:
@@ -109,7 +109,8 @@ def get_random_sa_token(provider_config: dict) -> tuple:
             continue
         token = get_access_token(json_path)
         if token:
-            return (token, sa.get("project_id", ""), sa.get("name", ""))
+            project_id = sa.get("project_id") or get_project_id(json_path) or ""
+            return (token, project_id, sa.get("name", ""))
     
     return (None, None, None)
 
@@ -128,7 +129,7 @@ def get_project_id(json_path: str) -> Optional[str]:
     """Extract project_id from a Service Account JSON file."""
     import json
     try:
-        abs_path = os.path.abspath(json_path)
+        abs_path = _resolve_path(json_path)
         with open(abs_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return data.get("project_id")

@@ -47,6 +47,12 @@ def _guess_extension(filename: str, mime_type: str = "") -> str:
     return ext_map.get(mime_type, ".png")
 
 
+def _build_scoped_cache_key(file_hash: str, bucket_name: str, path_prefix: str) -> str:
+    """Build a cache key scoped to the active GCS destination."""
+    normalized_prefix = (path_prefix or "images").strip("/")
+    return f"{bucket_name}|{normalized_prefix}|{file_hash}"
+
+
 class GCSCacheDB:
     """Thread-safe SQLite cache database for GCS URI mappings."""
 
@@ -220,16 +226,17 @@ class GCSImageCache:
 
         # 1. Compute hash
         file_hash = _compute_hash(image_bytes)
+        prefix = self._config.get("path_prefix", "images")
+        cache_key = _build_scoped_cache_key(file_hash, self._config["bucket_name"], prefix)
 
         # 2. Check cache
-        cached_uri = self._db.get(file_hash)
+        cached_uri = self._db.get(cache_key)
         if cached_uri:
             logger.info(f"[GCSCache] ✅ Cache hit: {file_hash[:12]}... (saved upload)")
             return cached_uri
 
         # 3. Upload to GCS
         ext = _guess_extension(filename, mime_type)
-        prefix = self._config.get("path_prefix", "images")
         gcs_path = f"{prefix}/{file_hash[:2]}/{file_hash[2:4]}/{file_hash}{ext}"
 
         try:
@@ -247,7 +254,7 @@ class GCSImageCache:
             gs_uri = f"gs://{self._config['bucket_name']}/{gcs_path}"
 
             # 4. Store in cache
-            self._db.put(file_hash, gs_uri, gcs_path, file_size)
+            self._db.put(cache_key, gs_uri, gcs_path, file_size)
 
             logger.info(f"[GCSCache] ✅ Upload complete ({elapsed:.1f}s): {gs_uri}")
             return gs_uri

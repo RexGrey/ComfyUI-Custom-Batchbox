@@ -106,3 +106,38 @@ class TestGCSImageCache:
         cache._enabled = False
         stats = cache.get_stats()
         assert stats == {"count": 0, "total_size": 0}
+
+    def test_get_or_upload_scopes_cache_by_bucket_and_prefix(self):
+        cache = _mod.GCSImageCache()
+        cache._enabled = True
+        file_hash = _compute_hash(b"same-image")
+
+        store = {}
+
+        class FakeDB:
+            def get(self, key):
+                return store.get(key)
+
+            def put(self, key, gs_uri, gcs_path, file_size):
+                store[key] = gs_uri
+
+        class FakeBlob:
+            def upload_from_string(self, image_bytes, content_type=None):
+                return None
+
+        class FakeBucket:
+            def blob(self, path):
+                return FakeBlob()
+
+        cache._db = FakeDB()
+        cache._bucket = FakeBucket()
+        cache._config = {"bucket_name": "bucket-a", "path_prefix": "images"}
+
+        uri_a = cache.get_or_upload(b"same-image", filename="x.png")
+
+        cache._config = {"bucket_name": "bucket-b", "path_prefix": "other"}
+        uri_b = cache.get_or_upload(b"same-image", filename="x.png")
+
+        assert uri_a == f"gs://bucket-a/images/{file_hash[:2]}/{file_hash[2:4]}/{file_hash}.png"
+        assert uri_b == f"gs://bucket-b/other/{file_hash[:2]}/{file_hash[2:4]}/{file_hash}.png"
+        assert uri_a != uri_b

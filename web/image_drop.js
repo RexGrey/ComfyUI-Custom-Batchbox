@@ -12,18 +12,104 @@ import { api } from "../../scripts/api.js";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "tif"]);
 
+function splitFilename(filename) {
+    const lastDot = filename.lastIndexOf(".");
+    if (lastDot <= 0) {
+        return { stem: filename, ext: "" };
+    }
+    return {
+        stem: filename.slice(0, lastDot),
+        ext: filename.slice(lastDot),
+    };
+}
+
+async function computeFileHash(fileOrBlob) {
+    if (!globalThis.crypto?.subtle || !fileOrBlob?.arrayBuffer) {
+        return null;
+    }
+    const bytes = await fileOrBlob.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+}
+
+async function fetchExistingInputBlob(filename) {
+    try {
+        const resp = await api.fetchApi(`/view?filename=${encodeURIComponent(filename)}&type=input`);
+        if (!resp.ok) return null;
+        return await resp.blob();
+    } catch {
+        return null;
+    }
+}
+
+async function resolveUploadFile(file) {
+    const incomingHash = await computeFileHash(file);
+    if (!incomingHash) {
+        return { uploadFile: file, existingName: null };
+    }
+
+    const existingBlob = await fetchExistingInputBlob(file.name);
+    if (!existingBlob) {
+        return { uploadFile: file, existingName: null };
+    }
+
+    const existingHash = await computeFileHash(existingBlob);
+    if (existingHash && existingHash === incomingHash) {
+        return { uploadFile: null, existingName: file.name };
+    }
+
+    const { stem, ext } = splitFilename(file.name);
+    for (let counter = 0; counter < 100; counter++) {
+        const suffix = counter === 0
+            ? `_${incomingHash.slice(0, 8)}`
+            : `_${incomingHash.slice(0, 8)}_${counter}`;
+        const candidateName = `${stem}${suffix}${ext}`;
+        const candidateBlob = await fetchExistingInputBlob(candidateName);
+        if (!candidateBlob) {
+            return {
+                uploadFile: new File([file], candidateName, {
+                    type: file.type,
+                    lastModified: file.lastModified,
+                }),
+                existingName: null,
+            };
+        }
+
+        const candidateHash = await computeFileHash(candidateBlob);
+        if (candidateHash && candidateHash === incomingHash) {
+            return { uploadFile: null, existingName: candidateName };
+        }
+    }
+
+    return {
+        uploadFile: new File([file], `${stem}_${Date.now()}${ext}`, {
+            type: file.type,
+            lastModified: file.lastModified,
+        }),
+        existingName: null,
+    };
+}
+
 /**
  * Upload an image file to ComfyUI's input folder via /upload/image API.
  * @param {File} file - The image file to upload
  * @returns {Promise<string|null>} The uploaded filename, or null on failure
  */
 async function uploadImageToInput(file) {
+    const { uploadFile, existingName } = await resolveUploadFile(file);
+    if (existingName) {
+        console.log(`[ImageDrop] ♻️ Reusing existing input image: ${existingName}`);
+        return existingName;
+    }
+
     const formData = new FormData();
-    formData.append("image", file);
+    formData.append("image", uploadFile || file);
     formData.append("type", "input");
     formData.append("subfolder", "");
-    // Overwrite=true to avoid filename conflicts
-    formData.append("overwrite", "true");
+    // Preserve existing files. Same-hash files are reused; different files get a suffix.
+    formData.append("overwrite", "false");
 
     try {
         const resp = await api.fetchApi("/upload/image", {

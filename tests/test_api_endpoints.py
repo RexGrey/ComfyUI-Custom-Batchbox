@@ -270,7 +270,7 @@ class TestConfigRoutes:
         assert payload["model"] == "model-a"
         assert payload["schema"] == {"prompt": {"type": "string"}}
         assert payload["flat_schema"] == {"prompt": "string"}
-        assert payload["max_image_inputs"] == 9
+        assert payload["max_image_inputs"] == 14
         assert payload["show_seed_widget"] is False
         assert payload["endpoint_options"] == [
             {"name": "provider-a", "provider": "provider-a", "priority": 3}
@@ -437,6 +437,7 @@ class TestGenerationRoutes:
         image_utils_module = ModuleType(f"{api_module.module_name}.image_utils")
         image_utils_module.apply_gaussian_blur = Mock(side_effect=lambda image, sigma: image)
         image_utils_module.generate_blur_preview_base64 = Mock(return_value="unused")
+        image_utils_module.detect_aspect_ratio = Mock(return_value="1:1")
         monkeypatch.setitem(
             sys.modules,
             f"{api_module.module_name}.image_utils",
@@ -490,7 +491,7 @@ class TestGenerationRoutes:
         assert call_kwargs["model"] == "upscale-model"
         assert call_kwargs["seed"] == 7
         assert call_kwargs["batch_count"] == 1
-        assert call_kwargs["extra_params"] == {"steps": 30}
+        assert call_kwargs["extra_params"] == {"steps": 30, "aspect_ratio": "1:1"}
         assert call_kwargs["endpoint_override"] == "manual-ep"
         assert call_kwargs["prompt"].endswith("胶片感")
         assert len(call_kwargs["images_base64"]) == 1

@@ -71,6 +71,28 @@ function requestNodeCanvasRefresh(node) {
   });
 }
 
+function syncEndpointOverrideExtraParams(node) {
+  const toggleW = node.widgets?.find(w => w.name === "手动选择端点");
+  const selectorW = node.widgets?.find(w => w.name === "endpoint_selector");
+  const extraParamsWidget = node.widgets?.find(w => w.name === "extra_params");
+  if (!extraParamsWidget) return;
+
+  let existing = {};
+  try {
+    existing = JSON.parse(extraParamsWidget.value || "{}");
+  } catch {
+    existing = {};
+  }
+
+  if (toggleW?.value && selectorW?.value) {
+    existing.endpoint_override = selectorW.value;
+  } else {
+    delete existing.endpoint_override;
+  }
+
+  extraParamsWidget.value = JSON.stringify(existing);
+}
+
 // ================================================================
 // SECTION 1.5: SCOPED EXECUTION (only queue target node + deps)
 // ================================================================
@@ -983,6 +1005,14 @@ app.registerExtension({
       // Retry: ComfyUI may add control_after_generate AFTER onNodeCreated
       setTimeout(() => { hideAllManaged(); node.setDirtyCanvas?.(true); }, 100);
 
+      let extraParamsWidget = node.widgets?.find(w => w.name === "extra_params");
+      if (!extraParamsWidget) {
+        extraParamsWidget = node.addWidget("text", "extra_params", "{}", () => { });
+        extraParamsWidget.hidden = true;
+        extraParamsWidget.serialize = false;
+        extraParamsWidget.computeSize = () => [0, -4];
+      }
+
       // --- Remove non-image input slots (prevent combo/widget connectors overlapping image inputs) ---
       setTimeout(() => {
         if (node.inputs) {
@@ -1012,6 +1042,7 @@ app.registerExtension({
           }
 
           // Try independent generation (concurrent), fallback to queue
+          let progressHandler = null;
           try {
             // Collect all connected image inputs via shared API
             let imagesBase64 = [];
@@ -1052,7 +1083,7 @@ app.registerExtension({
 
             // Register progress listener
             const nodeIdStr = String(node.id);
-            const progressHandler = (event) => {
+            progressHandler = (event) => {
               const d = event.detail;
               if (String(d.node_id) !== nodeIdStr) return;
               if (d.generation_token && d.generation_token !== generationToken) return;
@@ -1067,9 +1098,7 @@ app.registerExtension({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(requestBody)
             });
-
             const result = await response.json();
-            api.removeEventListener("batchbox:progress", progressHandler);
 
             if (result.success) {
               console.log("[BlurUpscale] Generation complete:", result.response_info);
@@ -1089,6 +1118,9 @@ app.registerExtension({
             console.log("[BlurUpscale] Falling back to queue execution");
             executeScopedToNode(node);
           } finally {
+            if (progressHandler) {
+              api.removeEventListener("batchbox:progress", progressHandler);
+            }
             generateBtn._isGenerating = false;
             generateBtn.name = "▶ 开始生成";
             node.setDirtyCanvas(true, true);
@@ -1192,11 +1224,22 @@ app.registerExtension({
         // Add endpoint selector if model has multiple endpoints
         if (endpointOptions && endpointOptions.length >= 2) {
           const options = endpointOptions.map(ep => ep.name);
+          const pendingEndpointState = node._pendingEndpointState;
+          const initialManualEnabled = pendingEndpointState?.manualEnabled || false;
+          const initialEndpoint = (
+            pendingEndpointState?.selectedEndpoint && options.includes(pendingEndpointState.selectedEndpoint)
+          ) ? pendingEndpointState.selectedEndpoint : (
+            endpoint && options.includes(endpoint) ? endpoint : options[0]
+          );
+          if (pendingEndpointState) {
+            delete node._pendingEndpointState;
+          }
 
-          const toggleWidget = node.addWidget("toggle", "手动选择端点", false, (v) => {
+          const toggleWidget = node.addWidget("toggle", "手动选择端点", initialManualEnabled, (v) => {
             if (selectorWidget) {
               selectorWidget.hidden = !v;
             }
+            syncEndpointOverrideExtraParams(node);
             // Recalc node size
             const currentWidth = node.size[0];
             const computedSize = node.computeSize();
@@ -1204,13 +1247,14 @@ app.registerExtension({
           });
           toggleWidget.serialize = false;
 
-          // Default to saved endpoint from settings, or first option
-          const initialEndpoint = endpoint && options.includes(endpoint) ? endpoint : options[0];
           const selectorWidget = node.addWidget("combo", "endpoint_selector", initialEndpoint, () => { }, {
             values: options
           });
-          selectorWidget.hidden = true;
+          selectorWidget.hidden = !initialManualEnabled;
           selectorWidget.serialize = false;
+          selectorWidget.callback = () => syncEndpointOverrideExtraParams(node);
+
+          syncEndpointOverrideExtraParams(node);
 
           // Recalc node size
           const currentWidth = node.size[0];
@@ -1224,19 +1268,7 @@ app.registerExtension({
       const origExecute = node.onExecute;
       node.onExecute = function () {
         if (origExecute) origExecute.apply(this, arguments);
-        const toggleW = node.widgets?.find(w => w.name === "手动选择端点");
-        const selectorW = node.widgets?.find(w => w.name === "endpoint_selector");
-        const epWidget = node.widgets?.find(w => w.name === "extra_params");
-        if (epWidget) {
-          let existing = {};
-          try { existing = JSON.parse(epWidget.value || "{}"); } catch { }
-          if (toggleW?.value && selectorW) {
-            existing.endpoint_override = selectorW.value;
-          } else {
-            delete existing.endpoint_override;
-          }
-          epWidget.value = JSON.stringify(existing);
-        }
+        syncEndpointOverrideExtraParams(node);
       };
 
       // --- Ensure minimum node size ---
@@ -1352,6 +1384,46 @@ app.registerExtension({
           api.removeEventListener("execution_error", node._blurExecutionErrorHandler);
         }
       };
+    };
+
+    const origOnSerialize = nodeType.prototype.onSerialize;
+    nodeType.prototype.onSerialize = function (o) {
+      if (origOnSerialize) {
+        origOnSerialize.apply(this, arguments);
+      }
+
+      const toggleWidget = this.widgets?.find(w => w.name === "手动选择端点");
+      const selectorWidget = this.widgets?.find(w => w.name === "endpoint_selector");
+      if (toggleWidget || selectorWidget) {
+        o.endpointState = {
+          manualEnabled: toggleWidget?.value || false,
+          selectedEndpoint: selectorWidget?.value || "",
+        };
+      }
+    };
+
+    const origOnConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (o) {
+      if (origOnConfigure) {
+        origOnConfigure.apply(this, arguments);
+      }
+
+      if (!o.endpointState) {
+        return;
+      }
+
+      const toggleWidget = this.widgets?.find(w => w.name === "手动选择端点");
+      const selectorWidget = this.widgets?.find(w => w.name === "endpoint_selector");
+      if (toggleWidget && selectorWidget) {
+        toggleWidget.value = !!o.endpointState.manualEnabled;
+        if (o.endpointState.selectedEndpoint) {
+          selectorWidget.value = o.endpointState.selectedEndpoint;
+        }
+        selectorWidget.hidden = !toggleWidget.value;
+        syncEndpointOverrideExtraParams(this);
+      } else {
+        this._pendingEndpointState = o.endpointState;
+      }
     };
   },
 });
