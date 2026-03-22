@@ -102,6 +102,7 @@ async function executeScopedToNode(node) {
     return await orig.apply(api, [index, prompt]);
   };
   try {
+    window.batchboxAPI?.markButtonTriggeredExecution?.();
     await app.queuePrompt();
   } catch (e) {
     console.error("[BlurUpscale] Scoped execution error:", e);

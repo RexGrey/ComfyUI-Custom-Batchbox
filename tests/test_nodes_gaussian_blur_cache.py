@@ -116,6 +116,67 @@ def _load_nodes_module():
 
 
 class TestGaussianBlurUpscaleCache(unittest.TestCase):
+    def test_queue_prompt_bypass_returns_cached_images_for_dynamic_image_node(self):
+        nodes_mod = _load_nodes_module()
+        node = nodes_mod.DynamicImageGenerationNode()
+        image = nodes_mod.torch.Tensor()
+
+        node._load_persisted_images = Mock(
+            return_value=(image, image, [{"filename": "cached.png", "subfolder": "", "type": "output"}])
+        )
+        node.process_batch = Mock()
+
+        result = node.generate(
+            "model-a",
+            "prompt-a",
+            1,
+            seed=123,
+            extra_params='{"style":"cinematic"}',
+            _last_images=json.dumps([{"filename": "cached.png", "subfolder": "", "type": "output"}]),
+            _cached_hash="stale-hash",
+            _bypass_queue_prompt="true",
+            _selected_image_index=0,
+            _all_images_connected="true",
+        )
+
+        node.process_batch.assert_not_called()
+        self.assertEqual(result["result"][2], "Loaded from cache (no API call)")
+
+    def test_queue_prompt_bypass_returns_cached_images_for_blur_node(self):
+        nodes_mod = _load_nodes_module()
+        node = nodes_mod.GaussianBlurUpscaleNode()
+        image = nodes_mod.torch.Tensor()
+
+        nodes_mod.save_preview_images = Mock(
+            return_value=[{"filename": "blur_input.png", "subfolder": "", "type": "output"}]
+        )
+        nodes_mod.tensor2pil = Mock(return_value=[FakePILImage()])
+        node._get_upscale_model = Mock(return_value=("upscale-model", ""))
+        node._load_persisted_images = Mock(
+            return_value=(image, image, [{"filename": "cached.png", "subfolder": "", "type": "output"}])
+        )
+        node.process_batch = Mock()
+
+        result = node.upscale(
+            "重 (σ6-10)",
+            "直出",
+            image1=image,
+            custom_sigma=0.0,
+            style_prompt="new style",
+            batch_count=1,
+            seed=123,
+            aspect_ratio="1:1",
+            extra_params="{}",
+            _last_images=json.dumps([{"filename": "cached.png", "subfolder": "", "type": "output"}]),
+            _cached_hash="stale-hash",
+            _bypass_queue_prompt="true",
+            _selected_image_index=0,
+            _all_images_connected="true",
+        )
+
+        node.process_batch.assert_not_called()
+        self.assertEqual(result["result"][3], "Loaded from cache")
+
     def test_blur_setting_change_invalidates_cache_and_updates_hash(self):
         nodes_mod = _load_nodes_module()
         node = nodes_mod.GaussianBlurUpscaleNode()

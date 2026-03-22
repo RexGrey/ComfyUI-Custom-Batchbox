@@ -80,6 +80,8 @@ class IndependentGenerator:
         seed: int,
         extra_params: Optional[Dict],
         images_base64: Optional[List[str]] = None,
+        hash_extras: Optional[Dict] = None,
+        hash_images_base64: Optional[List[str]] = None,
     ) -> str:
         """
         Compute a hash of generation parameters.
@@ -89,18 +91,21 @@ class IndependentGenerator:
         
         # Remove seed from extra_params (we use it separately)
         params_for_hash = dict(extra_params) if extra_params else {}
+        if hash_extras:
+            params_for_hash.update(hash_extras)
         params_for_hash.pop("seed", None)
         
         # Use separators without spaces to match JavaScript JSON.stringify
         extra_params_normalized = json.dumps(params_for_hash, sort_keys=True, separators=(',', ':'))
 
         # Include image payload hash to avoid cache collisions across different img2img inputs.
+        images_for_hash = hash_images_base64 if hash_images_base64 is not None else images_base64
         images_hash = ""
-        if images_base64:
+        if images_for_hash:
             import hashlib
 
             image_hasher = hashlib.md5()
-            for idx, img in enumerate(images_base64):
+            for idx, img in enumerate(images_for_hash):
                 if not isinstance(img, str):
                     continue
                 img_b64 = img.split(",", 1)[1] if "," in img else img
@@ -248,7 +253,9 @@ class IndependentGenerator:
         extra_params: Optional[Dict] = None,
         images_base64: Optional[List[str]] = None,
         endpoint_override: Optional[str] = None,
-        on_batch_complete: Optional[Any] = None
+        on_batch_complete: Optional[Any] = None,
+        hash_extras: Optional[Dict] = None,
+        hash_images_base64: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Generate images independently of ComfyUI's queue.
@@ -381,7 +388,14 @@ class IndependentGenerator:
         
         # Compute hash using the same logic as nodes.py for consistency
         params_hash = self._compute_params_hash(
-            model, prompt, batch_count, seed, extra_params, images_base64
+            model,
+            prompt,
+            batch_count,
+            seed,
+            extra_params,
+            images_base64,
+            hash_extras=hash_extras,
+            hash_images_base64=hash_images_base64,
         )
         
         return {

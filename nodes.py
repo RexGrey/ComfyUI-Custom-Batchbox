@@ -630,6 +630,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 "_force_generate": ("STRING", {"default": "false"}),
                 # Skip hash check flag (based on setting)
                 "_skip_hash_check": ("STRING", {"default": "false"}),
+                # Hard bypass for global Queue Prompt on button-driven nodes
+                "_bypass_queue_prompt": ("STRING", {"default": "false"}),
                 # Selected image index for batch output (0-based)
                 "_selected_image_index": ("INT", {"default": 0}),
                 # Whether all_images output is connected (for lazy loading)
@@ -654,6 +656,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         cached_hash = kwargs.get("_cached_hash", "")
         extra_params_str = kwargs.get("extra_params", "{}")
         skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        bypass_queue_prompt = kwargs.get("_bypass_queue_prompt", "false") == "true"
         current_hash = cached_hash
         extra_params = self._parse_extra_params(extra_params_str)
         if extra_params_str and not extra_params:
@@ -664,7 +667,10 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         # Trust the cache in this case - don't try to compute/compare hash.
         params_not_loaded = (extra_params_str == "{}" and last_images_json and cached_hash)
         
-        if params_not_loaded or skip_hash_check:
+        if bypass_queue_prompt and last_images_json and not force_generate:
+            need_api_call = False
+            print("[SmartCache] Queue Prompt bypass active with persisted cache")
+        elif params_not_loaded or skip_hash_check:
             # Either params not loaded yet OR hash check disabled in settings
             # Just check if we have cache and not forced
             need_api_call = force_generate or not last_images_json
@@ -1418,6 +1424,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 "_cached_hash": ("STRING", {"default": ""}),
                 "_force_generate": ("STRING", {"default": "false"}),
                 "_skip_hash_check": ("STRING", {"default": "false"}),
+                "_bypass_queue_prompt": ("STRING", {"default": "false"}),
                 "_selected_image_index": ("INT", {"default": 0}),
                 "_all_images_connected": ("STRING", {"default": "false"}),
             }
@@ -1503,6 +1510,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         cached_hash = kwargs.get("_cached_hash", "")
         extra_params_str = kwargs.get("extra_params", "{}")
         skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
+        bypass_queue_prompt = kwargs.get("_bypass_queue_prompt", "false") == "true"
         aspect_ratio = kwargs.get("aspect_ratio", "auto")
         
         # Build kwargs dict for hash computation (include upscale-specific params)
@@ -1519,7 +1527,10 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             },
         }
 
-        if skip_hash_check:
+        if bypass_queue_prompt and last_images_json and not force_generate:
+            need_api_call = False
+            print("[SmartCache] GaussianBlurUpscale Queue Prompt bypass active with persisted cache")
+        elif skip_hash_check:
             need_api_call = force_generate or not last_images_json
         else:
             current_hash = self._compute_params_hash(model, prompt, batch_count, hash_kwargs)

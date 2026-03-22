@@ -584,7 +584,15 @@ try:
                 extra_params=extra_params,
                 images_base64=blurred_b64_list,
                 endpoint_override=final_endpoint,
-                on_batch_complete=on_batch_complete
+                on_batch_complete=on_batch_complete,
+                hash_extras={
+                    "blur_intensity": blur_intensity,
+                    "custom_sigma": custom_sigma,
+                    "repair_mode": repair_mode,
+                    "style_prompt": style_prompt,
+                    "endpoint_override": final_endpoint or "",
+                },
+                hash_images_base64=images_base64,
             )
 
             # --- Step 7: Send websocket events for UI update ---

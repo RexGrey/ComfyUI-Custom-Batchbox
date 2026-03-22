@@ -53,3 +53,19 @@ class TestBlurUpscaleInputPreviewSource(unittest.TestCase):
         get_b64_body = get_b64_match.group("body")
         assert "const imageUrl = getLinkedInputImageUrl(node);" in get_b64_body
         assert "node.imgs?.length" not in get_b64_body
+
+
+class TestQueuePromptBypassPersistence(unittest.TestCase):
+    def test_queue_prompt_injects_hard_bypass_for_button_nodes(self):
+        script = (PROJECT_ROOT / "web" / "dynamic_params.js").read_text(encoding="utf-8")
+
+        assert "function markButtonTriggeredExecution()" in script
+        assert "function isBatchboxButtonNode(node)" in script
+        assert 'nodeData.inputs._bypass_queue_prompt = shouldBypassNode ? "true" : "false";' in script
+        assert "window.batchboxAPI = {" in script
+        assert "markButtonTriggeredExecution," in script
+
+    def test_blur_queue_fallback_marks_button_triggered_execution(self):
+        script = (PROJECT_ROOT / "web" / "blur_upscale.js").read_text(encoding="utf-8")
+
+        assert "window.batchboxAPI?.markButtonTriggeredExecution?.();" in script

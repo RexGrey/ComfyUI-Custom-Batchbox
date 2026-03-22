@@ -147,6 +147,14 @@ async function computeMD5Hash(str) {
 // When false (default), BatchBox nodes are excluded from global Queue Prompt
 let isButtonTriggeredExecution = false;
 
+function markButtonTriggeredExecution() {
+  isButtonTriggeredExecution = true;
+}
+
+function isBatchboxButtonNode(node) {
+  return !!node?.widgets?.find(w => w._isGenerateButton);
+}
+
 // Setting cache for bypass behavior (loaded from backend)
 let bypassQueuePromptEnabled = true; // Default: enabled
 let showInCanvasMenuEnabled = true; // Default: enabled (show BatchBox nodes in canvas right-click menu)
@@ -1218,7 +1226,7 @@ async function executeToNode(node) {
   };
 
   try {
-    isButtonTriggeredExecution = true;
+    markButtonTriggeredExecution();
     await app.queuePrompt();
   } catch (error) {
     console.error("[BatchBox] Execution error:", error);
@@ -1509,9 +1517,12 @@ api.queuePrompt = async function (number, workflowData) {
   // Update extra_params for all dynamic nodes before sending to backend
   if (app.graph && app.graph._nodes) {
     for (const node of app.graph._nodes) {
+      if (node._dynamicParamManager || isBatchboxButtonNode(node)) {
+        batchboxNodeIds.add(String(node.id));
+      }
+
       if (node._dynamicParamManager && node.widgets) {
         // Track BatchBox nodes
-        batchboxNodeIds.add(String(node.id));
 
         // Update extra_params widget
         // IMPORTANT: If widgets aren't restored yet (after restart), use pending params
@@ -1537,11 +1548,17 @@ api.queuePrompt = async function (number, workflowData) {
   // This is more reliable than widgets for hidden inputs
   if (workflowData?.output && app.graph && app.graph._nodes) {
     for (const node of app.graph._nodes) {
-      if (node._dynamicParamManager) {
-        const nodeId = String(node.id);
-        const nodeData = workflowData.output[nodeId];
+      const hasDynamicParams = !!node._dynamicParamManager;
+      const isButtonNode = isBatchboxButtonNode(node);
+      if (!hasDynamicParams && !isButtonNode) {
+        continue;
+      }
 
-        if (nodeData && nodeData.inputs) {
+      const nodeId = String(node.id);
+      const nodeData = workflowData.output[nodeId];
+
+      if (nodeData && nodeData.inputs) {
+        if (hasDynamicParams) {
           // === CRITICAL: Also sync extra_params to workflowData ===
           // The widget update alone doesn't update workflowData, we need to do it explicitly
           let dynamicParams = node._dynamicParamManager.collectDynamicParams();
@@ -1549,41 +1566,57 @@ api.queuePrompt = async function (number, workflowData) {
             dynamicParams = node._pendingDynamicParams;
           }
           nodeData.inputs.extra_params = JSON.stringify(dynamicParams);
-
-          // Inject _force_generate
-          nodeData.inputs._force_generate = wasButtonTriggered ? "true" : "false";
-
-          // Set flag for onExecuted to know if this is a new generation
-          // (used to decide whether to reset selection to 0)
-          node._forceGenerateFlag = wasButtonTriggered;
-
-          // === IMAGE SELECTION: Pause tracking during execution ===
-          // This prevents ComfyUI's automatic imageIndex resets from being tracked
-          node._ignoreImageIndexChanges = true;
-
-          // Inject _cached_hash from properties (persisted from last generation)
-          nodeData.inputs._cached_hash = node.properties?._cached_hash || "";
-
-          // Inject _last_images from properties (persisted from last generation)
-          nodeData.inputs._last_images = node.properties?._last_images || "";
-
-          // Inject _skip_hash_check based on setting (when disabled, skip hash comparison)
-          nodeData.inputs._skip_hash_check = smartCacheHashCheckEnabled ? "false" : "true";
-
-          // === IMAGE SELECTION: Inject _selected_image_index ===
-          const selectedIndex = node._selectedImageIndex ?? node.properties?._selected_image_index ?? 0;
-          const parsedSelectedIndex = Number.parseInt(selectedIndex, 10);
-          nodeData.inputs._selected_image_index = Number.isNaN(parsedSelectedIndex) ? 0 : parsedSelectedIndex;
-
-          // === DYNAMIC LOADING: Check if all_images output is connected ===
-          // Output slot 1 is "all_images" (0: selected_image, 1: all_images)
-          const allImagesConnected = node.outputs && node.outputs[1] &&
-            node.outputs[1].links &&
-            node.outputs[1].links.length > 0;
-          nodeData.inputs._all_images_connected = allImagesConnected ? "true" : "false";
-
-          console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, hasCache=${!!nodeData.inputs._last_images}, selectedIdx=${nodeData.inputs._selected_image_index}, allImagesConnected=${allImagesConnected}, extra_params=${nodeData.inputs.extra_params.substring(0, 50)}...`);
         }
+
+        // Inject _force_generate
+        nodeData.inputs._force_generate = wasButtonTriggered ? "true" : "false";
+
+        // Set flag for onExecuted to know if this is a new generation
+        // (used to decide whether to reset selection to 0)
+        node._forceGenerateFlag = wasButtonTriggered;
+
+        // === IMAGE SELECTION: Pause tracking during execution ===
+        // This prevents ComfyUI's automatic imageIndex resets from being tracked
+        node._ignoreImageIndexChanges = true;
+
+        // Inject persisted cache metadata from workflow properties
+        const persistedLastImages = node.properties?._last_images || "";
+        nodeData.inputs._cached_hash = node.properties?._cached_hash || "";
+        nodeData.inputs._last_images = persistedLastImages;
+
+        // In bypass mode, button-driven nodes with persisted outputs should never
+        // re-hit the external API on a plain global Queue Prompt.
+        const shouldBypassNode = (
+          bypassQueuePromptEnabled &&
+          !wasButtonTriggered &&
+          isButtonNode &&
+          !!persistedLastImages
+        );
+        nodeData.inputs._bypass_queue_prompt = shouldBypassNode ? "true" : "false";
+
+        // Inject _skip_hash_check based on setting (when disabled, skip hash comparison)
+        // Bypass mode is stricter: when a node already has generated output, Queue Prompt
+        // should not regenerate it unless the button explicitly armed this run.
+        nodeData.inputs._skip_hash_check = shouldBypassNode
+          ? "true"
+          : (smartCacheHashCheckEnabled ? "false" : "true");
+
+        // === IMAGE SELECTION: Inject _selected_image_index ===
+        const selectedIndex = node._selectedImageIndex ?? node.properties?._selected_image_index ?? 0;
+        const parsedSelectedIndex = Number.parseInt(selectedIndex, 10);
+        nodeData.inputs._selected_image_index = Number.isNaN(parsedSelectedIndex) ? 0 : parsedSelectedIndex;
+
+        // === DYNAMIC LOADING: Check if all_images output is connected ===
+        // Output slot 1 is "all_images" (0: selected_image, 1: all_images)
+        const allImagesConnected = node.outputs && node.outputs[1] &&
+          node.outputs[1].links &&
+          node.outputs[1].links.length > 0;
+        nodeData.inputs._all_images_connected = allImagesConnected ? "true" : "false";
+
+        const extraParamsForLog = typeof nodeData.inputs.extra_params === "string"
+          ? `${nodeData.inputs.extra_params.substring(0, 50)}...`
+          : "<none>";
+        console.log(`[SmartCache] node ${nodeId}: force=${nodeData.inputs._force_generate}, bypass=${nodeData.inputs._bypass_queue_prompt}, hasCache=${!!nodeData.inputs._last_images}, selectedIdx=${nodeData.inputs._selected_image_index}, allImagesConnected=${allImagesConnected}, extra_params=${extraParamsForLog}`);
       }
     }
   }
@@ -1719,6 +1752,7 @@ window.batchboxAPI = {
   collectNodeParams,
   collectImageInputsBase64,
   updateNodePreview,
+  markButtonTriggeredExecution,
 };
 
 // ================================================================
