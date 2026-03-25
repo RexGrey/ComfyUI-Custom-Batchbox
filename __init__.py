@@ -16,6 +16,7 @@ try:
         DynamicAudioGenerationNode,
         DynamicImageEditorNode,
         GaussianBlurUpscaleNode,
+        TiledUpscaleNode,
         create_dynamic_node
     )
     from .config_manager import config_manager
@@ -33,6 +34,7 @@ except ImportError:
     DynamicAudioGenerationNode = None
     DynamicImageEditorNode = None
     GaussianBlurUpscaleNode = None
+    TiledUpscaleNode = None
     create_dynamic_node = None
     config_manager = None
 
@@ -54,6 +56,7 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": DynamicAudioGenerationNode,
         "DynamicImageEditor": DynamicImageEditorNode,
         "GaussianBlurUpscale": GaussianBlurUpscaleNode,
+        "TiledUpscale": TiledUpscaleNode,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -64,6 +67,7 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
         "DynamicImageEditor": "🔧 Dynamic Image Editor",
         "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
+        "TiledUpscale": "🖼️ Tiled Batch (分块独立放大出图)",
     }
 
 # ==========================================
@@ -104,16 +108,51 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 # 4. API Endpoints for Configuration Management
 # ==========================================
 try:
+    import json as _json
     import server
     from aiohttp import web
 
     # Auto-increase ComfyUI body size limit for multi-image requests
     # Default is 100MB which is too small for 14 base64-encoded images
     _BATCHBOX_MAX_BODY = 500 * 1024 * 1024  # 500MB
+    _APPLY_BLUR_MAX_BODY = 200 * 1024 * 1024  # 200MB
     _app = server.PromptServer.instance.app
     if _app._client_max_size < _BATCHBOX_MAX_BODY:
         _app._client_max_size = _BATCHBOX_MAX_BODY
         print(f"[ComfyUI-Custom-Batchbox] Increased max upload size to 500MB")
+
+    async def _read_request_json_limited(request, max_size):
+        """
+        Read a JSON request body while enforcing a hard byte limit.
+        Falls back to request.json() for lightweight tests/mocks that do not
+        provide a streaming body implementation.
+        """
+        chunks = []
+        total_size = 0
+        content = getattr(request, "content", None)
+        if content is not None and hasattr(content, "iter_any"):
+            async for chunk in content.iter_any():
+                total_size += len(chunk)
+                if total_size > max_size:
+                    return None, web.json_response(
+                        {
+                            "success": False,
+                            "error": f"Request body too large, exceeds {max_size // (1024 * 1024)}MB limit",
+                        },
+                        status=413,
+                    )
+                chunks.append(chunk)
+
+        if chunks:
+            try:
+                return _json.loads(b"".join(chunks).decode("utf-8")), None
+            except (_json.JSONDecodeError, UnicodeDecodeError):
+                return None, web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+
+        try:
+            return await request.json(), None
+        except Exception:
+            return None, web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/config")
     async def get_config(request):
@@ -434,10 +473,135 @@ try:
             if not image_base64:
                 return web.json_response({"error": "image_base64 is required"}, status=400)
             
-            preview = generate_blur_preview_base64(image_base64, sigma)
+            import asyncio
+            preview = await asyncio.to_thread(generate_blur_preview_base64, image_base64, sigma)
             return web.json_response({"preview_base64": preview})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/api/batchbox/apply-blur")
+    async def apply_blur(request):
+        """
+        Apply Gaussian blur to input image(s) and cache the result.
+        Called by frontend "应用设置" button — makes blurred_image output
+        immediately available without running the full upscale pipeline.
+        """
+        try:
+            data, error_response = await _read_request_json_limited(request, _APPLY_BLUR_MAX_BODY)
+            if error_response is not None:
+                return error_response
+
+            from .image_utils import apply_gaussian_blur, apply_masked_gaussian_blur
+            from .nodes import save_preview_images, GaussianBlurUpscaleNode
+            import json, base64, torch, numpy as np
+            from io import BytesIO
+            from PIL import Image
+
+            node_id = data.get("node_id", "")
+            sigma = float(data.get("sigma", 2.0))
+            blur_mask_b64 = data.get("blur_mask") or ""
+            selection_boxes = data.get("selection_boxes") or []
+            blur_mode = data.get("blur_mode") or ""
+            images_base64 = data.get("images_base64") or []
+            selected_index = data.get("selected_index", 0)
+
+            if not images_base64:
+                return web.json_response({"success": False, "error": "images_base64 required"}, status=400)
+
+            # Decode mask if present
+            mask_pil = None
+            if blur_mask_b64:
+                mask_data = blur_mask_b64
+                if "," in mask_data:
+                    mask_data = mask_data.split(",", 1)[1]
+                mask_pil = Image.open(BytesIO(base64.b64decode(mask_data))).convert("L")
+
+            # Apply blur to each image (in background thread to prevent UI freezing)
+            def _process_images():
+                _blurred_pil_list = []
+                _blurred_tensors = []
+                for img_b64 in images_base64:
+                    if "," in img_b64:
+                        img_b64 = img_b64.split(",", 1)[1]
+                    pil_img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
+
+                    if blur_mode == "selection" and selection_boxes:
+                        from .image_utils import apply_selection_boxes_blur
+                        blurred = apply_selection_boxes_blur(pil_img, selection_boxes)
+                    elif mask_pil:
+                        blurred = apply_masked_gaussian_blur(pil_img, mask_pil, sigma)
+                    else:
+                        blurred = apply_gaussian_blur(pil_img, sigma)
+
+                    _blurred_pil_list.append(blurred)
+                    # Convert to tensor [1, H, W, C]
+                    blurred_np = np.array(blurred).astype(np.float32) / 255.0
+                    _blurred_tensors.append(torch.from_numpy(blurred_np).unsqueeze(0))
+                return _blurred_pil_list, _blurred_tensors
+
+            import asyncio
+            blurred_pil_list, blurred_tensors = await asyncio.to_thread(_process_images)
+
+            # Cache the blurred tensor for the node's upscale() to pick up
+            if blurred_tensors and node_id:
+                combined = torch.cat(blurred_tensors, dim=0)
+                GaussianBlurUpscaleNode._cached_blur_data[node_id] = {
+                    "tensor": combined,
+                    "sigma": sigma,
+                    "has_mask": bool(blur_mask_b64) or (blur_mode == "selection" and bool(selection_boxes)),
+                    "selection_boxes": selection_boxes if blur_mode == "selection" else [],
+                    "blur_mode": blur_mode,
+                }
+                print(f"[ApplyBlur] Cached blurred tensor for node {node_id}: {combined.shape}, σ={sigma}")
+
+            # Save as temp preview images
+            preview_results = save_preview_images(blurred_pil_list, prefix="blur_applied")
+
+            # Filter preview to only the selected image for UI display
+            try:
+                selected_idx = max(0, min(int(selected_index), len(preview_results) - 1))
+                display_preview = [preview_results[selected_idx]] if preview_results else []
+            except (ValueError, TypeError):
+                display_preview = [preview_results[0]] if preview_results else []
+
+            # Send WebSocket "executed" event so ComfyUI recognizes the output
+            if node_id and display_preview:
+                import uuid as _uuid
+                prompt_id = "apply_blur_" + _uuid.uuid4().hex[:8]
+                preview_json = json.dumps(display_preview)
+                output_ui = {
+                    "images": display_preview,
+                    "_last_images": [preview_json],
+                }
+                server.PromptServer.instance.send_sync("executed", {
+                    "node": node_id,
+                    "display_node": node_id,
+                    "output": output_ui,
+                    "prompt_id": prompt_id,
+                })
+                # Write history entry
+                prompt_queue = server.PromptServer.instance.prompt_queue
+                with prompt_queue.mutex:
+                    if len(prompt_queue.history) > 10000:
+                        prompt_queue.history.pop(next(iter(prompt_queue.history)))
+                    prompt_queue.history[prompt_id] = {
+                        "prompt": (0, prompt_id, {node_id: {"class_type": "GaussianBlurUpscale", "inputs": {}}}, {}, []),
+                        "outputs": {node_id: output_ui},
+                        "status": {"status_str": "success", "completed": True, "messages": []},
+                    }
+
+            return web.json_response({
+                "success": True,
+                "preview_images": preview_results,
+                "sigma": sigma,
+                "has_mask": bool(blur_mask_b64) or (blur_mode == "selection" and bool(selection_boxes)),
+                "blur_mode": blur_mode,
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/generate-blur-upscale")
     async def generate_blur_upscale(request):
@@ -449,13 +613,19 @@ try:
         """
         try:
             from .independent_generator import IndependentGenerator
-            from .image_utils import apply_gaussian_blur
+            from .image_utils import apply_gaussian_blur, apply_masked_gaussian_blur
             import json, base64
             from io import BytesIO
             from PIL import Image
 
             chunks = []
+            total_size = 0
+            MAX_SIZE = 200 * 1024 * 1024  # 200MB max limit to prevent OOM
             async for chunk in request.content.iter_any():
+                total_size += len(chunk)
+                if total_size > MAX_SIZE:
+                    print(f"[BlurUpscale] Rejected huge payload: {total_size/(1024*1024):.2f}MB")
+                    return web.json_response({"success": False, "error": "Request body too large, exceeds 200MB limit"}, status=413)
                 chunks.append(chunk)
             body = b''.join(chunks)
             body_size_mb = len(body) / (1024 * 1024)
@@ -470,9 +640,12 @@ try:
             style_prompt = data.get("style_prompt", "")
             seed = int(data.get("seed", 0))
             batch_count = min(int(data.get("batch_count", 1)), 10)  # 安全上限
-            aspect_ratio_widget = data.get("aspect_ratio", "auto")
+            aspect_ratio_widget = data.get("aspect_ratio") or "auto"
             endpoint_override_param = data.get("endpoint_override")
-
+            blur_mask_b64 = data.get("blur_mask") or ""
+            selection_boxes = data.get("selection_boxes") or []
+            blur_mode = data.get("blur_mode") or ""
+            
             # Support both new multi-image format and legacy single-image format
             images_base64 = data.get("images_base64") or []
             if not images_base64:
@@ -522,21 +695,43 @@ try:
             sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
 
             # --- Step 4: Decode images, apply Gaussian blur, re-encode ---
-            blurred_b64_list = []
-            for idx, img_b64 in enumerate(images_base64):
-                if "," in img_b64:
-                    img_b64 = img_b64.split(",", 1)[1]
-                img_bytes = base64.b64decode(img_b64)
-                pil_img = Image.open(BytesIO(img_bytes))
-                if pil_img.mode not in ("RGB", "RGBA"):
-                    pil_img = pil_img.convert("RGB")
+            # Decode mask if present
+            mask_pil = None
+            if blur_mask_b64:
+                mask_data = blur_mask_b64
+                if "," in mask_data:
+                    mask_data = mask_data.split(",", 1)[1]
+                mask_pil = Image.open(BytesIO(base64.b64decode(mask_data))).convert("L")
 
-                print(f"[BlurUpscale-Independent] Applying Gaussian blur σ={sigma} to image {idx+1}/{len(images_base64)} {pil_img.size}")
-                blurred_pil = apply_gaussian_blur(pil_img, sigma)
+            # Use background thread for heavy Gaussian blur processing to avoid blocking the event loop
+            def _process_images():
+                _blurred_b64_list = []
+                for idx, img_b64 in enumerate(images_base64):
+                    if "," in img_b64:
+                        img_b64 = img_b64.split(",", 1)[1]
+                    img_bytes = base64.b64decode(img_b64)
+                    pil_img = Image.open(BytesIO(img_bytes))
+                    if pil_img.mode not in ("RGB", "RGBA"):
+                        pil_img = pil_img.convert("RGB")
 
-                buf = BytesIO()
-                blurred_pil.save(buf, format="PNG")
-                blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
+                    if blur_mode == "selection" and selection_boxes:
+                        from .image_utils import apply_selection_boxes_blur
+                        print(f"[BlurUpscale-Independent] Applying SELECTION blur to image {idx+1}/{len(images_base64)} {pil_img.size}")
+                        blurred_pil = apply_selection_boxes_blur(pil_img, selection_boxes)
+                    elif mask_pil:
+                        print(f"[BlurUpscale-Independent] Applying MASKED blur σ={sigma} to image {idx+1}/{len(images_base64)} {pil_img.size}")
+                        blurred_pil = apply_masked_gaussian_blur(pil_img, mask_pil, sigma)
+                    else:
+                        print(f"[BlurUpscale-Independent] Applying Gaussian blur σ={sigma} to image {idx+1}/{len(images_base64)} {pil_img.size}")
+                        blurred_pil = apply_gaussian_blur(pil_img, sigma)
+
+                    buf = BytesIO()
+                    blurred_pil.save(buf, format="PNG")
+                    _blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
+                return _blurred_b64_list
+
+            import asyncio
+            blurred_b64_list = await asyncio.to_thread(_process_images)
 
             # --- Step 5: Build extra_params with default_params ---
             extra_params = dict(default_params) if default_params else {}
@@ -591,6 +786,9 @@ try:
                     "repair_mode": repair_mode,
                     "style_prompt": style_prompt,
                     "endpoint_override": final_endpoint or "",
+                    "blur_mask": hashlib.md5(blur_mask_b64.encode('utf-8')).hexdigest() if blur_mask_b64 else "",
+                    "blur_mode": blur_mode,
+                    "selection_boxes": str(selection_boxes) if selection_boxes else "",
                 },
                 hash_images_base64=images_base64,
             )

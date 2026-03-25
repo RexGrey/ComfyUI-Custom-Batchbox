@@ -69,6 +69,14 @@ class DummyRequest:
         return iterator
 
 
+class HugeChunk:
+    def __init__(self, size):
+        self._size = size
+
+    def __len__(self):
+        return self._size
+
+
 def _response_json(response):
     return json.loads(response.text)
 
@@ -113,13 +121,16 @@ def _build_fake_aiohttp():
 def _build_nodes_module(module_name):
     nodes_module = ModuleType(f"{module_name}.nodes")
     dummy_cls = type("DummyNode", (), {})
+    blur_cls = type("DummyBlurNode", (), {"_cached_blur_data": {}})
     nodes_module.NanoBananaPro = dummy_cls
     nodes_module.DynamicImageGenerationNode = dummy_cls
     nodes_module.DynamicTextGenerationNode = dummy_cls
     nodes_module.DynamicVideoGenerationNode = dummy_cls
     nodes_module.DynamicAudioGenerationNode = dummy_cls
     nodes_module.DynamicImageEditorNode = dummy_cls
-    nodes_module.GaussianBlurUpscaleNode = dummy_cls
+    nodes_module.GaussianBlurUpscaleNode = blur_cls
+    nodes_module.TiledUpscaleNode = dummy_cls
+    nodes_module.save_preview_images = Mock(return_value=[])
     nodes_module.create_dynamic_node = Mock(
         return_value=("DynamicAlias", "Dynamic Alias", dummy_cls)
     )
@@ -360,6 +371,17 @@ class TestGenerationRoutes:
             3.5,
         )
 
+    def test_apply_blur_rejects_oversized_body(self, api_module):
+        handler = api_module.routes[("POST", "/api/batchbox/apply-blur")]
+        request = DummyRequest(body_chunks=[HugeChunk(210 * 1024 * 1024)])
+
+        response = asyncio.run(handler(request))
+
+        payload = _response_json(response)
+        assert response.status == 413
+        assert payload["success"] is False
+        assert "200MB" in payload["error"]
+
     def test_generate_independent_reads_chunked_body_and_writes_history(self, api_module, monkeypatch):
         generator_instance = Mock()
 
@@ -436,6 +458,7 @@ class TestGenerationRoutes:
 
         image_utils_module = ModuleType(f"{api_module.module_name}.image_utils")
         image_utils_module.apply_gaussian_blur = Mock(side_effect=lambda image, sigma: image)
+        image_utils_module.apply_masked_gaussian_blur = Mock(side_effect=lambda image, mask, sigma: image)
         image_utils_module.generate_blur_preview_base64 = Mock(return_value="unused")
         image_utils_module.detect_aspect_ratio = Mock(return_value="1:1")
         monkeypatch.setitem(

@@ -313,6 +313,53 @@ def apply_gaussian_blur(pil_image: Image.Image, sigma: float) -> Image.Image:
     return pil_image.filter(ImageFilter.GaussianBlur(radius=sigma))
 
 
+def apply_selection_boxes_blur(pil_image: Image.Image, boxes: list) -> Image.Image:
+    """
+    Apply independent Gaussian blur to multiple rectangular regions.
+    Each box has: x, y, w, h (pixels), sigma.
+    Overlapping regions use the largest sigma (sorted ascending, last paste wins).
+    """
+    from PIL import ImageFilter
+    
+    result = pil_image.copy()
+    # Sort by sigma ascending so larger sigma overwrites overlaps
+    for box in sorted(boxes, key=lambda b: b.get('sigma', 0)):
+        sigma = box.get('sigma', 0)
+        if sigma <= 0:
+            continue
+        x, y, w, h = int(box['x']), int(box['y']), int(box['w']), int(box['h'])
+        # Clamp target paste bounds
+        x = max(0, x)
+        y = max(0, y)
+        x2 = min(pil_image.width, x + w)
+        y2 = min(pil_image.height, y + h)
+        if x2 <= x or y2 <= y:
+            continue
+            
+        # Add padding to crop area so edges blur correctly with surrounding pixels
+        # A margin of 3*sigma is usually enough to capture 99.7% of the Gaussian kernel
+        margin = int(sigma * 3)
+        crop_x = max(0, x - margin)
+        crop_y = max(0, y - margin)
+        crop_x2 = min(pil_image.width, x2 + margin)
+        crop_y2 = min(pil_image.height, y2 + margin)
+        
+        region = pil_image.crop((crop_x, crop_y, crop_x2, crop_y2))
+        blurred_region = region.filter(ImageFilter.GaussianBlur(radius=sigma))
+        
+        # Crop the blurred padded region back to the exact target bounds
+        # Use relative coordinates inside the padded 'blurred_region'
+        rel_x = x - crop_x
+        rel_y = y - crop_y
+        rel_x2 = rel_x + (x2 - x)
+        rel_y2 = rel_y + (y2 - y)
+        
+        blurred_exact = blurred_region.crop((rel_x, rel_y, rel_x2, rel_y2))
+        result.paste(blurred_exact, (x, y))
+        
+    return result
+
+
 def apply_gaussian_blur_tensor(image_tensor, sigma: float):
     """
     Apply Gaussian blur to a ComfyUI tensor.
@@ -340,6 +387,75 @@ def apply_gaussian_blur_tensor(image_tensor, sigma: float):
         blurred = apply_gaussian_blur(pil_img, sigma)
         
         # PIL -> Tensor
+        blurred_np = np.array(blurred).astype(np.float32) / 255.0
+        results.append(torch.from_numpy(blurred_np))
+    
+    return torch.stack(results)
+
+
+def apply_masked_gaussian_blur(pil_image: Image.Image, mask_image: Image.Image, sigma: float) -> Image.Image:
+    """
+    Apply Gaussian blur only to mask-selected regions.
+    
+    Args:
+        pil_image: Source PIL Image (RGB)
+        mask_image: Grayscale mask — white = blur, black = keep original
+        sigma: Gaussian blur radius
+        
+    Returns:
+        Image with selective blur applied
+    """
+    from PIL import ImageFilter
+    
+    if sigma <= 0:
+        return pil_image
+    
+    # Ensure mask matches image size
+    if mask_image.size != pil_image.size:
+        mask_image = mask_image.resize(pil_image.size, Image.Resampling.LANCZOS)
+    
+    # Convert mask to 'L' mode (grayscale)
+    if mask_image.mode != 'L':
+        mask_image = mask_image.convert('L')
+    
+    # Blur the entire image
+    blurred = pil_image.filter(ImageFilter.GaussianBlur(radius=sigma))
+    
+    # Composite: mask white → blurred, mask black → original
+    return Image.composite(blurred, pil_image, mask_image)
+
+
+def apply_masked_gaussian_blur_tensor(image_tensor, mask_b64: str, sigma: float):
+    """
+    Apply masked Gaussian blur to a ComfyUI tensor.
+    
+    Args:
+        image_tensor: Tensor of shape [B, H, W, C] (ComfyUI IMAGE format)
+        mask_b64: Base64-encoded mask PNG (white = blur region)
+        sigma: Gaussian blur radius
+        
+    Returns:
+        Blurred tensor of same shape (only masked regions blurred)
+    """
+    import torch
+    import base64
+    
+    if sigma <= 0 or not mask_b64:
+        return image_tensor
+    
+    # Decode mask from base64
+    if ',' in mask_b64:
+        mask_b64 = mask_b64.split(',', 1)[1]
+    mask_bytes = base64.b64decode(mask_b64)
+    mask_pil = Image.open(io.BytesIO(mask_bytes)).convert('L')
+    
+    results = []
+    for i in range(image_tensor.shape[0]):
+        img_np = (image_tensor[i].cpu().numpy() * 255).astype(np.uint8)
+        pil_img = Image.fromarray(img_np)
+        
+        blurred = apply_masked_gaussian_blur(pil_img, mask_pil, sigma)
+        
         blurred_np = np.array(blurred).astype(np.float32) / 255.0
         results.append(torch.from_numpy(blurred_np))
     
@@ -391,5 +507,170 @@ def generate_blur_preview_base64(image_base64: str, sigma: float, max_preview_si
     buffer = io.BytesIO()
     blurred.save(buffer, format='JPEG', quality=85)
     b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
     return f"data:image/jpeg;base64,{b64}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5: IMAGE TILING AND BLENDING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_grid_from_mode(tile_mode: str) -> Tuple[int, int]:
+    """Parse tile_mode string into (cols, rows)."""
+    if tile_mode == "竖切3块": return (3, 1)
+    if tile_mode == "竖切4块": return (4, 1)
+    if tile_mode == "竖切5块": return (5, 1)
+    if tile_mode == "横切3块": return (1, 3)
+    if tile_mode == "横切4块": return (1, 4)
+    if tile_mode == "横切5块": return (1, 5)
+    if tile_mode == "2×2 四等分": return (2, 2)
+    if tile_mode == "3×3 九宫格": return (3, 3)
+    # Support "NxM" format from auto mode (e.g. "2x1", "3x2")
+    import re
+    m = re.match(r'^(\d+)x(\d+)$', tile_mode)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    return (2, 2)
+
+def split_image_tiles(image: Image.Image, tile_mode: str, overlap: int = 16,
+                      overlap_x: int = None, overlap_y: int = None) -> list:
+    """
+    Split an image into overlapping tiles based on the mode.
+    overlap_x/overlap_y allow per-axis overlap for ratio correction.
+    If not provided, falls back to uniform `overlap`.
+    """
+    cols, rows = get_grid_from_mode(tile_mode)
+    w, h = image.size
+    ovx = overlap_x if overlap_x is not None else overlap
+    ovy = overlap_y if overlap_y is not None else overlap
+    
+    # Calculate base step size (without overlap)
+    step_x = w // cols
+    step_y = h // rows
+    
+    tiles = []
+    for row in range(rows):
+        for col in range(cols):
+            x_start = col * step_x
+            y_start = row * step_y
+            
+            x_end = w if col == cols - 1 else (col + 1) * step_x + ovx
+            y_end = h if row == rows - 1 else (row + 1) * step_y + ovy
+            
+            if col > 0:
+                x_start -= ovx
+            if row > 0:
+                y_start -= ovy
+                
+            x_start = max(0, x_start)
+            y_start = max(0, y_start)
+            x_end = min(w, x_end)
+            y_end = min(h, y_end)
+            
+            tile_img = image.crop((x_start, y_start, x_end, y_end))
+            
+            tiles.append({
+                "image": tile_img,
+                "x": x_start,
+                "y": y_start,
+                "w": x_end - x_start,
+                "h": y_end - y_start,
+                "col": col,
+                "row": row,
+                "grid_cols": cols,
+                "grid_rows": rows
+            })
+            
+    return tiles
+
+def merge_image_tiles(tiles: list, original_size: Tuple[int, int], overlap: int, upscale_factor: float = None) -> Image.Image:
+    """
+    Merge processed (upscaled) tiles back together.
+    Uses linear alpha blending on the overlap regions to eliminate seams.
+    """
+    if not tiles:
+        return Image.new("RGB", original_size)
+        
+    # Determine scale factor
+    if upscale_factor is not None and upscale_factor > 0:
+        scale_x = scale_y = float(upscale_factor)
+    else:
+        # Calculate theoretical scale factor from the first tile if not explicitly provided
+        t0 = tiles[0]
+        scale_x = t0['image'].width / t0['w']
+        scale_y = t0['image'].height / t0['h']
+    
+    # Create final canvas
+    out_w = int(original_size[0] * scale_x)
+    out_h = int(original_size[1] * scale_y)
+    
+    # Use a Float32 numpy array for high-precision blending accumulation
+    canvas_arr = np.zeros((out_h, out_w, 3), dtype=np.float32)
+    weight_arr = np.zeros((out_h, out_w, 1), dtype=np.float32)
+    
+    for t in tiles:
+        # EXACT mathematical positioning on the canvas
+        tx = int(t['x'] * scale_x)
+        ty = int(t['y'] * scale_y)
+        tw = int(t['w'] * scale_x)
+        th = int(t['h'] * scale_y)
+        
+        # Calculate exactly how many pixels the overlap regions should be for this specific tile
+        overlap_left = int(overlap * scale_x) if t['col'] > 0 else 0
+        overlap_top = int(overlap * scale_y) if t['row'] > 0 else 0
+        overlap_right = int(overlap * scale_x) if t['col'] < t['grid_cols'] - 1 else 0
+        overlap_bottom = int(overlap * scale_y) if t['row'] < t['grid_rows'] - 1 else 0
+        
+        img = t['image'].convert("RGB")
+        # FORCE the AI output to rigidly match the geometric math size
+        if img.width != tw or img.height != th:
+            img = img.resize((tw, th), Image.Resampling.LANCZOS)
+        
+        # In rare cases of rounding errors at the extreme canvas edge, clip
+        if tx + tw > out_w: tw = out_w - tx; img = img.crop((0, 0, tw, th))
+        if ty + th > out_h: th = out_h - ty; img = img.crop((0, 0, tw, th))
+        
+        tile_rgb = np.array(img, dtype=np.float32)
+        
+        # Create an alpha mask (weight) for this tile (1.0 = solid)
+        alpha = np.ones((th, tw, 1), dtype=np.float32)
+        
+        # Fade IN from left edge
+        if overlap_left > 0:
+            fade_w = min(overlap_left * 2, tw)  # overlap is the overlap region, we fade across it
+            gradient = np.linspace(0.0, 1.0, fade_w).reshape(1, fade_w, 1)
+            alpha[:, :fade_w, :] *= gradient
+            
+        # Fade IN from top edge
+        if overlap_top > 0:
+            fade_h = min(overlap_top * 2, th)
+            gradient = np.linspace(0.0, 1.0, fade_h).reshape(fade_h, 1, 1)
+            alpha[:fade_h, :, :] *= gradient
+            
+        # Fade OUT to right edge
+        if overlap_right > 0:
+            fade_w = min(overlap_right * 2, tw)
+            gradient = np.linspace(1.0, 0.0, fade_w).reshape(1, fade_w, 1)
+            alpha[:, -fade_w:, :] *= gradient
+            
+        # Fade OUT to bottom edge
+        if overlap_bottom > 0:
+            fade_h = min(overlap_bottom * 2, th)
+            gradient = np.linspace(1.0, 0.0, fade_h).reshape(fade_h, 1, 1)
+            alpha[-fade_h:, :, :] *= gradient
+
+        # Additively accumulate weighted RGB and weights
+        target_rgb = canvas_arr[ty:ty+th, tx:tx+tw]
+        target_w = weight_arr[ty:ty+th, tx:tx+tw]
+        
+        target_rgb += tile_rgb * alpha
+        target_w += alpha
+        
+        canvas_arr[ty:ty+th, tx:tx+tw] = target_rgb
+        weight_arr[ty:ty+th, tx:tx+tw] = target_w
+
+    # Normalize by accumulated weights to get final colors
+    # Avoid division by zero
+    weight_safe = np.where(weight_arr == 0, 1.0, weight_arr)
+    final_arr = canvas_arr / weight_safe
+    
+    final_arr = np.clip(final_arr, 0, 255).astype(np.uint8)
+    return Image.fromarray(final_arr, mode="RGB")

@@ -16,6 +16,35 @@ from PIL import Image
 import folder_paths
 
 
+def _resolve_output_subpath(base_dir: str, configured_output_dir: str, create_date_subfolder: bool) -> Tuple[Path, str]:
+    """
+    Resolve the configured output dir under the ComfyUI output root and reject
+    path traversal or absolute-path escapes.
+    """
+    base_path = Path(base_dir).resolve()
+    raw_path = (configured_output_dir or "").replace("\\", "/").strip()
+
+    if raw_path.startswith("output/"):
+        raw_path = raw_path[len("output/"):]
+    elif raw_path == "output":
+        raw_path = ""
+
+    parts = [part for part in raw_path.split("/") if part and part != "."]
+    if any(part == ".." for part in parts):
+        raise ValueError("output_dir must stay within the ComfyUI output directory")
+
+    subfolder_parts = parts[:]
+    if create_date_subfolder:
+        subfolder_parts.append(datetime.now().strftime("%Y-%m-%d"))
+
+    target_path = base_path.joinpath(*subfolder_parts).resolve()
+    if os.path.commonpath([str(base_path), str(target_path)]) != str(base_path):
+        raise ValueError("output_dir resolves outside the ComfyUI output directory")
+
+    subfolder = "/".join(subfolder_parts)
+    return target_path, subfolder
+
+
 class SaveSettings:
     """
     Manages auto-save settings and provides image saving functionality.
@@ -173,13 +202,7 @@ class SaveSettings:
         except Exception:
             base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
         
-        # Build output directory
-        output_dir = os.path.join(base_dir, self.output_dir.lstrip("output/").lstrip("output\\"))
-        
-        # Add date subfolder if enabled
-        if self.create_date_subfolder:
-            date_folder = datetime.now().strftime("%Y-%m-%d")
-            output_dir = os.path.join(output_dir, date_folder)
+        output_dir, _ = _resolve_output_subpath(base_dir, self.output_dir, self.create_date_subfolder)
         
         # Ensure directory exists
         os.makedirs(output_dir, exist_ok=True)
@@ -274,16 +297,11 @@ class SaveSettings:
         except Exception:
             base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "output")
         
-        # Build subfolder path (relative to output directory)
-        subfolder_parts = [self.output_dir.lstrip("output/").lstrip("output\\")]
-        
-        # Add date subfolder if enabled
-        if self.create_date_subfolder:
-            date_folder = datetime.now().strftime("%Y-%m-%d")
-            subfolder_parts.append(date_folder)
-        
-        subfolder = "/".join(subfolder_parts)
-        output_dir = os.path.join(base_dir, *subfolder_parts)
+        output_dir, subfolder = _resolve_output_subpath(
+            base_dir,
+            self.output_dir,
+            self.create_date_subfolder,
+        )
         
         # Ensure directory exists
         os.makedirs(output_dir, exist_ok=True)

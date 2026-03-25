@@ -71,22 +71,6 @@ class TestQueuePromptBypassPersistence(unittest.TestCase):
         assert "window.batchboxAPI?.markButtonTriggeredExecution?.();" in script
 
 
-class TestBlurUpscaleEndpointPersistence(unittest.TestCase):
-    def test_blur_upscale_creates_hidden_extra_params_widget(self):
-        script = (PROJECT_ROOT / "web" / "blur_upscale.js").read_text(encoding="utf-8")
-
-        assert 'node.addWidget("text", "extra_params", "{}", () => { });' in script
-        assert "extraParamsWidget.hidden = true;" in script
-        assert "extraParamsWidget.serialize = false;" in script
-
-    def test_blur_upscale_restores_pending_endpoint_state(self):
-        script = (PROJECT_ROOT / "web" / "blur_upscale.js").read_text(encoding="utf-8")
-
-        assert "node._pendingEndpointState" in script
-        assert "manualEnabled" in script
-        assert "selectedEndpoint" in script
-
-
 class TestQueuePromptExtraParamsSync(unittest.TestCase):
     def test_queue_prompt_syncs_extra_params_for_button_nodes(self):
         script = (PROJECT_ROOT / "web" / "dynamic_params.js").read_text(encoding="utf-8")

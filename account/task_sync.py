@@ -6,14 +6,18 @@ Ported from BlenderAIStudio src/studio/account/task_sync.py
 """
 
 import mimetypes
+import os
 import time
 import logging
 import tempfile
+import ipaddress
+import socket
 from pathlib import Path
 from datetime import datetime
 from queue import Queue
 from threading import Thread, Lock
 from typing import Callable, Optional, TYPE_CHECKING
+from urllib.parse import urlparse
 
 from .task_history import (
     TaskStatus,
@@ -27,6 +31,7 @@ if TYPE_CHECKING:
     from .core import Account
 
 logger = logging.getLogger("batchbox.account")
+_ALLOW_PRIVATE_RESULT_URLS = os.getenv("BATCHBOX_ALLOW_PRIVATE_RESULT_URLS", "").lower() in {"1", "true", "yes"}
 
 
 def save_mime_typed_datas_to_temp_files(mime_typed_datas: list) -> list:
@@ -142,12 +147,82 @@ class StatusResponseParser:
     def download_result(self, urls: list) -> list:
         results = []
         for url in urls:
+            if not self._is_safe_result_url(url):
+                raise ValueError(f"Unsafe result URL rejected: {url}")
             logger.info(f"Downloading result from: {url}")
             session = get_session()
             response = session.get(url, timeout=(10, 60))
             response.raise_for_status()
             results.append((url, response.content))
         return results
+
+    @staticmethod
+    def _is_safe_result_url(url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+
+        if parsed.scheme not in {"http", "https"}:
+            return False
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+
+        normalized = hostname.strip().lower()
+        if normalized in {"localhost", "localhost.localdomain"}:
+            return _ALLOW_PRIVATE_RESULT_URLS
+
+        try:
+            ip = ipaddress.ip_address(normalized)
+        except ValueError:
+            try:
+                resolved = socket.getaddrinfo(normalized, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+            except socket.gaierror:
+                return False
+            except OSError:
+                return False
+
+            resolved_ips = []
+            for entry in resolved:
+                sockaddr = entry[4]
+                if not sockaddr:
+                    continue
+                try:
+                    resolved_ips.append(ipaddress.ip_address(sockaddr[0]))
+                except ValueError:
+                    return False
+
+            if not resolved_ips:
+                return False
+
+            if _ALLOW_PRIVATE_RESULT_URLS:
+                return True
+
+            return all(
+                not (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_multicast
+                    or ip.is_reserved
+                    or ip.is_unspecified
+                )
+                for ip in resolved_ips
+            )
+
+        if _ALLOW_PRIVATE_RESULT_URLS:
+            return True
+
+        return not (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
 
     def convert_to_unified_format(self, parsed_data: list) -> list:
         results = []

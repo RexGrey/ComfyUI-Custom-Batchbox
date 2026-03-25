@@ -10,6 +10,7 @@ import io
 import json
 import time
 import base64
+import logging
 import requests
 import torch
 import numpy as np
@@ -25,6 +26,8 @@ from .config_manager import config_manager
 from .adapters.generic import GenericAPIAdapter
 from .adapters.base import APIResponse
 from .image_utils import prepare_for_comfyui, pil_to_tensor_rgba, get_image_info
+
+logger = logging.getLogger("batchbox")
 
 
 def save_preview_images(images: List[Image.Image], prefix: str = "batchbox") -> List[Dict]:
@@ -68,6 +71,18 @@ def bytes2tensor(img_bytes: bytes) -> torch.Tensor:
     if img.mode != 'RGB':
         img = img.convert('RGB')
     return pil2tensor(img)
+
+
+def _safe_join_under(base_dir: str, *parts: str) -> Optional[str]:
+    """Resolve a path under base_dir and reject traversal/escape attempts."""
+    try:
+        base_path = os.path.abspath(base_dir)
+        resolved = os.path.abspath(os.path.join(base_path, *[str(p or "") for p in parts]))
+        if os.path.commonpath([base_path, resolved]) != base_path:
+            return None
+        return resolved
+    except ValueError:
+        return None
 
 
 # ==========================================
@@ -337,6 +352,10 @@ class DynamicImageNodeBase:
         
         successful_results = []  # Store (batch_idx, tensors, pil_images, url, log)
         
+        # Security Hardening: Clamp batch_count to prevent thread pool exhaustion 
+        # (e.g., if bypassed via primitive inputs or direct API)
+        batch_count = max(1, min(int(batch_count), 20))
+        
         # Ensure seed is an integer (may come as string from extra_params)
         seed = params.get("seed", 0)
         try:
@@ -468,8 +487,8 @@ class DynamicImageNodeBase:
         # Include image_inputs_hash to avoid cache reuse across different input images.
         params_str = f"{model}|{prompt}|{batch_count}|{seed}|{extra_params_normalized}|{image_inputs_hash}"
         result_hash = hashlib.md5(params_str.encode()).hexdigest()
-        print(f"[DEBUG] Hash input: {params_str}")
-        print(f"[DEBUG] Computed hash: {result_hash}")
+        logger.debug("[Hash] input=%s", params_str)
+        logger.debug("[Hash] computed=%s", result_hash)
         return result_hash
     
     def _load_persisted_images(self, last_images_json: str, selected_index: int = 0, load_all: bool = False) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], List[Dict]]:
@@ -514,10 +533,15 @@ class DynamicImageNodeBase:
                 else:
                     base_dir = folder_paths.get_input_directory()
                 
-                if subfolder:
-                    filepath = os.path.join(base_dir, subfolder, filename)
-                else:
-                    filepath = os.path.join(base_dir, filename)
+                filepath = _safe_join_under(base_dir, subfolder, filename)
+                if not filepath:
+                    logger.warning(
+                        "[SmartCache] Rejected cached image path outside base dir: type=%s subfolder=%r filename=%r",
+                        img_type,
+                        subfolder,
+                        filename,
+                    )
+                    return None
                 
                 if not os.path.exists(filepath):
                     print(f"[SmartCache] File not found: {filepath}")
@@ -734,9 +758,9 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         }
         
         # Parse extra dynamic parameters from frontend
-        print(f"[DEBUG] kwargs: {kwargs}")
-        print(f"[DEBUG] extra_params_str: {extra_params_str}")
-        print(f"[DEBUG] extra_params parsed: {extra_params}")
+        logger.debug("[Generate] kwargs=%s", kwargs)
+        logger.debug("[Generate] extra_params_str=%s", extra_params_str)
+        logger.debug("[Generate] extra_params=%s", extra_params)
         params.update(extra_params)
         
         # Ensure numeric fields are correct type (seed should be int, not string)
@@ -746,7 +770,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
             except (ValueError, TypeError):
                 params["seed"] = 0
         
-        print(f"[DEBUG] Final params: {params}")
+        logger.debug("[Generate] final_params=%s", params)
         
         # Handle image inputs for img2img
         if mode == "img2img":
@@ -1403,6 +1427,24 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         "水墨国风": "以中国传统水墨画风格处理，注重意境和留白",
     }
     
+    # Class-level cache for pre-applied blur (populated by /api/batchbox/apply-blur)
+    # Maps node_id -> {"tensor": Tensor, "sigma": float, "has_mask": bool}
+    # Security Hardening: Bounded to max 20 entries to prevent OOM memory leaks on node deletion.
+    from collections import OrderedDict
+    class BoundedCache(OrderedDict):
+        def __setitem__(self, key, value):
+            if key in self:
+                self.move_to_end(key)
+            super().__setitem__(key, value)
+            if len(self) > 20:
+                self.popitem(last=False)
+        def __getitem__(self, key):
+            val = super().__getitem__(key)
+            self.move_to_end(key)
+            return val
+            
+    _cached_blur_data = BoundedCache()
+    
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1419,12 +1461,14 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 "image1": ("IMAGE",),
             },
             "hidden": {
+                "unique_id": ("UNIQUE_ID",),
                 "extra_params": ("STRING", {"default": "{}"}),
                 "_last_images": ("STRING", {"default": ""}),
                 "_cached_hash": ("STRING", {"default": ""}),
                 "_force_generate": ("STRING", {"default": "false"}),
                 "_skip_hash_check": ("STRING", {"default": "false"}),
                 "_bypass_queue_prompt": ("STRING", {"default": "false"}),
+                "_blur_mask": ("STRING", {"default": ""}),
                 "_selected_image_index": ("INT", {"default": 0}),
                 "_all_images_connected": ("STRING", {"default": "false"}),
             }
@@ -1463,7 +1507,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
     
     def upscale(self, blur_intensity: str, repair_mode: str, **kwargs) -> Dict:
         """Apply Gaussian blur preprocessing and upscale via AI model."""
-        from .image_utils import apply_gaussian_blur_tensor
+        from .image_utils import apply_gaussian_blur_tensor, apply_masked_gaussian_blur_tensor
 
         # Collect all connected image inputs (image1, image2, ...)
         image_tensors = []
@@ -1511,7 +1555,163 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         extra_params_str = kwargs.get("extra_params", "{}")
         skip_hash_check = kwargs.get("_skip_hash_check", "false") == "true"
         bypass_queue_prompt = kwargs.get("_bypass_queue_prompt", "false") == "true"
-        aspect_ratio = kwargs.get("aspect_ratio", "auto")
+        aspect_ratio = kwargs.get("aspect_ratio") or "auto"
+        blur_mask_b64 = kwargs.get("_blur_mask") or ""
+        
+        # ==========================================
+        # TILED MODE: delegate to TiledUpscaleNode
+        # ==========================================
+        extra_p = self._parse_extra_params(extra_params_str)
+        
+        # ==========================================
+        # Extract blur_mode and selection_boxes from extra properties
+        # ==========================================
+        blur_mode = extra_p.get("_blur_mode") or "global"
+        selection_boxes = extra_p.get("_selection_boxes") or []
+        
+        # ==========================================
+        # TILED MODE: delegate to TiledUpscaleNode
+        # ==========================================
+        if extra_p.get("_blur_mode") == "tiled":
+            print("[GaussianBlurUpscale] Detected tiled mode, delegating to TiledUpscaleNode...")
+            from .image_utils import split_image_tiles, merge_image_tiles, apply_gaussian_blur
+            import copy
+            
+            tile_mode = extra_p.get("_tile_mode", "2x2")
+            tile_overlap_x = int(extra_p.get("_tile_overlap_x", extra_p.get("_tile_overlap", 16)))
+            tile_overlap_y = int(extra_p.get("_tile_overlap_y", extra_p.get("_tile_overlap", 16)))
+            selected_tiles = extra_p.get("_selected_tiles", None)
+            
+            # Get model
+            model, saved_endpoint = self._get_upscale_model()
+            endpoint_override = saved_endpoint
+            if extra_p.get("endpoint_override"):
+                endpoint_override = extra_p.get("endpoint_override")
+            
+            if not model:
+                return {
+                    "ui": {"images": []},
+                    "result": (image, image, image, "错误：未配置放大模型")
+                }
+            
+            prompt = self._build_prompt(repair_mode, style_prompt)
+            
+            # Split image into tiles
+            pil_images = tensor2pil(image[:1])
+            tiles = split_image_tiles(pil_images[0], tile_mode,
+                                      overlap_x=tile_overlap_x, overlap_y=tile_overlap_y)
+            print(f"[GaussianBlurUpscale-Tiled] Split into {len(tiles)} tiles, mode={tile_mode}, ovX={tile_overlap_x}, ovY={tile_overlap_y}")
+            
+            # Filter by selection
+            if selected_tiles and isinstance(selected_tiles, list) and len(selected_tiles) > 0:
+                selected_set = set(selected_tiles)
+                tiles = [t for t in tiles if f"{t['col']}_{t['row']}" in selected_set]
+                print(f"[GaussianBlurUpscale-Tiled] Filtered to {len(tiles)} selected tiles: {selected_tiles}")
+            
+            # Process each tile
+            total_tiles = len(tiles)
+            from comfy.utils import ProgressBar
+            pbar = ProgressBar(total_tiles)
+            
+            processed_tiles = []
+            for tile_idx, tile_info in enumerate(tiles):
+                try:
+                    tile_pil = tile_info["image"]
+                    blurred_tile = apply_gaussian_blur(tile_pil, sigma)
+                    
+                    # Upload blurred tile for AI upscaling
+                    buffered = BytesIO()
+                    blurred_tile.save(buffered, format="PNG")
+                    upload_files = [("image", ("tile.png", buffered.getvalue(), "image/png"))]
+                    
+                    tile_params = {
+                        "prompt": prompt,
+                        "seed": kwargs.get("seed", 0) + tile_idx,
+                        "_upload_files": upload_files,
+                    }
+                    
+                    # Add aspect ratio
+                    tw, th = tile_pil.size
+                    from .image_utils import detect_aspect_ratio
+                    tile_params["aspect_ratio"] = detect_aspect_ratio(tw, th)
+                    
+                    # Merge default params from upscale_settings
+                    settings = config_manager.get_upscale_settings()
+                    default_params = settings.get("default_params", {})
+                    if default_params:
+                        for key, val in default_params.items():
+                            if key not in tile_params:
+                                tile_params[key] = val
+                    
+                    result_tensor, resp_info, _, result_pils = self.process_batch(
+                        model, 1, tile_params, "img2img", endpoint_override
+                    )
+                    
+                    result_pil = result_pils[0] if result_pils else blurred_tile
+                    tile_copy = copy.deepcopy(tile_info)
+                    tile_copy["image"] = result_pil
+                    processed_tiles.append(tile_copy)
+                    
+                except Exception as e:
+                    print(f"[GaussianBlurUpscale-Tiled] Tile {tile_idx} error: {e}")
+                    tile_copy = copy.deepcopy(tile_info)
+                    tile_copy["image"] = apply_gaussian_blur(tile_info["image"], sigma)
+                    processed_tiles.append(tile_copy)
+                
+                pbar.update_absolute(tile_idx + 1, total_tiles)
+            
+            # Output each tile as a separate batch image (same as TiledUpscaleNode)
+            processed_tiles.sort(key=lambda t: (t['row'], t['col']))
+            
+            if not processed_tiles:
+                return {
+                    "ui": {"images": []},
+                    "result": (image, image, image, "分块生成失败：无处理结果")
+                }
+            
+            import numpy as np
+            
+            # Normalize all tiles to same size for batch stacking
+            first_img = processed_tiles[0]["image"]
+            target_size = first_img.size
+            
+            batch_tensors = []
+            tile_pils = []
+            for pt in processed_tiles:
+                img = pt["image"]
+                if img.size != target_size:
+                    img = img.resize(target_size, Image.LANCZOS)
+                tile_pils.append(img)
+                img_np = np.array(img).astype(np.float32) / 255.0
+                batch_tensors.append(torch.from_numpy(img_np))
+            
+            all_tiles_tensor = torch.stack(batch_tensors, dim=0)
+            
+            # Blurred image for output
+            blurred_pil = apply_gaussian_blur(pil_images[0], sigma)
+            blurred_np = np.array(blurred_pil).astype(np.float32) / 255.0
+            blurred_tensor = torch.from_numpy(blurred_np).unsqueeze(0)
+            
+            # Selected image
+            selected_index = kwargs.get("_selected_image_index", 0)
+            try: selected_index = int(selected_index)
+            except: selected_index = 0
+            selected_index = max(0, min(selected_index, all_tiles_tensor.shape[0] - 1))
+            selected_tensor = all_tiles_tensor[selected_index:selected_index+1]
+            
+            # Save preview
+            preview_results = save_preview_images(tile_pils, prefix="tiled_upscale")
+            last_images_json = json.dumps(preview_results) if preview_results else ""
+            
+            info = f"Model: {model} | σ={sigma} | Tiled: {tile_mode} ({len(processed_tiles)} tiles)"
+            
+            return {
+                "ui": {
+                    "images": preview_results,
+                    "_last_images": [last_images_json],
+                },
+                "result": (selected_tensor, blurred_tensor, all_tiles_tensor, info)
+            }
         
         # Build kwargs dict for hash computation (include upscale-specific params)
         hash_kwargs = {
@@ -1524,6 +1724,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 "repair_mode": repair_mode,
                 "style_prompt": style_prompt,
                 "aspect_ratio": aspect_ratio,
+                "blur_mask": hashlib.md5(blur_mask_b64.encode('utf-8')).hexdigest() if blur_mask_b64 else "",
             },
         }
 
@@ -1553,7 +1754,14 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             )
             if selected_tensor is not None:
                 # Also compute blurred image for the blurred_image output
-                blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
+                if blur_mode == "selection" and selection_boxes:
+                    from .image_utils import apply_selection_boxes_blur
+                    blurred_pil = apply_selection_boxes_blur(tensor2pil(image[:1])[0], selection_boxes)
+                    blurred_tensor = pil2tensor(blurred_pil)
+                elif blur_mask_b64:
+                    blurred_tensor = apply_masked_gaussian_blur_tensor(image, blur_mask_b64, sigma)
+                else:
+                    blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
                 return {
                     "ui": {
                         "images": input_preview,
@@ -1566,15 +1774,41 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         # ==========================================
         # STEP 1: Apply Gaussian Blur
         # ==========================================
-        print(f"[GaussianBlurUpscale] Applying Gaussian blur with σ={sigma}")
-        blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
+        # Check class-level cache first (set by /api/batchbox/apply-blur)
+        node_id_for_cache = kwargs.get("unique_id", "")
+        cached_blur = GaussianBlurUpscaleNode._cached_blur_data.get(node_id_for_cache)
+        if cached_blur and abs(cached_blur.get("sigma", -1) - sigma) < 0.01:
+            print(f"[GaussianBlurUpscale] Using pre-cached blurred tensor for node {node_id_for_cache}")
+            blurred_tensor = cached_blur["tensor"]
+            # Clear cache after use
+            del GaussianBlurUpscaleNode._cached_blur_data[node_id_for_cache]
+        elif blur_mode == "selection" and selection_boxes:
+            print(f"[GaussianBlurUpscale] Applying SELECTION blur with {len(selection_boxes)} boxes")
+            from .image_utils import apply_selection_boxes_blur
+            blurred_pil = apply_selection_boxes_blur(tensor2pil(image[:1])[0], selection_boxes)
+            blurred_tensor = pil2tensor(blurred_pil)
+        elif blur_mask_b64:
+            print(f"[GaussianBlurUpscale] Applying MASKED Gaussian blur with σ={sigma}")
+            blurred_tensor = apply_masked_gaussian_blur_tensor(image, blur_mask_b64, sigma)
+        else:
+            print(f"[GaussianBlurUpscale] Applying Gaussian blur with σ={sigma}")
+            blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
         
         # ==========================================
         # STEP 2: Prepare blurred images for API upload
         # ==========================================
         upload_files = []
         for i, img_tensor in enumerate(image_tensors):
-            blurred_t = blurred_tensor if i == 0 else apply_gaussian_blur_tensor(img_tensor, sigma)
+            if i == 0:
+                blurred_t = blurred_tensor
+            elif blur_mode == "selection" and selection_boxes:
+                from .image_utils import apply_selection_boxes_blur
+                b_pil = apply_selection_boxes_blur(tensor2pil(img_tensor)[0], selection_boxes)
+                blurred_t = pil2tensor(b_pil)
+            elif blur_mask_b64:
+                blurred_t = apply_masked_gaussian_blur_tensor(img_tensor, blur_mask_b64, sigma)
+            else:
+                blurred_t = apply_gaussian_blur_tensor(img_tensor, sigma)
             blurred_pil = tensor2pil(blurred_t)[0]
             buffered = BytesIO()
             blurred_pil.save(buffered, format="PNG")
@@ -1692,6 +1926,219 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             "result": (selected_tensor, blurred_tensor, images_tensor, info)
         }
 
+# ==========================================
+# Tiled Upscale Node
+# ==========================================
+class TiledUpscaleNode(DynamicImageNodeBase):
+    """
+    Splits an image into tiles, upscales each tile concurrently using the API, 
+    and then merges them back with alpha blending to eliminate seams.
+    """
+    BLUR_PRESETS = {
+        "轻 (σ1-3)": 2.0,
+        "中 (σ3-6)": 4.5,
+        "重 (σ6-10)": 8.0
+    }
+    
+    REPAIR_PROMPTS = {
+        "直出": "把这张模糊的照片变高清",
+        "降噪": "把这张模糊的照片变高清，让画面变得干净整洁",
+    }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "tile_mode": (["2×2 四等分", "3×3 九宫格", "竖切3块", "竖切4块", "竖切5块", "横切3块", "横切4块", "横切5块"], {"default": "2×2 四等分"}),
+                "blur_intensity": (list(cls.BLUR_PRESETS.keys()), {"default": "轻 (σ1-3)"}),
+                "repair_mode": (list(cls.REPAIR_PROMPTS.keys()), {"default": "直出"}),
+                "overlap": ("INT", {"default": 16, "min": 0, "max": 120, "step": 8}),
+                "style_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "batch_count": ("INT", {"default": 1, "min": 1, "max": 4}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647}),
+            },
+            "hidden": {
+                "extra_params": ("STRING", {"default": "{}"}),
+                "_selected_image_index": ("INT", {"default": 0}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING")
+    RETURN_NAMES = ("selected_image", "all_images", "response_info")
+    FUNCTION = "upscale_tiled"
+    OUTPUT_NODE = True
+    CATEGORY = "ComfyUI-Custom-Batchbox"
+
+    def _get_upscale_model(self, extra_params):
+        """Get model name and endpoint from upscale_settings (mirrors BlurUpscale pattern)."""
+        if "model_override" in extra_params:
+            return extra_params["model_override"], extra_params.get("endpoint_override", "")
+        settings = config_manager.get_upscale_settings()
+        model = settings.get("model", "")
+        endpoint = settings.get("endpoint", "")
+        if not model:
+            models = self.get_models_for_category("image")
+            model = models[0] if models and models[0] != "No Models Found" else ""
+        return model, endpoint
+        
+    def _build_prompt(self, repair_mode: str, style_prompt: str) -> str:
+        base_prompt = self.REPAIR_PROMPTS.get(repair_mode, self.REPAIR_PROMPTS["直出"])
+        if repair_mode == "风格" and style_prompt:
+            return f"{base_prompt}{style_prompt}"
+        return base_prompt
+
+    def upscale_tiled(self, image, tile_mode, blur_intensity, repair_mode, style_prompt, overlap, batch_count, seed, extra_params="{}", **kwargs):
+        import concurrent.futures
+        import copy
+        from io import BytesIO
+        import numpy as np
+        import torch
+        from PIL import Image
+        import json
+        from .image_utils import split_image_tiles, merge_image_tiles, apply_gaussian_blur
+        
+        extra_p = self._parse_extra_params(extra_params)
+        model, saved_endpoint = self._get_upscale_model(extra_p)
+        if not model:
+            return (image, image, "Error: No model configured")
+        
+        # Resolve endpoint override: extra_params > upscale_settings > auto
+        endpoint_override = extra_p.get("endpoint_override", saved_endpoint) or None
+        print(f"[TiledUpscale] Model: {model}, Endpoint: {endpoint_override or 'auto'}")
+            
+        sigma = self.BLUR_PRESETS.get(blur_intensity, 2.0)
+        prompt = self._build_prompt(repair_mode, style_prompt)
+        
+        all_final_tensors = []
+        all_pil_images = []
+        response_messages = []
+        
+        for batch_idx in range(image.shape[0]):
+            img_np = (image[batch_idx].cpu().numpy() * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+            original_size = pil_img.size
+            
+            # Split image into overlapping tiles
+            tiles = split_image_tiles(pil_img, tile_mode, overlap)
+            
+            # Filter tiles by user selection (if any)
+            selected_keys = extra_p.get("_selected_tiles", [])
+            if selected_keys and isinstance(selected_keys, list) and len(selected_keys) > 0:
+                selected_set = set(selected_keys)
+                tiles = [t for t in tiles if f"{t['col']}_{t['row']}" in selected_set]
+                print(f"[TiledUpscale] 选中 {len(tiles)} 块进行放大 (共 {len(split_image_tiles(pil_img, tile_mode, overlap))} 块)")
+            else:
+                print(f"[TiledUpscale] 放大全部 {len(tiles)} 块 (未指定选区)")
+            
+            for b_idx in range(batch_count):
+                current_seed = seed + b_idx + (batch_idx * 100)
+                
+                def process_tile(tile_info):
+                    blurred = apply_gaussian_blur(tile_info["image"], sigma) if sigma > 0 else tile_info["image"]
+                    buffered = BytesIO()
+                    blurred.save(buffered, format="PNG")
+                    upload_files = [("image", (f"tile_{tile_info['col']}_{tile_info['row']}.png", buffered.getvalue(), "image/png"))]
+                    
+                    params = {
+                        "prompt": prompt,
+                        "seed": current_seed,
+                        "_upload_files": upload_files,
+                        "aspect_ratio": "auto"
+                    }
+                    
+                    try:
+                        # process_batch automatically handles adapter execution, retries, and errors
+                        tensor, msg, _, pils = self.process_batch(model, 1, params, mode="img2img", endpoint_override=endpoint_override)
+                        if pils and len(pils) > 0:
+                            if msg and msg != "Success":
+                                response_messages.append(
+                                    f"tile {tile_info['col']}_{tile_info['row']}: {msg}"
+                                )
+                            return tile_info, pils[0]
+                        response_messages.append(
+                            f"tile {tile_info['col']}_{tile_info['row']}: empty API result, used blurred fallback"
+                        )
+                    except Exception as e:
+                        response_messages.append(
+                            f"tile {tile_info['col']}_{tile_info['row']}: API error ({e}), used blurred fallback"
+                        )
+                        print(f"[TiledUpscale] API fail on tile {tile_info['col']}_{tile_info['row']}: {e}")
+                    
+                    print(f"[TiledUpscale] Fallback to blurred original for tile {tile_info['col']}_{tile_info['row']}")
+                    return tile_info, blurred
+                    
+                processed_tiles = []
+                total_tiles = len(tiles)
+                
+                # Use ComfyUI's native ProgressBar for reliable progress reporting
+                from comfy.utils import ProgressBar
+                pbar = ProgressBar(total_tiles)
+                
+                # Process tiles sequentially to strictly avoid API concurrency limit/rate limiting failures
+                for tile_idx, t in enumerate(tiles):
+                    try:
+                        t_info, t_img = process_tile(t)
+                        t_info_copy = copy.deepcopy(t_info)
+                        t_info_copy["image"] = t_img
+                        processed_tiles.append(t_info_copy)
+                    except Exception as e:
+                        response_messages.append(
+                            f"tile {t.get('col', '?')}_{t.get('row', '?')}: tile processing exception ({e})"
+                        )
+                        print(f"[TiledUpscale] Tile processing exception: {e}")
+                    
+                    # Update built-in progress bar
+                    pbar.update_absolute(tile_idx + 1, total_tiles)
+                
+                # Sort tiles back into correct order (top-left to bottom-right sequence)
+                processed_tiles.sort(key=lambda t: (t['row'], t['col']))
+                
+                if not processed_tiles:
+                    continue
+                
+                # Make sure all tiles have the exact same dimensions to be stacked into a single batch tensor
+                first_img = processed_tiles[0]["image"]
+                target_size = first_img.size
+                
+                batch_tensors = []
+                for pt in processed_tiles:
+                    img = pt["image"]
+                    if img.size != target_size:
+                        img = img.resize(target_size, Image.LANCZOS)
+                    img_np = np.array(img).astype(np.float32) / 255.0
+                    batch_tensors.append(torch.from_numpy(img_np))
+                
+                # Stack all tiles of this image into [N, H, W, 3] batch sequence
+                stacked_tensor = torch.stack(batch_tensors, dim=0)
+                all_final_tensors.append(stacked_tensor)
+                
+        if not all_final_tensors:
+            return (image, image, "Generation failed")
+            
+        final_tensor_batch = torch.cat(all_final_tensors, dim=0)
+        
+        selected_index = kwargs.get("_selected_image_index", 0)
+        try: selected_index = int(selected_index)
+        except: selected_index = 0
+        selected_index = max(0, min(selected_index, final_tensor_batch.shape[0] - 1))
+        
+        selected_tensor = final_tensor_batch[selected_index:selected_index+1]
+        
+        # Save temp previews for UI
+        pil_images = [tensor2pil(t.unsqueeze(0))[0] for t in final_tensor_batch]
+        preview_results = save_preview_images(pil_images, prefix="tiled_upscale")
+        last_images_json = json.dumps(preview_results) if preview_results else ""
+        
+        response_info = "Success" if not response_messages else "Partial success:\n" + "\n".join(response_messages)
+
+        return {
+            "ui": {
+                "images": preview_results,
+                "_last_images": [last_images_json],
+            },
+            "result": (selected_tensor, final_tensor_batch, response_info)
+        }
 
 # ==========================================
 # Dynamic Node Factory

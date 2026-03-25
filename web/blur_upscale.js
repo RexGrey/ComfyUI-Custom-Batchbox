@@ -154,6 +154,45 @@ let activePanel = null;
 function openCustomPanel(node) {
   closeCustomPanel();
 
+  // Custom confirm dialog (reusable)
+  function showBlurConfirmDialog(title, message, onConfirm, confirmText, cancelText) {
+    const old = document.getElementById("blur-confirm-dialog-bg");
+    if (old) old.remove();
+    const bg = document.createElement("div");
+    bg.id = "blur-confirm-dialog-bg";
+    Object.assign(bg.style, {
+      position: "fixed", top: "0", left: "0", width: "100%", height: "100%",
+      zIndex: "999999", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center"
+    });
+    const box = document.createElement("div");
+    Object.assign(box.style, {
+      background: "#1c1c2e", borderRadius: "12px", padding: "30px 36px",
+      maxWidth: "420px", width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+      border: "1px solid #3a3a5a", textAlign: "center"
+    });
+    const titleEl = document.createElement("div");
+    Object.assign(titleEl.style, { fontSize: "18px", fontWeight: "bold", color: "#ffcc00", marginBottom: "16px" });
+    titleEl.textContent = title;
+    const msgEl = document.createElement("div");
+    Object.assign(msgEl.style, { fontSize: "14px", color: "#ccc", marginBottom: "24px", lineHeight: "1.6", whiteSpace: "pre-wrap" });
+    msgEl.textContent = message;
+    const btnRow = document.createElement("div");
+    Object.assign(btnRow.style, { display: "flex", gap: "12px", justifyContent: "center" });
+    const cancelBtn = document.createElement("button");
+    Object.assign(cancelBtn.style, { padding: "10px 28px", background: "#333", color: "#ccc", border: "1px solid #555", borderRadius: "6px", cursor: "pointer", fontSize: "14px", fontWeight: "bold" });
+    cancelBtn.textContent = cancelText || "返回选择";
+    cancelBtn.onclick = () => { bg.remove(); };
+    const cfmBtn = document.createElement("button");
+    Object.assign(cfmBtn.style, { padding: "10px 28px", background: "#2a5a8f", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "14px", fontWeight: "bold" });
+    cfmBtn.textContent = confirmText || "确定";
+    cfmBtn.onclick = () => { bg.remove(); if (onConfirm) onConfirm(); };
+    btnRow.append(cancelBtn, cfmBtn);
+    box.append(titleEl, msgEl, btnRow);
+    bg.appendChild(box);
+    document.body.appendChild(bg);
+  }
+
   const panel = document.createElement("div");
   panel.id = "blur-upscale-custom-panel";
   Object.assign(panel.style, {
@@ -222,7 +261,7 @@ function openCustomPanel(node) {
   const slider = document.createElement("input");
   slider.type = "range";
   slider.min = "0.5";
-  slider.max = "15";
+  slider.max = "100";
   slider.step = "0.5";
   slider.value = currentSigma;
   Object.assign(slider.style, {
@@ -235,16 +274,734 @@ function openCustomPanel(node) {
   //   cssBlurPx = sigma * (displayedWidth / naturalWidth)
   let blurScaleRatio = 1;
 
+  // Sigma-to-preset mapping
+  const SIGMA_TO_PRESET = {
+    "轻 (σ1-3)": 2.0, "中 (σ3-6)": 4.0, "重 (σ6-10)": 7.0
+  };
+  function sigmaToPresetLabel(sigma) {
+    if (sigma <= 3) return "轻 (σ1-3)";
+    if (sigma <= 6) return "中 (σ3-6)";
+    return "重 (σ6-10)";
+  }
+
   slider.oninput = () => {
     const s = parseFloat(slider.value);
     sigmaVal.textContent = s;
     const w = node.widgets?.find(w => w.name === "custom_sigma");
     if (w) w.value = s;
-    const img = panel.querySelector("#blur-preview-img");
-    if (img) img.style.filter = `blur(${s * blurScaleRatio}px)`;
+    // Sync: update blur_intensity preset to match sigma range
+    const biw = node.widgets?.find(w => w.name === "blur_intensity");
+    if (biw) { biw.value = sigmaToPresetLabel(s); }
+    node.setDirtyCanvas?.(true, true);
+    if (blurMode === "global" || blurMode === "tiled") {
+      const img = panel.querySelector("#blur-preview-img");
+      if (img) img.style.filter = `blur(${s * blurScaleRatio}px)`;
+    } else if (blurMode === "mask") {
+      updateMaskPreview();
+    }
   };
   sigmaSection.appendChild(slider);
   panel.appendChild(sigmaSection);
+
+  // --- Mode Toggle (全局 / 区域 / 分块 模糊) ---
+  const modeSection = document.createElement("div");
+  Object.assign(modeSection.style, {
+    display: "flex", gap: "8px", marginBottom: "16px", alignItems: "center",
+  });
+
+  let blurMode = node.properties?._blur_mode || (node.properties?._blur_mask ? "mask" : "global");
+
+  const modeGlobalBtn = document.createElement("button");
+  modeGlobalBtn.textContent = "全局模糊";
+  const modeMaskBtn = document.createElement("button");
+  modeMaskBtn.textContent = "区域模糊";
+  const modeSelectionBtn = document.createElement("button");
+  modeSelectionBtn.textContent = "选区模糊";
+  const modeTiledBtn = document.createElement("button");
+  modeTiledBtn.textContent = "分块模糊";
+
+  function styleModeBtn(btn, active) {
+    Object.assign(btn.style, {
+      padding: "8px 18px", fontSize: "13px", fontWeight: "500",
+      border: active ? "1px solid #3a7abf" : "1px solid #3a3a4a",
+      background: active ? "linear-gradient(135deg, #2a5a8f, #1a3a5f)" : "#2a2a3a",
+      color: active ? "#fff" : "#888", borderRadius: "8px", cursor: "pointer",
+      transition: "all 0.2s",
+    });
+  }
+  styleModeBtn(modeGlobalBtn, blurMode === "global");
+  styleModeBtn(modeMaskBtn, blurMode === "mask");
+  styleModeBtn(modeSelectionBtn, blurMode === "selection");
+  styleModeBtn(modeTiledBtn, blurMode === "tiled");
+
+  // Brush size controls (only visible in mask mode)
+  const brushLabel = document.createElement("span");
+  brushLabel.textContent = "笔刷:";
+  brushLabel.style.cssText = "color:#888; font-size:12px; margin-left:auto;";
+  const brushSlider = document.createElement("input");
+  brushSlider.type = "range"; brushSlider.min = "5"; brushSlider.max = "100";
+  brushSlider.step = "1"; brushSlider.value = "30";
+  Object.assign(brushSlider.style, {
+    width: "100px", height: "4px", cursor: "pointer",
+  });
+  const brushVal = document.createElement("span");
+  brushVal.textContent = "30";
+  brushVal.style.cssText = "color:#5a8abf; font-size:12px; width:24px;";
+  brushSlider.oninput = () => { brushVal.textContent = brushSlider.value; };
+
+  // Eraser toggle
+  let isEraser = false;
+  const eraserBtn = document.createElement("button");
+  eraserBtn.textContent = "橡皮擦";
+  Object.assign(eraserBtn.style, {
+    padding: "4px 10px", fontSize: "11px", border: "1px solid #3a3a4a",
+    background: "#2a2a3a", color: "#888", borderRadius: "6px", cursor: "pointer",
+  });
+  eraserBtn.onclick = () => {
+    isEraser = !isEraser;
+    eraserBtn.style.background = isEraser ? "#5f3a1e" : "#2a2a3a";
+    eraserBtn.style.borderColor = isEraser ? "#8f5a2a" : "#3a3a4a";
+    eraserBtn.style.color = isEraser ? "#fff" : "#888";
+  };
+
+  function updateBrushVisibility() {
+    const show = blurMode === "mask";
+    brushLabel.style.display = show ? "" : "none";
+    brushSlider.style.display = show ? "" : "none";
+    brushVal.style.display = show ? "" : "none";
+    eraserBtn.style.display = show ? "" : "none";
+  }
+  updateBrushVisibility();
+
+  modeSection.append(modeGlobalBtn, modeMaskBtn, modeSelectionBtn, modeTiledBtn, brushLabel, brushSlider, brushVal, eraserBtn);
+  panel.appendChild(modeSection);
+
+  // === SELECTION BLUR: ratio-locked draggable boxes ===
+  const SEL_RATIOS = [
+    { label: "1:1", v: 1 }, { label: "4:3", v: 4 / 3 }, { label: "3:4", v: 3 / 4 },
+    { label: "3:2", v: 3 / 2 }, { label: "2:3", v: 2 / 3 }, { label: "16:9", v: 16 / 9 },
+    { label: "9:16", v: 9 / 16 }, { label: "21:9", v: 21 / 9 },
+  ];
+  let selBoxes = []; // [{id, ratio, ratioValue, sigma, x, y, w, h}]  (x/y/w/h in 0-1 normalized)
+  let selActiveIdx = -1;
+  let selBoxIdCounter = 0;
+  let selOverlayCanvas = null;
+
+  // Restore saved boxes
+  if (node.properties?._selection_boxes) {
+    try { selBoxes = JSON.parse(node.properties._selection_boxes); selBoxIdCounter = selBoxes.length; } catch (e) { }
+  }
+
+  // --- Selection params section ---
+  const selParamsSection = document.createElement("div");
+  Object.assign(selParamsSection.style, {
+    display: blurMode === "selection" ? "flex" : "none",
+    flexDirection: "column", gap: "8px", marginBottom: "12px",
+    padding: "10px 14px", background: "#222233", borderRadius: "8px",
+    border: "1px solid #2a2a3a",
+  });
+
+  // Ratio buttons row
+  const selRatioRow = document.createElement("div");
+  selRatioRow.style.cssText = "display:flex; gap:6px; flex-wrap:wrap; align-items:center;";
+  const selRatioLabel = document.createElement("span");
+  selRatioLabel.textContent = "添加选区:";
+  selRatioLabel.style.cssText = "color:#aaa; font-size:12px; white-space:nowrap;";
+  selRatioRow.appendChild(selRatioLabel);
+  for (const r of SEL_RATIOS) {
+    const btn = document.createElement("button");
+    btn.textContent = r.label;
+    Object.assign(btn.style, {
+      padding: "4px 10px", fontSize: "11px", border: "1px solid #3a5a7a",
+      background: "#1a2a3a", color: "#7ab", borderRadius: "6px", cursor: "pointer",
+    });
+    btn.onmouseenter = () => { btn.style.background = "#2a4a6a"; };
+    btn.onmouseleave = () => { btn.style.background = "#1a2a3a"; };
+    btn.onclick = () => {
+      // Create a new box centered, accounting for image aspect ratio
+      // Normalized coords: bw is fraction of imgW, bh is fraction of imgH
+      // We want pixel ratio: (bw*imgW)/(bh*imgH) = r.v
+      // So bw/bh = r.v * imgH/imgW = r.v / imgAR
+      const img = panel.querySelector("#blur-preview-img");
+      const imgAR = img?.naturalWidth && img?.naturalHeight ? img.naturalWidth / img.naturalHeight : 1.5;
+      const normRatio = r.v / imgAR; // w/h in normalized 0-1 space
+      const area = 0.12; // ~35% of image area (sqrt = ~0.35)
+      const bh = Math.min(0.9, Math.sqrt(area / normRatio));
+      const bw = Math.min(0.9, bh * normRatio);
+      selBoxes.push({
+        id: "box_" + (selBoxIdCounter++),
+        ratio: r.label, ratioValue: r.v,
+        sigma: parseFloat(slider.value) || 5,
+        x: Math.max(0, 0.5 - bw / 2), y: Math.max(0, 0.5 - bh / 2), w: bw, h: bh,
+      });
+      selActiveIdx = selBoxes.length - 1;
+      saveSelBoxes();
+      rebuildSelBoxList();
+      updateSelOverlay();
+    };
+    selRatioRow.appendChild(btn);
+  }
+  selParamsSection.appendChild(selRatioRow);
+
+  // Box list
+  const selBoxListContainer = document.createElement("div");
+  selBoxListContainer.style.cssText = "display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto;";
+  selParamsSection.appendChild(selBoxListContainer);
+
+  // Per-box sigma slider
+  const selSigmaRow = document.createElement("div");
+  selSigmaRow.style.cssText = "display:flex; align-items:center; gap:8px;";
+  const selSigmaLabel = document.createElement("span");
+  selSigmaLabel.textContent = "选区模糊:";
+  selSigmaLabel.style.cssText = "color:#aaa; font-size:12px; white-space:nowrap;";
+  const selSigmaSlider = document.createElement("input");
+  selSigmaSlider.type = "range"; selSigmaSlider.min = "0.5"; selSigmaSlider.max = "100"; selSigmaSlider.step = "0.5"; selSigmaSlider.value = "5";
+  selSigmaSlider.style.cssText = "flex:1; height:4px; cursor:pointer;";
+  const selSigmaVal = document.createElement("span");
+  selSigmaVal.textContent = "5";
+  selSigmaVal.style.cssText = "color:#5a8abf; font-size:12px; width:30px;";
+  selSigmaSlider.oninput = () => {
+    selSigmaVal.textContent = selSigmaSlider.value;
+    if (selActiveIdx >= 0 && selActiveIdx < selBoxes.length) {
+      selBoxes[selActiveIdx].sigma = parseFloat(selSigmaSlider.value);
+      saveSelBoxes();
+      rebuildSelBoxList();
+      updateSelOverlay();
+    }
+  };
+  selSigmaRow.append(selSigmaLabel, selSigmaSlider, selSigmaVal);
+  selParamsSection.appendChild(selSigmaRow);
+
+  panel.appendChild(selParamsSection);
+
+  function saveSelBoxes() {
+    if (!node.properties) node.properties = {};
+    node.properties._selection_boxes = JSON.stringify(selBoxes);
+  }
+
+  function rebuildSelBoxList() {
+    selBoxListContainer.innerHTML = "";
+    selBoxes.forEach((box, idx) => {
+      const row = document.createElement("div");
+      row.style.cssText = `display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; cursor:pointer;
+        background:${idx === selActiveIdx ? "#2a4a6a" : "#1a1a2a"}; border:1px solid ${idx === selActiveIdx ? "#4a8abf" : "#2a2a3a"};`;
+      row.onclick = () => {
+        selActiveIdx = idx;
+        selSigmaSlider.value = box.sigma;
+        selSigmaVal.textContent = box.sigma;
+        rebuildSelBoxList();
+        updateSelOverlay();
+      };
+      const label = document.createElement("span");
+      label.textContent = `${box.ratio}  σ=${box.sigma}`;
+      label.style.cssText = "color:#ddd; font-size:12px; flex:1;";
+      const delBtn = document.createElement("span");
+      delBtn.textContent = "✕";
+      delBtn.title = "删除此选区";
+      Object.assign(delBtn.style, {
+        cursor: "pointer", fontSize: "16px", color: "#ff5555", fontWeight: "bold",
+        padding: "2px 6px", borderRadius: "4px", lineHeight: "1",
+      });
+      delBtn.onmouseenter = () => { delBtn.style.background = "rgba(255,50,50,0.2)"; };
+      delBtn.onmouseleave = () => { delBtn.style.background = "transparent"; };
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        selBoxes.splice(idx, 1);
+        if (selActiveIdx >= selBoxes.length) selActiveIdx = selBoxes.length - 1;
+        saveSelBoxes();
+        rebuildSelBoxList();
+        updateSelOverlay();
+      };
+      row.append(label, delBtn);
+      selBoxListContainer.appendChild(row);
+    });
+    // Show/hide sigma row
+    selSigmaRow.style.display = selBoxes.length > 0 ? "flex" : "none";
+  }
+  rebuildSelBoxList();
+
+  function updateSelParamsVisibility() {
+    selParamsSection.style.display = blurMode === "selection" ? "flex" : "none";
+  }
+
+  // --- Selection overlay: use overlayRef + getImageRect (same as mask mode) ---
+  function updateSelOverlay() {
+    if (!overlayRef || blurMode !== "selection" || !previewImg) return;
+    const w = overlayRef.width, h = overlayRef.height;
+    const ctx = overlayRef.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+
+    if (!previewImg.naturalWidth) return;
+    const ir = getImageRect();
+
+    // Phase 1: Draw blur for each box using offscreen canvas 
+    // Sort by sigma ascending so larger sigma overwrites overlaps (matches backend logic)
+    const sortedBoxes = [...selBoxes].sort((a, b) => (parseFloat(a.sigma) || 5) - (parseFloat(b.sigma) || 5));
+    sortedBoxes.forEach((box) => {
+      const bx = ir.left + box.x * ir.width;
+      const by = ir.top + box.y * ir.height;
+      const bw = box.w * ir.width;
+      const bh = box.h * ir.height;
+      const blurPx = box.sigma * blurScaleRatio;
+
+      // Full blurred image on offscreen, then copy box region
+      const off = document.createElement("canvas");
+      off.width = w; off.height = h;
+      const oCtx = off.getContext("2d");
+
+      const pad = Math.ceil(blurPx * 2);
+      const padCanvas = document.createElement("canvas");
+      padCanvas.width = ir.width + pad * 2;
+      padCanvas.height = ir.height + pad * 2;
+      const pCtx = padCanvas.getContext("2d");
+
+      // Draw main image
+      pCtx.drawImage(previewImg, pad, pad, ir.width, ir.height);
+      // Top & Bottom pad
+      pCtx.drawImage(previewImg, 0, 0, previewImg.naturalWidth, 1, pad, 0, ir.width, pad);
+      pCtx.drawImage(previewImg, 0, previewImg.naturalHeight - 1, previewImg.naturalWidth, 1, pad, pad + ir.height, ir.width, pad);
+      // Left & Right pad
+      pCtx.drawImage(previewImg, 0, 0, 1, previewImg.naturalHeight, 0, pad, pad, ir.height);
+      pCtx.drawImage(previewImg, previewImg.naturalWidth - 1, 0, 1, previewImg.naturalHeight, pad + ir.width, pad, pad, ir.height);
+      // Corners
+      pCtx.drawImage(previewImg, 0, 0, 1, 1, 0, 0, pad, pad);
+      pCtx.drawImage(previewImg, previewImg.naturalWidth - 1, 0, 1, 1, pad + ir.width, 0, pad, pad);
+      pCtx.drawImage(previewImg, 0, previewImg.naturalHeight - 1, 1, 1, 0, pad + ir.height, pad, pad);
+      pCtx.drawImage(previewImg, previewImg.naturalWidth - 1, previewImg.naturalHeight - 1, 1, 1, pad + ir.width, pad + ir.height, pad, pad);
+
+      oCtx.filter = `blur(${Math.max(0.5, blurPx)}px)`;
+      // Draw padded image shifted so the main image lands at ir.left, ir.top
+      oCtx.drawImage(padCanvas, ir.left - pad, ir.top - pad, padCanvas.width, padCanvas.height);
+
+      ctx.drawImage(off,
+        Math.round(bx), Math.round(by), Math.round(bw), Math.round(bh),
+        Math.round(bx), Math.round(by), Math.round(bw), Math.round(bh));
+    });
+
+    // Phase 2: Draw borders + handles + labels ON TOP
+    selBoxes.forEach((box, idx) => {
+      const bx = ir.left + box.x * ir.width;
+      const by = ir.top + box.y * ir.height;
+      const bw = box.w * ir.width;
+      const bh = box.h * ir.height;
+      const isActive = idx === selActiveIdx;
+
+      ctx.strokeStyle = isActive ? "#00ff55" : "rgba(255,255,255,0.85)";
+      ctx.lineWidth = isActive ? 4 : 3;
+      if (!isActive) { ctx.setLineDash([8, 4]); }
+      ctx.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
+      ctx.setLineDash([]);
+
+      if (isActive) {
+        const hs = 10;
+        ctx.fillStyle = "#00ff55";
+        [[bx, by], [bx + bw, by], [bx, by + bh], [bx + bw, by + bh]].forEach(([cx, cy]) => {
+          ctx.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
+        });
+      }
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 13px sans-serif";
+      ctx.textAlign = "left";
+      ctx.shadowColor = "rgba(0,0,0,0.9)"; ctx.shadowBlur = 6;
+      ctx.fillText(`${box.ratio} σ=${box.sigma}`, bx + 8, by + 18);
+      ctx.shadowBlur = 0;
+    });
+  }
+
+  // Drag state
+  let selDragState = null; // {type: 'move'|'resize', idx, startMx, startMy, origBox}
+
+  function initSelOverlayEvents(canvas) {
+    const getPos = (e) => {
+      if (!overlayRef) return { mx: 0, my: 0 };
+      const rect = overlayRef.getBoundingClientRect();
+      const sx = overlayRef.width / rect.width;
+      const sy = overlayRef.height / rect.height;
+      const px = (e.clientX - rect.left) * sx;
+      const py = (e.clientY - rect.top) * sy;
+      const ir = getImageRect();
+      return { mx: (px - ir.left) / ir.width, my: (py - ir.top) / ir.height };
+    };
+
+    canvas.addEventListener("mousedown", (e) => {
+      if (blurMode !== "selection") return;
+      const { mx, my } = getPos(e);
+      const CORNER_R = 0.025; // corner hit radius (normalized)
+
+      // Check corners of active box first (resize)
+      if (selActiveIdx >= 0 && selActiveIdx < selBoxes.length) {
+        const box = selBoxes[selActiveIdx];
+        const corners = [[box.x, box.y], [box.x + box.w, box.y], [box.x, box.y + box.h], [box.x + box.w, box.y + box.h]];
+        for (let ci = 0; ci < corners.length; ci++) {
+          if (Math.abs(mx - corners[ci][0]) < CORNER_R && Math.abs(my - corners[ci][1]) < CORNER_R) {
+            selDragState = {
+              type: "resize", idx: selActiveIdx, corner: ci, startMx: mx, startMy: my,
+              origBox: { ...box }
+            };
+            e.preventDefault();
+            return;
+          }
+        }
+      }
+
+      // Check all boxes for click (reverse order = front first)
+      for (let i = selBoxes.length - 1; i >= 0; i--) {
+        const box = selBoxes[i];
+        if (mx >= box.x && mx <= box.x + box.w && my >= box.y && my <= box.y + box.h) {
+          selActiveIdx = i;
+          selSigmaSlider.value = box.sigma;
+          selSigmaVal.textContent = box.sigma;
+          rebuildSelBoxList();
+          selDragState = {
+            type: "move", idx: i, startMx: mx, startMy: my,
+            origBox: { ...box }
+          };
+          updateSelOverlay();
+          e.preventDefault();
+          return;
+        }
+      }
+      // Clicked empty space
+      selActiveIdx = -1;
+      rebuildSelBoxList();
+      updateSelOverlay();
+    });
+
+    canvas.addEventListener("mousemove", (e) => {
+      if (!selDragState) return;
+      const { mx, my } = getPos(e);
+      const s = selDragState;
+      const box = selBoxes[s.idx];
+      if (!box) return;
+
+      if (s.type === "move") {
+        const dx = mx - s.startMx, dy = my - s.startMy;
+        box.x = Math.max(0, Math.min(1 - box.w, s.origBox.x + dx));
+        box.y = Math.max(0, Math.min(1 - box.h, s.origBox.y + dy));
+      } else if (s.type === "resize") {
+        // Ratio-locked resize from corner
+        const dx = mx - s.startMx, dy = my - s.startMy;
+        const ob = s.origBox;
+        let nw = ob.w, nh = ob.h, nx = ob.x, ny = ob.y;
+        // Which corner?
+        const isRight = s.corner === 1 || s.corner === 3;
+        const isBottom = s.corner === 2 || s.corner === 3;
+        // Use the dominant axis for ratio-locked scaling
+        const scale = isRight ? (ob.w + dx) / ob.w : (ob.w - dx) / ob.w;
+        const scaleY = isBottom ? (ob.h + dy) / ob.h : (ob.h - dy) / ob.h;
+        const finalScale = Math.max(0.05, (Math.abs(dx) > Math.abs(dy)) ? scale : scaleY);
+        nw = ob.w * finalScale;
+        nh = ob.h * finalScale;
+        if (!isRight) nx = ob.x + ob.w - nw;
+        if (!isBottom) ny = ob.y + ob.h - nh;
+        // Clamp
+        nw = Math.max(0.03, Math.min(1, nw));
+        nh = Math.max(0.03, Math.min(1, nh));
+        nx = Math.max(0, Math.min(1 - nw, nx));
+        ny = Math.max(0, Math.min(1 - nh, ny));
+        box.x = nx; box.y = ny; box.w = nw; box.h = nh;
+      }
+      updateSelOverlay();
+    });
+
+    const endDrag = () => {
+      if (selDragState) {
+        selDragState = null;
+        saveSelBoxes();
+      }
+    };
+    canvas.addEventListener("mouseup", endDrag);
+    canvas.addEventListener("mouseleave", endDrag);
+  }
+
+  // --- Tiled Mode Parameters (below mode toggle, hidden unless tiled mode) ---
+  const tiledParamsSection = document.createElement("div");
+  Object.assign(tiledParamsSection.style, {
+    display: blurMode === "tiled" ? "flex" : "none",
+    gap: "16px", alignItems: "center", marginBottom: "12px",
+    padding: "10px 14px", background: "#222233", borderRadius: "8px",
+    border: "1px solid #2a2a3a",
+  });
+
+  // Helper
+  function getGridFromMode(mode) {
+    if (mode === "竖切3块") return [3, 1];
+    if (mode === "竖切4块") return [4, 1];
+    if (mode === "竖切5块") return [5, 1];
+    if (mode === "横切3块") return [1, 3];
+    if (mode === "横切4块") return [1, 4];
+    if (mode === "横切5块") return [1, 5];
+    if (mode === "2×2 四等分") return [2, 2];
+    if (mode === "3×3 九宫格") return [3, 3];
+    return [2, 2];
+  }
+
+  // Tile mode dropdown
+  const tileModeLabel = document.createElement("span");
+  tileModeLabel.textContent = "切块模式";
+  tileModeLabel.style.cssText = "color:#aaa; font-size:12px; white-space:nowrap;";
+  const tileModeSelect = document.createElement("select");
+  Object.assign(tileModeSelect.style, {
+    background: "#1a1a2a", color: "#ddd", border: "1px solid #3a3a4a",
+    borderRadius: "6px", padding: "4px 8px", fontSize: "12px", cursor: "pointer",
+  });
+
+  // === Ratio-correction tile system ===
+  // For each grid, calculate X/Y overlap to correct tiles to exact API ratios
+  const API_RATIOS = [
+    { label: "1:1", v: 1.0 },
+    { label: "5:4", v: 5 / 4 },
+    { label: "4:5", v: 4 / 5 },
+    { label: "4:3", v: 4 / 3 },
+    { label: "3:4", v: 3 / 4 },
+    { label: "3:2", v: 3 / 2 },
+    { label: "2:3", v: 2 / 3 },
+    { label: "16:9", v: 16 / 9 },
+    { label: "9:16", v: 9 / 16 },
+    { label: "21:9", v: 21 / 9 },
+    { label: "9:21", v: 9 / 21 },
+  ];
+  const MIN_SEAM_OV = 16;
+  const MAX_CORRECTION_OV = 200;
+
+  function findBestRatio(tileW, tileH) {
+    const r = tileW / tileH;
+    let best = API_RATIOS[0], bestD = Infinity;
+    for (const ar of API_RATIOS) {
+      const d = Math.abs(r - ar.v);
+      if (d < bestD) { bestD = d; best = ar; }
+    }
+    return best;
+  }
+
+  function calcCorrectedGrid(imgW, imgH, cols, rows) {
+    const baseTileW = imgW / cols;
+    const baseTileH = imgH / rows;
+    const target = findBestRatio(baseTileW, baseTileH);
+    const R = target.v;
+    let ovX = MIN_SEAM_OV, ovY = MIN_SEAM_OV;
+    const currentR = baseTileW / baseTileH;
+
+    if (Math.abs(currentR - R) < 0.01) {
+      // Already close enough
+    } else if (currentR > R) {
+      // Tile too wide -> increase height
+      ovY = Math.round((baseTileW + MIN_SEAM_OV) / R - baseTileH);
+      ovY = Math.max(MIN_SEAM_OV, Math.min(MAX_CORRECTION_OV, ovY));
+    } else {
+      // Tile too tall -> increase width
+      ovX = Math.round(R * (baseTileH + MIN_SEAM_OV) - baseTileW);
+      ovX = Math.max(MIN_SEAM_OV, Math.min(MAX_CORRECTION_OV, ovX));
+    }
+
+    const finalW = Math.floor(baseTileW) + (cols > 1 ? ovX : 0);
+    const finalH = Math.floor(baseTileH) + (rows > 1 ? ovY : 0);
+    const finalRatio = findBestRatio(finalW, finalH);
+
+    return {
+      cols, rows, total: cols * rows,
+      baseTileW: Math.floor(baseTileW), baseTileH: Math.floor(baseTileH),
+      ovX, ovY, finalW, finalH,
+      ratio: finalRatio.label,
+      deviation: Math.abs(finalW / finalH - finalRatio.v)
+    };
+  }
+
+  function buildAllGridOptions(imgW, imgH) {
+    const results = [];
+    const seen = new Set();
+    for (let c = 1; c <= 5; c++) {
+      for (let r = 1; r <= 5; r++) {
+        if (c === 1 && r === 1) continue;
+        if (c * r > 12) continue;
+        const key = `${c}x${r}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const g = calcCorrectedGrid(imgW, imgH, c, r);
+        // Filter: reject if correction overlap is too aggressive (>30% of base tile)
+        if (g.ovX > g.baseTileW * 0.3 || g.ovY > g.baseTileH * 0.3) continue;
+        // Filter: reject if corrected ratio still deviates > 15% from target
+        const finalR = g.finalW / g.finalH;
+        const targetR = API_RATIOS.find(a => a.label === g.ratio)?.v || 1;
+        if (Math.abs(finalR - targetR) / targetR > 0.15) continue;
+        results.push(g);
+      }
+    }
+    results.sort((a, b) => a.total - b.total || a.deviation - b.deviation);
+    return results;
+  }
+
+  let _allGrids = [];
+  let _selectedGrid = null;
+
+  function rebuildTileModeOptions() {
+    const img = panel.querySelector("#blur-preview-img");
+    const imgW = img?.naturalWidth || 1920;
+    const imgH = img?.naturalHeight || 960;
+    const prevValue = tileModeSelect.value;
+    tileModeSelect.innerHTML = "";
+
+    _allGrids = buildAllGridOptions(imgW, imgH);
+    if (_allGrids.length === 0) {
+      _allGrids = [calcCorrectedGrid(imgW, imgH, 2, 2)];
+    }
+
+    for (const g of _allGrids) {
+      const o = document.createElement("option");
+      o.value = `${g.cols}x${g.rows}`;
+      o.textContent = `${g.cols}×${g.rows} → ${g.ratio} (${g.total}块, ${g.finalW}×${g.finalH})`;
+      tileModeSelect.appendChild(o);
+    }
+
+    // Restore: prioritize saved property (persists across panel open/close)
+    const saved = node.properties?._tile_mode;
+    if (saved && [...tileModeSelect.options].some(o => o.value === saved)) {
+      tileModeSelect.value = saved;
+    } else if (prevValue && [...tileModeSelect.options].some(o => o.value === prevValue)) {
+      tileModeSelect.value = prevValue;
+    }
+    _selectedGrid = _allGrids.find(g => `${g.cols}x${g.rows}` === tileModeSelect.value) || _allGrids[0];
+  }
+  rebuildTileModeOptions();
+
+  const _origGetGrid = getGridFromMode;
+  getGridFromMode = function (mode) {
+    const m = mode.match(/^(\d+)x(\d+)$/);
+    if (m) return [parseInt(m[1]), parseInt(m[2])];
+    return _origGetGrid(mode);
+  };
+
+  function recalcAutoOverlap() {
+    _selectedGrid = _allGrids.find(g => `${g.cols}x${g.rows}` === tileModeSelect.value) || _allGrids[0];
+    if (_selectedGrid) {
+      tileInfoText.textContent = `重合 X:${_selectedGrid.ovX}px Y:${_selectedGrid.ovY}px`;
+    }
+  }
+
+  const tileInfoText = document.createElement("span");
+  tileInfoText.style.cssText = "color:#5a8abf; font-size:11px; white-space:nowrap;";
+
+  // Selection counter
+  const tiledSelCount = document.createElement("span");
+  tiledSelCount.style.cssText = "color:#4CAF50; font-size:12px; margin-left:auto; white-space:nowrap;";
+  const selectedTiles = new Set();
+  if (node.properties?._selected_tiles_list) {
+    try {
+      const saved = JSON.parse(node.properties._selected_tiles_list);
+      if (Array.isArray(saved)) saved.forEach(k => selectedTiles.add(k));
+    } catch (e) { }
+  }
+  function updateTiledSelCount() {
+    const [cols, rows] = getGridFromMode(tileModeSelect.value);
+    const total = cols * rows;
+    tiledSelCount.textContent = selectedTiles.size > 0 ? `✅ 已选 ${selectedTiles.size}/${total} 块` : `共 ${total} 块 (点击图片选择)`;
+  }
+  updateTiledSelCount();
+  recalcAutoOverlap();
+
+  tileModeSelect.onchange = () => {
+    selectedTiles.clear();
+    // Save immediately so it persists across panel open/close
+    if (!node.properties) node.properties = {};
+    node.properties._tile_mode = tileModeSelect.value;
+    updateTiledSelCount();
+    recalcAutoOverlap();
+    updateTiledOverlay();
+  };
+
+  tiledParamsSection.append(tileModeLabel, tileModeSelect, tileInfoText, tiledSelCount);
+  panel.appendChild(tiledParamsSection);
+
+  // Tiled overlay canvas (sits on top of preview image, for grid lines + selection)
+  function updateTiledOverlay() {
+    if (!overlayRef || blurMode !== "tiled" || !previewImg) return;
+    const ctx = overlayRef.getContext("2d");
+    ctx.clearRect(0, 0, overlayRef.width, overlayRef.height);
+
+    if (!previewImg.naturalWidth) return;
+    const ir = getImageRect();
+    const w = ir.width, h = ir.height;
+
+    const [cols, rows] = getGridFromMode(tileModeSelect.value);
+    const stepX = w / cols, stepY = h / rows;
+    // Get per-axis overlaps from selected grid
+    const sg = _selectedGrid || { ovX: 16, ovY: 16 };
+    // Scale overlap to preview canvas size (overlap is in original image pixels)
+    const scaleX = w / previewImg.naturalWidth;
+    const scaleY = h / previewImg.naturalHeight;
+    const ovXpx = sg.ovX * scaleX;
+    const ovYpx = sg.ovY * scaleY;
+
+    ctx.save();
+    ctx.translate(ir.left, ir.top);
+
+    // 1. Selected tiles — green highlight shows actual upload area (with overlap)
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (selectedTiles.has(c + "_" + r)) {
+          // Calculate actual tile bounds (matching backend split_image_tiles logic)
+          let x0 = c * stepX, y0 = r * stepY;
+          let x1 = (c === cols - 1) ? w : (c + 1) * stepX + ovXpx;
+          let y1 = (r === rows - 1) ? h : (r + 1) * stepY + ovYpx;
+          if (c > 0) x0 -= ovXpx;
+          if (r > 0) y0 -= ovYpx;
+          x0 = Math.max(0, x0); y0 = Math.max(0, y0);
+          x1 = Math.min(w, x1); y1 = Math.min(h, y1);
+          const tw = x1 - x0, th = y1 - y0;
+
+          // Fill the actual tile area
+          ctx.fillStyle = "rgba(0, 200, 100, 0.2)";
+          ctx.fillRect(x0, y0, tw, th);
+          // Solid border around actual upload area
+          ctx.strokeStyle = "rgba(0, 220, 120, 0.9)";
+          ctx.lineWidth = 2.5;
+          ctx.strokeRect(x0 + 1, y0 + 1, tw - 2, th - 2);
+          // Checkmark at cell center
+          ctx.fillStyle = "rgba(255,255,255,0.95)";
+          ctx.font = "bold 28px sans-serif";
+          ctx.textAlign = "center";
+          ctx.shadowColor = "black"; ctx.shadowBlur = 6;
+          ctx.fillText("✓", c * stepX + stepX / 2, r * stepY + stepY / 2 + 10);
+          ctx.shadowBlur = 0;
+        }
+      }
+    }
+
+    // 2. Grid lines (red)
+    ctx.strokeStyle = "rgba(255, 50, 50, 0.9)";
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    for (let c = 1; c < cols; c++) { ctx.moveTo(c * stepX, 0); ctx.lineTo(c * stepX, h); }
+    for (let r = 1; r < rows; r++) { ctx.moveTo(0, r * stepY); ctx.lineTo(w, r * stepY); }
+    ctx.stroke();
+
+    // 3. Overlap zones (yellow, X/Y independent)
+    ctx.fillStyle = "rgba(255, 200, 0, 0.15)";
+    ctx.strokeStyle = "rgba(255, 200, 0, 0.6)";
+    ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    if (ovXpx > 0) {
+      for (let c = 1; c < cols; c++) {
+        ctx.fillRect(c * stepX - ovXpx, 0, ovXpx * 2, h);
+        ctx.moveTo(c * stepX - ovXpx, 0); ctx.lineTo(c * stepX - ovXpx, h);
+        ctx.moveTo(c * stepX + ovXpx, 0); ctx.lineTo(c * stepX + ovXpx, h);
+      }
+    }
+    if (ovYpx > 0) {
+      for (let r = 1; r < rows; r++) {
+        ctx.fillRect(0, r * stepY - ovYpx, w, ovYpx * 2);
+        ctx.moveTo(0, r * stepY - ovYpx); ctx.lineTo(w, r * stepY - ovYpx);
+        ctx.moveTo(0, r * stepY + ovYpx); ctx.lineTo(w, r * stepY + ovYpx);
+      }
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function updateTiledParamsVisibility() {
+    tiledParamsSection.style.display = blurMode === "tiled" ? "flex" : "none";
+  }
 
   // --- Preview Area ---
   const previewBox = document.createElement("div");
@@ -258,83 +1015,394 @@ function openCustomPanel(node) {
   previewBox.id = "blur-preview-area";
   panel.appendChild(previewBox);
 
-  // Load source image once, apply CSS blur for real-time preview
+  // Mask canvas reference (created when image loads)
+  let maskCanvas = null;
+  let maskCtx = null;
+  let isPainting = false;
+  let previewImg = null;
+  let overlayRef = null;
+
+  // Helper: get image position in CANVAS pixel space (not CSS space)
+  function getImageRect() {
+    if (!previewImg || !overlayRef) return { left: 0, top: 0, width: 1, height: 1 };
+    const ir = previewImg.getBoundingClientRect();
+    const or = overlayRef.getBoundingClientRect();
+    // Scale from CSS pixels to canvas pixel coordinates
+    const sx = overlayRef.width / or.width;
+    const sy = overlayRef.height / or.height;
+    return {
+      left: (ir.left - or.left) * sx,
+      top: (ir.top - or.top) * sy,
+      width: ir.width * sx,
+      height: ir.height * sy,
+    };
+  }
+
+  function updateMaskPreview() {
+    if (!previewImg || !maskCanvas || blurMode !== "mask" || !overlayRef) return;
+    const octx = overlayRef.getContext("2d");
+    const w = overlayRef.width;
+    const h = overlayRef.height;
+    octx.clearRect(0, 0, w, h);
+
+    const ir = getImageRect();
+    const sigma = parseFloat(slider?.value || 0);
+    const blurPx = sigma * blurScaleRatio;
+
+    // Step 1: Draw blurred image clipped to mask area (within the image region)
+    if (blurPx > 0) {
+      octx.save();
+      octx.filter = `blur(${blurPx}px)`;
+      octx.drawImage(previewImg, ir.left, ir.top, ir.width, ir.height);
+      octx.filter = "none";
+      // Create clip mask at the image's position within overlay
+      const clipCanvas = document.createElement("canvas");
+      clipCanvas.width = w; clipCanvas.height = h;
+      const cctx = clipCanvas.getContext("2d");
+      cctx.drawImage(maskCanvas, ir.left, ir.top, ir.width, ir.height);
+      octx.globalCompositeOperation = "destination-in";
+      octx.drawImage(clipCanvas, 0, 0);
+      octx.restore();
+    }
+
+    // Step 2: Thick red contour with outward gradient (multi-pass shadow glow)
+    const tc = document.createElement("canvas");
+    tc.width = w; tc.height = h;
+    const tctx = tc.getContext("2d");
+    // Draw mask at image position with red shadow passes
+    tctx.shadowColor = "rgba(255, 50, 50, 0.4)";
+    tctx.shadowBlur = 16;
+    tctx.drawImage(maskCanvas, ir.left, ir.top, ir.width, ir.height);
+    tctx.shadowColor = "rgba(255, 50, 50, 0.6)";
+    tctx.shadowBlur = 8;
+    tctx.drawImage(maskCanvas, ir.left, ir.top, ir.width, ir.height);
+    tctx.shadowColor = "rgba(255, 80, 80, 0.9)";
+    tctx.shadowBlur = 3;
+    tctx.drawImage(maskCanvas, ir.left, ir.top, ir.width, ir.height);
+    // Cut out interior
+    tctx.globalCompositeOperation = "destination-out";
+    tctx.shadowBlur = 0;
+    tctx.shadowColor = "transparent";
+    tctx.drawImage(maskCanvas, ir.left, ir.top, ir.width, ir.height);
+    octx.drawImage(tc, 0, 0);
+  }
+
+  function drawBrushCursor(e) {
+    if (!overlayRef || blurMode !== "mask") return;
+    const rect = overlayRef.getBoundingClientRect();
+    // Convert mouse CSS coords to canvas pixel coords
+    const sx = overlayRef.width / rect.width;
+    const sy = overlayRef.height / rect.height;
+    const cx = (e.clientX - rect.left) * sx;
+    const cy = (e.clientY - rect.top) * sy;
+    const displayRadius = parseInt(brushSlider.value) * sx;
+    updateMaskPreview();
+    const octx = overlayRef.getContext("2d");
+    octx.save();
+    octx.strokeStyle = isEraser ? "#ffaa44" : "#44aaff";
+    octx.lineWidth = 2;
+    octx.setLineDash([4, 4]);
+    octx.beginPath();
+    octx.arc(cx, cy, displayRadius, 0, Math.PI * 2);
+    octx.stroke();
+    octx.fillStyle = isEraser ? "#ffaa44" : "#44aaff";
+    octx.beginPath();
+    octx.arc(cx, cy, 2, 0, Math.PI * 2);
+    octx.fill();
+    octx.restore();
+  }
+
+  function saveMaskToProperties() {
+    if (!node.properties) node.properties = {};
+    if (maskCanvas && blurMode === "mask") {
+      // Check alpha channel for painted content (transparent bg + white paint)
+      const mdata = maskCanvas.getContext("2d").getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+      let hasContent = false;
+      for (let i = 3; i < mdata.length; i += 4) {
+        if (mdata[i] > 0) { hasContent = true; break; }
+      }
+      if (hasContent) {
+        // Export as black/white for backend (PIL L-mode)
+        const exportCanvas = document.createElement("canvas");
+        exportCanvas.width = maskCanvas.width;
+        exportCanvas.height = maskCanvas.height;
+        const ectx = exportCanvas.getContext("2d");
+        ectx.fillStyle = "black";
+        ectx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+        ectx.drawImage(maskCanvas, 0, 0);
+        node.properties._blur_mask = exportCanvas.toDataURL("image/png");
+      } else {
+        node.properties._blur_mask = "";
+      }
+    } else {
+      node.properties._blur_mask = "";
+    }
+  }
+
+  // Load source image, set up overlay canvas
   (async () => {
-    const imgSrc = await getInputImageSrc(node);
+    const imgSrc = getLinkedInputImageUrl(node);
     if (!imgSrc) return;
+
     const img = document.createElement("img");
     img.id = "blur-preview-img";
     img.src = imgSrc;
-    img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;transition:filter 0.05s;";
+    img.style.cssText = "max-width:100%; max-height:100%; object-fit:contain; border-radius:6px; transition:filter 0.05s;";
+
     img.onload = () => {
-      // Calculate scale ratio: displayed size vs original size
-      const displayedW = img.offsetWidth || img.clientWidth;
+      previewImg = img;
       const naturalW = img.naturalWidth;
-      if (naturalW > 0 && displayedW > 0) {
-        blurScaleRatio = displayedW / naturalW;
-      }
-      img.style.filter = `blur(${currentSigma * blurScaleRatio}px)`;
+      const naturalH = img.naturalHeight;
+
+      // Double-rAF to ensure layout is fully settled
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const imgRect = img.getBoundingClientRect();
+        const boxRect = previewBox.getBoundingClientRect();
+        if (imgRect.width > 0 && naturalW > 0) {
+          blurScaleRatio = imgRect.width / naturalW;
+        }
+        if (blurMode === "global" || blurMode === "tiled") {
+          img.style.filter = `blur(${currentSigma * blurScaleRatio}px)`;
+        }
+        // Recalculate auto-overlap now that image natural size is known
+        rebuildTileModeOptions();
+        recalcAutoOverlap();
+
+        // Mask canvas: TRANSPARENT bg + white paint for mask areas
+        maskCanvas = document.createElement("canvas");
+        maskCanvas.width = naturalW;
+        maskCanvas.height = naturalH;
+        maskCtx = maskCanvas.getContext("2d");
+
+        // Restore saved mask (stored as black/white, convert to transparent/white)
+        if (node.properties?._blur_mask) {
+          const savedMask = new window.Image();
+          savedMask.onload = () => {
+            maskCtx.drawImage(savedMask, 0, 0, naturalW, naturalH);
+            const imgData = maskCtx.getImageData(0, 0, naturalW, naturalH);
+            for (let p = 0; p < imgData.data.length; p += 4) {
+              if (imgData.data[p] < 128) {
+                imgData.data[p] = 0; imgData.data[p + 1] = 0;
+                imgData.data[p + 2] = 0; imgData.data[p + 3] = 0;
+              }
+            }
+            maskCtx.putImageData(imgData, 0, 0);
+            updateMaskPreview();
+          };
+          savedMask.src = node.properties._blur_mask;
+        }
+
+        // Overlay covers ENTIRE previewBox — all coords are computed dynamically
+        const overlay = document.createElement("canvas");
+        overlay.id = "blur-mask-overlay";
+        Object.assign(overlay.style, {
+          position: "absolute",
+          left: "0", top: "0",
+          width: "100%", height: "100%",
+          cursor: blurMode === "mask" ? "none" : "default",
+          pointerEvents: blurMode === "mask" ? "auto" : "none",
+          borderRadius: "10px",
+        });
+        previewBox.appendChild(overlay);
+        // Set canvas resolution AFTER DOM insertion to match CSS display size exactly
+        // This ensures 1:1 mapping: CSS coordinates = canvas pixel coordinates
+        overlay.width = overlay.clientWidth;
+        overlay.height = overlay.clientHeight;
+        overlayRef = overlay;
+
+        // Tiled mode uses overlayRef as well
+
+        // Selection mode uses overlayRef (same canvas as mask mode)
+        initSelOverlayEvents(overlay);
+        if (blurMode === "selection") {
+          overlay.style.pointerEvents = "auto";
+          overlay.style.cursor = "default";
+          updateSelOverlay();
+        }
+
+        // Click to select/deselect tiles
+        overlay.addEventListener("click", (e) => {
+          if (blurMode !== "tiled") return;
+          const rect = overlay.getBoundingClientRect();
+          const sx = overlay.width / rect.width;
+          const sy = overlay.height / rect.height;
+          const px = (e.clientX - rect.left) * sx;
+          const py = (e.clientY - rect.top) * sy;
+          const ir = getImageRect();
+
+          const clickX = px - ir.left;
+          const clickY = py - ir.top;
+          if (clickX < 0 || clickX > ir.width || clickY < 0 || clickY > ir.height) return;
+
+          const [cols, rows] = getGridFromMode(tileModeSelect.value);
+          const stepX = ir.width / cols, stepY = ir.height / rows;
+          const col = Math.floor(clickX / stepX);
+          const row = Math.floor(clickY / stepY);
+
+          if (col < 0 || col >= cols || row < 0 || row >= rows) return;
+          const key = col + "_" + row;
+          if (selectedTiles.has(key)) selectedTiles.delete(key); else selectedTiles.add(key);
+          updateTiledSelCount();
+          updateTiledOverlay();
+        });
+
+        // Initial render if in tiled mode
+        if (blurMode === "tiled") {
+          updateTiledOverlay();
+        }
+
+        // Convert mouse event → mask canvas coordinates (scale-aware)
+        function getCanvasPos(e) {
+          const ir = getImageRect(); // already in canvas pixel space
+          const or = overlay.getBoundingClientRect();
+          // Convert mouse CSS coords to canvas pixel coords
+          const sx = overlay.width / or.width;
+          const sy = overlay.height / or.height;
+          const canvasX = (e.clientX - or.left) * sx;
+          const canvasY = (e.clientY - or.top) * sy;
+          // Position relative to image in canvas space
+          const relX = canvasX - ir.left;
+          const relY = canvasY - ir.top;
+          // Scale to mask canvas (natural image resolution)
+          const scaleX = maskCanvas.width / ir.width;
+          const scaleY = maskCanvas.height / ir.height;
+          return { x: relX * scaleX, y: relY * scaleY };
+        }
+
+        function paint(e) {
+          if (!isPainting || blurMode !== "mask") return;
+          const pos = getCanvasPos(e);
+          const ir = getImageRect();
+          const displayRadius = parseInt(brushSlider.value);
+          const scaledRadius = displayRadius * (maskCanvas.width / ir.width);
+          if (isEraser) {
+            maskCtx.save();
+            maskCtx.globalCompositeOperation = "destination-out";
+            maskCtx.beginPath();
+            maskCtx.arc(pos.x, pos.y, scaledRadius, 0, Math.PI * 2);
+            maskCtx.fillStyle = "white";
+            maskCtx.fill();
+            maskCtx.restore();
+          } else {
+            maskCtx.beginPath();
+            maskCtx.arc(pos.x, pos.y, scaledRadius, 0, Math.PI * 2);
+            maskCtx.fillStyle = "white";
+            maskCtx.fill();
+          }
+          drawBrushCursor(e);
+        }
+
+        overlay.onmousedown = (e) => {
+          e.preventDefault();
+          isPainting = true;
+          paint(e);
+        };
+        overlay.onmousemove = (e) => {
+          if (isPainting) {
+            paint(e);
+          } else {
+            drawBrushCursor(e);
+          }
+        };
+        overlay.onmouseup = () => { isPainting = false; };
+        overlay.onmouseleave = () => {
+          isPainting = false;
+          updateMaskPreview(); // Clear cursor circle
+        };
+
+        updateMaskPreview();
+      }));
     };
+
     previewBox.innerHTML = "";
     previewBox.appendChild(img);
   })();
 
-  // --- Style Prompt ---
-  const promptSection = document.createElement("div");
-  promptSection.style.marginBottom = "20px";
-  const promptLabel = document.createElement("div");
-  promptLabel.textContent = "风格提示词";
-  promptLabel.style.cssText = "color:#aaa; font-size:13px; margin-bottom:8px;";
-  promptSection.appendChild(promptLabel);
+  // --- Mask Action Buttons (visible in mask mode) ---
+  const maskActionsRow = document.createElement("div");
+  maskActionsRow.style.cssText = "display:flex; gap:8px; margin-bottom:12px;";
 
-  const textarea = document.createElement("textarea");
-  textarea.value = node.widgets?.find(w => w.name === "style_prompt")?.value || "";
-  textarea.placeholder = "描述你想要的风格效果...";
-  Object.assign(textarea.style, {
-    width: "100%", minHeight: "70px", background: "#222233", border: "1px solid #3a3a4a",
-    borderRadius: "8px", padding: "12px", color: "#ddd", fontSize: "14px",
-    resize: "vertical", fontFamily: "inherit", boxSizing: "border-box",
-    transition: "border-color 0.2s", outline: "none",
+  const clearMaskBtn = document.createElement("button");
+  clearMaskBtn.textContent = "🗑️ 清除遮罩";
+  Object.assign(clearMaskBtn.style, {
+    padding: "6px 14px", background: "#2a2a3a", border: "1px solid #3a3a4a",
+    borderRadius: "6px", color: "#888", fontSize: "12px", cursor: "pointer",
   });
-  textarea.onfocus = () => textarea.style.borderColor = "#5a8abf";
-  textarea.onblur = () => textarea.style.borderColor = "#3a3a4a";
-  textarea.oninput = () => {
-    const w = node.widgets?.find(w => w.name === "style_prompt");
-    if (w) w.value = textarea.value;
+  clearMaskBtn.onclick = () => {
+    if (maskCtx && maskCanvas) {
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+      updateMaskPreview();
+    }
   };
-  promptSection.appendChild(textarea);
 
-  // Style preset chips
-  const chipsRow = document.createElement("div");
-  chipsRow.style.cssText = "display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;";
-  for (const [name, prompt] of Object.entries(stylePresets)) {
-    const chip = document.createElement("button");
-    chip.textContent = name;
-    Object.assign(chip.style, {
-      padding: "6px 14px", background: "#2a2a3a", border: "1px solid #3a3a4a",
-      borderRadius: "14px", color: "#aaa", fontSize: "12px", cursor: "pointer",
-      transition: "all 0.15s",
-    });
-    chip.onmouseenter = () => { chip.style.background = "#3a3a4f"; chip.style.color = "#ddd"; };
-    chip.onmouseleave = () => {
-      if (!chip.classList.contains("sel")) { chip.style.background = "#2a2a3a"; chip.style.color = "#aaa"; }
-    };
-    chip.onclick = () => {
-      textarea.value = prompt;
-      const w = node.widgets?.find(w => w.name === "style_prompt");
-      if (w) w.value = prompt;
-      chipsRow.querySelectorAll("button").forEach(b => {
-        b.classList.remove("sel"); b.style.borderColor = "#3a3a4a"; b.style.color = "#aaa"; b.style.background = "#2a2a3a";
-      });
-      chip.classList.add("sel");
-      chip.style.borderColor = "#8f5a2a";
-      chip.style.color = "#fff";
-      chip.style.background = "#5f3a1e";
-    };
-    chipsRow.appendChild(chip);
+  const invertMaskBtn = document.createElement("button");
+  invertMaskBtn.textContent = "🔄 反转遮罩";
+  Object.assign(invertMaskBtn.style, {
+    padding: "6px 14px", background: "#2a2a3a", border: "1px solid #3a3a4a",
+    borderRadius: "6px", color: "#888", fontSize: "12px", cursor: "pointer",
+  });
+  invertMaskBtn.onclick = () => {
+    if (maskCtx && maskCanvas) {
+      const imgData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+      for (let i = 0; i < imgData.data.length; i += 4) {
+        // Invert alpha: painted (a=255) → transparent, transparent (a=0) → white
+        if (imgData.data[i + 3] > 0) {
+          imgData.data[i] = 0; imgData.data[i + 1] = 0;
+          imgData.data[i + 2] = 0; imgData.data[i + 3] = 0;
+        } else {
+          imgData.data[i] = 255; imgData.data[i + 1] = 255;
+          imgData.data[i + 2] = 255; imgData.data[i + 3] = 255;
+        }
+      }
+      maskCtx.putImageData(imgData, 0, 0);
+      updateMaskPreview();
+    }
+  };
+
+  maskActionsRow.append(clearMaskBtn, invertMaskBtn);
+  function updateMaskActionsVisibility() {
+    maskActionsRow.style.display = blurMode === "mask" ? "flex" : "none";
   }
-  promptSection.appendChild(chipsRow);
-  panel.appendChild(promptSection);
+  updateMaskActionsVisibility();
+  // Insert mask actions BEFORE preview area (above the image)
+  panel.insertBefore(maskActionsRow, previewBox);
+
+  // Mode switch logic
+  function switchBlurMode(newMode) {
+    blurMode = newMode;
+    styleModeBtn(modeGlobalBtn, blurMode === "global");
+    styleModeBtn(modeMaskBtn, blurMode === "mask");
+    styleModeBtn(modeSelectionBtn, blurMode === "selection");
+    styleModeBtn(modeTiledBtn, blurMode === "tiled");
+    updateBrushVisibility();
+    updateMaskActionsVisibility();
+    updateTiledParamsVisibility();
+    updateSelParamsVisibility();
+
+    // Overlay & preview updates per mode
+    if (blurMode === "global") {
+      if (overlayRef) { overlayRef.style.pointerEvents = "none"; overlayRef.style.cursor = "default"; const octx = overlayRef.getContext("2d"); octx.clearRect(0, 0, overlayRef.width, overlayRef.height); }
+      if (previewImg) { const s = parseFloat(slider.value); previewImg.style.filter = `blur(${s * blurScaleRatio}px)`; }
+    } else if (blurMode === "mask") {
+      if (overlayRef) { overlayRef.style.pointerEvents = "auto"; overlayRef.style.cursor = "none"; }
+      if (previewImg) previewImg.style.filter = "none";
+      updateMaskPreview();
+    } else if (blurMode === "selection") {
+      if (overlayRef) { overlayRef.style.pointerEvents = "none"; overlayRef.style.cursor = "default"; const octx = overlayRef.getContext("2d"); octx.clearRect(0, 0, overlayRef.width, overlayRef.height); }
+      if (previewImg) previewImg.style.filter = "none";
+      if (overlayRef) { overlayRef.style.pointerEvents = "auto"; overlayRef.style.cursor = "default"; updateSelOverlay(); }
+    } else if (blurMode === "tiled") {
+      if (overlayRef) { overlayRef.style.pointerEvents = "auto"; overlayRef.style.cursor = "crosshair"; const octx = overlayRef.getContext("2d"); octx.clearRect(0, 0, overlayRef.width, overlayRef.height); }
+      if (previewImg) { const s = parseFloat(slider.value); previewImg.style.filter = `blur(${s * blurScaleRatio}px)`; }
+      updateTiledOverlay();
+    }
+  }
+  modeGlobalBtn.onclick = () => switchBlurMode("global");
+  modeMaskBtn.onclick = () => switchBlurMode("mask");
+  modeSelectionBtn.onclick = () => switchBlurMode("selection");
+  modeTiledBtn.onclick = () => switchBlurMode("tiled");
+
+  // (Style Prompt section removed per user request)
 
   // --- Apply Button ---
   const applyBtn = document.createElement("button");
@@ -346,12 +1414,129 @@ function openCustomPanel(node) {
   });
   applyBtn.onmouseenter = () => applyBtn.style.boxShadow = "0 0 20px rgba(42,90,143,0.5)";
   applyBtn.onmouseleave = () => applyBtn.style.boxShadow = "none";
-  applyBtn.onclick = () => {
-    if (textarea.value.trim()) {
-      const mw = node.widgets?.find(w => w.name === "repair_mode");
-      if (mw) mw.value = "风格";
-    }
+  applyBtn.onclick = async () => {
+    saveMaskToProperties();
+    if (!node.properties) node.properties = {};
+    node.properties._blur_mode = blurMode;
     node._blurUI._isCustomActive = true;
+
+    // Save selection mode settings
+    let currentSelectionBoxes = [];
+    if (blurMode === "selection") {
+      saveSelBoxes();
+
+      // Compute pixel coords for backend independently of extra_params widget
+      const img = panel.querySelector("#blur-preview-img");
+      const iw = img?.naturalWidth || 1920, ih = img?.naturalHeight || 960;
+      currentSelectionBoxes = selBoxes.map(b => ({
+        sigma: parseFloat(b.sigma) || 5, ratio: b.ratio,
+        x: Math.round(b.x * iw), y: Math.round(b.y * ih),
+        w: Math.round(b.w * iw), h: Math.round(b.h * ih),
+      }));
+
+      const extraW = node.widgets?.find(w => w.name === "extra_params");
+      if (extraW) {
+        let ep = {};
+        try { ep = JSON.parse(extraW.value || "{}"); } catch (e) { ep = {}; }
+        ep._blur_mode = "selection";
+        ep._selection_boxes = currentSelectionBoxes;
+        extraW.value = JSON.stringify(ep);
+      }
+      // Do NOT return here — fall through to apply API call below so preview updates
+    }
+
+    // Save tiled mode settings
+    if (blurMode === "tiled") {
+      const resolvedTileMode = tileModeSelect.value; // Already NxM format
+      node.properties._tile_mode = resolvedTileMode;
+      node.properties._tile_overlap_x = _selectedGrid?.ovX || 16;
+      node.properties._tile_overlap_y = _selectedGrid?.ovY || 16;
+      node.properties._selected_tiles_list = JSON.stringify(Array.from(selectedTiles));
+      // Write selected tiles to extra_params
+      const extraW = node.widgets?.find(w => w.name === "extra_params");
+      if (extraW) {
+        let ep = {};
+        try { ep = JSON.parse(extraW.value || "{}"); } catch (e) { ep = {}; }
+        ep._blur_mode = "tiled";
+        ep._tile_mode = resolvedTileMode;
+        ep._tile_overlap_x = _selectedGrid?.ovX || 16;
+        ep._tile_overlap_y = _selectedGrid?.ovY || 16;
+        if (selectedTiles.size > 0) {
+          ep._selected_tiles = Array.from(selectedTiles);
+        } else {
+          delete ep._selected_tiles;
+        }
+        extraW.value = JSON.stringify(ep);
+      }
+      // Confirm dialog if no tiles selected
+      if (selectedTiles.size === 0) {
+        showBlurConfirmDialog(
+          "未选择任何区块",
+          "是否放大全部区块？这将消耗更多算力。\n\n你可以在预览图上点击区块来选择要放大的区域。",
+          () => { closeCustomPanel(); node.setDirtyCanvas?.(true, true); },
+          "关闭并放大全部", "返回选择"
+        );
+        return;
+      }
+      closeCustomPanel();
+      node.setDirtyCanvas?.(true, true);
+      return;
+    }
+
+    // Global/Mask mode: clear tiled params from extra_params
+    const extraWClean = node.widgets?.find(w => w.name === "extra_params");
+    if (extraWClean) {
+      let ep = {};
+      try { ep = JSON.parse(extraWClean.value || "{}"); } catch (e) { ep = {}; }
+      delete ep._blur_mode;
+      delete ep._tile_mode;
+      delete ep._tile_overlap;
+      delete ep._selected_tiles;
+      extraWClean.value = JSON.stringify(ep);
+    }
+
+    // Global/Mask/Selection mode: apply blur API
+    const sigma = parseFloat(slider.value) || 0;
+    if (sigma > 0 || blurMode === "selection") {
+      try {
+        applyBtn.textContent = "⏳ 正在应用模糊...";
+        applyBtn.style.pointerEvents = "none";
+
+        let imagesBase64 = [];
+        if (window.batchboxAPI?.collectImageInputsBase64) {
+          imagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+        }
+        if (imagesBase64.length > 0) {
+          const selectedIndexWidget = node.widgets?.find(w => w.name === "_selected_image_index");
+          const selectedIndex = selectedIndexWidget ? selectedIndexWidget.value : 0;
+          const resp = await api.fetchApi("/api/batchbox/apply-blur", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              node_id: String(node.id),
+              sigma: sigma,
+              blur_mode: blurMode,
+              blur_mask: node.properties?._blur_mask || "",
+              selection_boxes: currentSelectionBoxes,
+              images_base64: imagesBase64,
+              selected_index: selectedIndex,
+            }),
+          });
+          const result = await resp.json();
+          if (result.success) {
+            console.log("[BlurUpscale] Blur applied and cached:", result);
+            if (result.preview_images) {
+              node.properties._last_images = JSON.stringify(result.preview_images);
+            }
+          } else {
+            console.error("[BlurUpscale] Apply blur failed:", result.error);
+          }
+        }
+      } catch (e) {
+        console.error("[BlurUpscale] Apply blur error:", e);
+      }
+    }
+
     closeCustomPanel();
     node.setDirtyCanvas?.(true, true);
   };
@@ -984,12 +2169,19 @@ app.registerExtension({
       node._blurUI = { blurGroupY: 0, modeGroupY: 0, customBtnY: 0, drawStartY: 0, model: "", _isCustomActive: false, _selectedStyleName: "" };
 
       // --- Hide widgets we manage ourselves (same approach as dynamic_params.js) ---
-      const widgetsToHide = ["blur_intensity", "repair_mode", "custom_sigma", "style_prompt", "seed", "control_after_generate", "生成后控制"];
+      const widgetsToHide = ["blur_intensity", "repair_mode", "custom_sigma", "style_prompt", "seed", "control_after_generate", "生成后控制", "extra_params", "手动选择端点", "endpoint_selector"];
       const hideWidget = (w) => {
         w.hidden = true;
         w.computeSize = () => [0, -4];
         w.type = "hidden";
         w.mouse = () => true;  // Consume clicks to prevent "Value" dialog
+        // Hide any DOM element (textarea/input) that ComfyUI creates for multiline widgets
+        if (w.inputEl) {
+          w.inputEl.style.display = "none";
+          w.inputEl.style.pointerEvents = "none";
+          w.inputEl.style.position = "absolute";
+          w.inputEl.style.left = "-9999px";
+        }
       };
       const hideAllManaged = () => {
         for (const widget of node.widgets || []) {
@@ -1007,10 +2199,14 @@ app.registerExtension({
 
       let extraParamsWidget = node.widgets?.find(w => w.name === "extra_params");
       if (!extraParamsWidget) {
-        extraParamsWidget = node.addWidget("text", "extra_params", "{}", () => { });
-        extraParamsWidget.hidden = true;
-        extraParamsWidget.serialize = false;
-        extraParamsWidget.computeSize = () => [0, -4];
+        extraParamsWidget = node.addWidget("string", "extra_params", "{}", () => { });
+        extraParamsWidget.serialize = true;
+      }
+      // Always hide + clean up any leftover DOM textarea from old "text" type widget
+      hideWidget(extraParamsWidget);
+      if (extraParamsWidget.inputEl) {
+        extraParamsWidget.inputEl.remove();
+        delete extraParamsWidget.inputEl;
       }
 
       // --- Remove non-image input slots (prevent combo/widget connectors overlapping image inputs) ---
@@ -1039,6 +2235,42 @@ app.registerExtension({
           const seedWidget = node.widgets?.find(w => w.name === "seed");
           if (seedWidget) {
             seedWidget.value = Math.floor(Math.random() * 2147483647);
+          }
+
+          // Check if tiled mode — must use queue execution (independent API doesn't support tiled)
+          const extraW = node.widgets?.find(w => w.name === "extra_params");
+          let isTiledMode = false;
+          if (extraW) {
+            try {
+              const ep = JSON.parse(extraW.value || "{}");
+              isTiledMode = ep._blur_mode === "tiled";
+            } catch (e) { }
+          }
+
+          if (isTiledMode) {
+            console.log("[BlurUpscale] Tiled mode detected, using queue execution...");
+            // Listen for progress
+            const myNodeId = String(node.id);
+            function onProgress(evt) {
+              const d = evt.detail;
+              if (d && typeof d.value === "number" && typeof d.max === "number") {
+                generateBtn.name = `\u23f3 \u751f\u6210\u4e2d ${d.value}/${d.max}`;
+                requestNodeCanvasRefresh(node);
+              }
+            }
+            function onExecuted(evt) {
+              const d = evt.detail;
+              if (d && d.node && String(d.node) !== myNodeId) return;
+              api.removeEventListener("progress", onProgress);
+              api.removeEventListener("executed", onExecuted);
+              generateBtn._isGenerating = false;
+              generateBtn.name = "\u25b6 \u5f00\u59cb\u751f\u6210";
+              node.setDirtyCanvas(true, true);
+            }
+            api.addEventListener("progress", onProgress);
+            api.addEventListener("executed", onExecuted);
+            executeScopedToNode(node);
+            return;
           }
 
           // Try independent generation (concurrent), fallback to queue
@@ -1079,6 +2311,7 @@ app.registerExtension({
               aspect_ratio: getVal("aspect_ratio", "auto"),
               images_base64: imagesBase64,
               endpoint_override: endpointOverride,
+              blur_mask: node.properties?._blur_mask || "",
             };
 
             // Register progress listener
@@ -1184,7 +2417,10 @@ app.registerExtension({
         if (blurHit) {
           const w = nodeRef.widgets?.find(w => w.name === "blur_intensity");
           if (w) { w.value = blurHit; w.callback?.(blurHit); }
-          nodeRef._blurUI._isCustomActive = false;
+          // Sync: set custom_sigma to preset's default value
+          const presetSigma = { "轻 (σ1-3)": 2.0, "中 (σ3-6)": 4.0, "重 (σ6-10)": 7.0 };
+          const csw = nodeRef.widgets?.find(w => w.name === "custom_sigma");
+          if (csw && presetSigma[blurHit] !== undefined) { csw.value = presetSigma[blurHit]; }
           nodeRef.setDirtyCanvas(true, true);
           return true;
         }
@@ -1197,7 +2433,6 @@ app.registerExtension({
           } else {
             const w = nodeRef.widgets?.find(w => w.name === "repair_mode");
             if (w) { w.value = modeHit; w.callback?.(modeHit); }
-            nodeRef._blurUI._isCustomActive = false;
             // Clear selected style name when switching away from 风格
             nodeRef._blurUI._selectedStyleName = "";
           }

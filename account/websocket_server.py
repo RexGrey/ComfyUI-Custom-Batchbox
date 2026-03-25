@@ -13,16 +13,20 @@ from typing import Callable, Dict
 logger = logging.getLogger("batchbox.account")
 
 try:
-    from websockets.server import serve
+    from websockets.asyncio.server import serve
     from websockets.exceptions import ConnectionClosedOK, ConnectionClosed
 except ImportError:
-    logger.warning(
-        "websockets package not installed. Account login will not work. "
-        "Install with: pip install websockets"
-    )
-    serve = None
-    ConnectionClosedOK = Exception
-    ConnectionClosed = Exception
+    try:
+        from websockets.server import serve
+        from websockets.exceptions import ConnectionClosedOK, ConnectionClosed
+    except ImportError:
+        logger.warning(
+            "websockets package not installed. Account login will not work. "
+            "Install with: pip install websockets"
+        )
+        serve = None
+        ConnectionClosedOK = Exception
+        ConnectionClosed = Exception
 
 
 class WebSocketLoginServer:
@@ -36,6 +40,7 @@ class WebSocketLoginServer:
     """
 
     _host = "127.0.0.1"
+    _max_message_size = 1024 * 1024  # 1MB is ample for login callback JSON.
 
     def __init__(self, port: int):
         self.host = self._host
@@ -111,7 +116,7 @@ class WebSocketLoginServer:
     async def main(self):
         if serve is None:
             raise RuntimeError("websockets package not installed")
-        async with serve(self.handle, self.host, self.port, max_size=None):
+        async with serve(self.handle, self.host, self.port, max_size=self._max_message_size):
             logger.info(f"WebSocket login server running on port {self.port}")
             await self.stop_event.wait()
 

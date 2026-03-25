@@ -141,6 +141,47 @@ class TestGetStatus:
         assert "auth_mode" in status
 
 
+class ImmediateThread:
+    def __init__(self, target=None, daemon=None):
+        self._target = target
+        self.daemon = daemon
+
+    def start(self):
+        if self._target:
+            self._target()
+
+
+class TestTimeouts:
+
+    def test_redeem_credits_uses_timeout(self, account):
+        session = MagicMock()
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"success": True, "data": {"amount": 1}}
+        session.post.return_value = resp
+
+        with patch.object(_core_mod, "get_session", return_value=session):
+            account.token = "tok"
+            account._url_manager.get_service_url.return_value = "https://service.test"
+            account.redeem_credits("ABC123")
+
+        assert session.post.call_args.kwargs["timeout"] == _core_mod.ACCOUNT_REQUEST_TIMEOUT
+
+    def test_fetch_credits_uses_timeout(self, account):
+        session = MagicMock()
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"success": True, "data": {"amount": 9}}
+        session.get.return_value = resp
+
+        with patch.object(_core_mod, "get_session", return_value=session), \
+             patch.object(_core_mod, "Thread", ImmediateThread):
+            account.token = "tok"
+            account._auth_mode = _core_mod.AUTH_MODE_ACCOUNT
+            account._url_manager.get_service_url.return_value = "https://service.test"
+            account.fetch_credits()
+
+        assert session.get.call_args.kwargs["timeout"] == _core_mod.ACCOUNT_REQUEST_TIMEOUT
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Resolve Model ID
 # ──────────────────────────────────────────────────────────────────────────────
