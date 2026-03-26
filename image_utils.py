@@ -360,6 +360,60 @@ def apply_selection_boxes_blur(pil_image: Image.Image, boxes: list) -> Image.Ima
     return result
 
 
+def crop_and_blur_selection_boxes(pil_image: Image.Image, boxes: list) -> list:
+    """
+    Crop each selection box from the image and apply Gaussian blur independently.
+    
+    Unlike apply_selection_boxes_blur which returns the full image with blurred regions,
+    this function returns a list of cropped PIL Images, one per valid box.
+    Each cropped image has its own dimensions matching the selection box size.
+    
+    Args:
+        pil_image: Source image
+        boxes: List of dicts with x, y, w, h (pixels) and sigma
+        
+    Returns:
+        List of (cropped_blurred_pil, box_info) tuples.
+        box_info contains the original box dict for reference.
+    """
+    from PIL import ImageFilter
+    
+    results = []
+    for box in boxes:
+        sigma = box.get('sigma', 0)
+        x, y, w, h = int(box['x']), int(box['y']), int(box['w']), int(box['h'])
+        # Clamp bounds
+        x = max(0, x)
+        y = max(0, y)
+        x2 = min(pil_image.width, x + w)
+        y2 = min(pil_image.height, y + h)
+        if x2 <= x or y2 <= y:
+            continue
+        
+        if sigma > 0:
+            # Add padding for clean edge blur, then crop to exact bounds
+            margin = int(sigma * 3)
+            crop_x = max(0, x - margin)
+            crop_y = max(0, y - margin)
+            crop_x2 = min(pil_image.width, x2 + margin)
+            crop_y2 = min(pil_image.height, y2 + margin)
+            
+            padded = pil_image.crop((crop_x, crop_y, crop_x2, crop_y2))
+            blurred_padded = padded.filter(ImageFilter.GaussianBlur(radius=sigma))
+            
+            # Extract exact selection from the blurred padded region
+            rel_x = x - crop_x
+            rel_y = y - crop_y
+            cropped = blurred_padded.crop((rel_x, rel_y, rel_x + (x2 - x), rel_y + (y2 - y)))
+        else:
+            # No blur, just crop
+            cropped = pil_image.crop((x, y, x2, y2))
+        
+        results.append((cropped, box))
+    
+    return results
+
+
 def apply_gaussian_blur_tensor(image_tensor, sigma: float):
     """
     Apply Gaussian blur to a ComfyUI tensor.

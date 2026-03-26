@@ -520,31 +520,44 @@ try:
             def _process_images():
                 _blurred_pil_list = []
                 _blurred_tensors = []
+                _full_tensors = None  # Only set for selection mode
                 for img_b64 in images_base64:
                     if "," in img_b64:
                         img_b64 = img_b64.split(",", 1)[1]
                     pil_img = Image.open(BytesIO(base64.b64decode(img_b64))).convert("RGB")
 
                     if blur_mode == "selection" and selection_boxes:
-                        from .image_utils import apply_selection_boxes_blur
-                        blurred = apply_selection_boxes_blur(pil_img, selection_boxes)
+                        from .image_utils import crop_and_blur_selection_boxes, apply_selection_boxes_blur
+                        cropped_list = crop_and_blur_selection_boxes(pil_img, selection_boxes)
+                        for cropped_pil, box_info in cropped_list:
+                            _blurred_pil_list.append(cropped_pil)
+                            blurred_np = np.array(cropped_pil).astype(np.float32) / 255.0
+                            _blurred_tensors.append(torch.from_numpy(blurred_np).unsqueeze(0))
+                        # Cache full-image tensor for node's blurred_image output
+                        full_blurred = apply_selection_boxes_blur(pil_img, selection_boxes)
+                        full_np = np.array(full_blurred).astype(np.float32) / 255.0
+                        _full_tensors = [torch.from_numpy(full_np).unsqueeze(0)]
                     elif mask_pil:
                         blurred = apply_masked_gaussian_blur(pil_img, mask_pil, sigma)
+                        _blurred_pil_list.append(blurred)
+                        blurred_np = np.array(blurred).astype(np.float32) / 255.0
+                        _blurred_tensors.append(torch.from_numpy(blurred_np).unsqueeze(0))
                     else:
                         blurred = apply_gaussian_blur(pil_img, sigma)
-
-                    _blurred_pil_list.append(blurred)
-                    # Convert to tensor [1, H, W, C]
-                    blurred_np = np.array(blurred).astype(np.float32) / 255.0
-                    _blurred_tensors.append(torch.from_numpy(blurred_np).unsqueeze(0))
-                return _blurred_pil_list, _blurred_tensors
+                        _blurred_pil_list.append(blurred)
+                        blurred_np = np.array(blurred).astype(np.float32) / 255.0
+                        _blurred_tensors.append(torch.from_numpy(blurred_np).unsqueeze(0))
+                
+                return _blurred_pil_list, _blurred_tensors, _full_tensors
 
             import asyncio
-            blurred_pil_list, blurred_tensors = await asyncio.to_thread(_process_images)
+            blurred_pil_list, blurred_tensors, full_tensors = await asyncio.to_thread(_process_images)
 
             # Cache the blurred tensor for the node's upscale() to pick up
-            if blurred_tensors and node_id:
-                combined = torch.cat(blurred_tensors, dim=0)
+            # For selection mode, cache the full-image tensor (not the cropped previews)
+            cache_tensors = full_tensors if full_tensors else blurred_tensors
+            if cache_tensors and node_id:
+                combined = torch.cat(cache_tensors, dim=0)
                 GaussianBlurUpscaleNode._cached_blur_data[node_id] = {
                     "tensor": combined,
                     "sigma": sigma,
@@ -558,11 +571,15 @@ try:
             preview_results = save_preview_images(blurred_pil_list, prefix="blur_applied")
 
             # Filter preview to only the selected image for UI display
-            try:
-                selected_idx = max(0, min(int(selected_index), len(preview_results) - 1))
-                display_preview = [preview_results[selected_idx]] if preview_results else []
-            except (ValueError, TypeError):
-                display_preview = [preview_results[0]] if preview_results else []
+            # Selection mode: show all cropped previews
+            if blur_mode == "selection" and selection_boxes:
+                display_preview = preview_results
+            else:
+                try:
+                    selected_idx = max(0, min(int(selected_index), len(preview_results) - 1))
+                    display_preview = [preview_results[selected_idx]] if preview_results else []
+                except (ValueError, TypeError):
+                    display_preview = [preview_results[0]] if preview_results else []
 
             # Send WebSocket "executed" event so ComfyUI recognizes the output
             if node_id and display_preview:
@@ -715,19 +732,27 @@ try:
                         pil_img = pil_img.convert("RGB")
 
                     if blur_mode == "selection" and selection_boxes:
-                        from .image_utils import apply_selection_boxes_blur
-                        print(f"[BlurUpscale-Independent] Applying SELECTION blur to image {idx+1}/{len(images_base64)} {pil_img.size}")
-                        blurred_pil = apply_selection_boxes_blur(pil_img, selection_boxes)
+                        # Crop each selection box and blur independently
+                        from .image_utils import crop_and_blur_selection_boxes
+                        print(f"[BlurUpscale-Independent] SELECTION mode: cropping {len(selection_boxes)} boxes from image {idx+1}/{len(images_base64)}")
+                        cropped_list = crop_and_blur_selection_boxes(pil_img, selection_boxes)
+                        for box_idx, (cropped_pil, box_info) in enumerate(cropped_list):
+                            buf = BytesIO()
+                            cropped_pil.save(buf, format="PNG")
+                            _blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
+                            print(f"[BlurUpscale-Independent]   Box {box_idx+1}: {cropped_pil.size}")
                     elif mask_pil:
                         print(f"[BlurUpscale-Independent] Applying MASKED blur σ={sigma} to image {idx+1}/{len(images_base64)} {pil_img.size}")
                         blurred_pil = apply_masked_gaussian_blur(pil_img, mask_pil, sigma)
+                        buf = BytesIO()
+                        blurred_pil.save(buf, format="PNG")
+                        _blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
                     else:
                         print(f"[BlurUpscale-Independent] Applying Gaussian blur σ={sigma} to image {idx+1}/{len(images_base64)} {pil_img.size}")
                         blurred_pil = apply_gaussian_blur(pil_img, sigma)
-
-                    buf = BytesIO()
-                    blurred_pil.save(buf, format="PNG")
-                    _blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
+                        buf = BytesIO()
+                        blurred_pil.save(buf, format="PNG")
+                        _blurred_b64_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
                 return _blurred_b64_list
 
             import asyncio
@@ -758,40 +783,94 @@ try:
             generator = IndependentGenerator()
 
             completed_count = 0
+            # For selection mode, override total to reflect all boxes × batch_count
+            _progress_total_override = None
+
             async def on_batch_complete(batch_idx, total, batch_previews):
                 nonlocal completed_count
                 completed_count += 1
+                actual_total = _progress_total_override if _progress_total_override else total
                 preview = batch_previews[0] if batch_previews else None
                 server.PromptServer.instance.send_sync("batchbox:progress", {
                     "node_id": node_id,
                     "generation_token": generation_token,
                     "batch_index": batch_idx,
                     "completed": completed_count,
-                    "total": total,
+                    "total": actual_total,
                     "preview": preview,
                 })
 
-            result = await generator.generate(
-                model=model,
-                prompt=prompt,
-                seed=seed,
-                batch_count=batch_count,
-                extra_params=extra_params,
-                images_base64=blurred_b64_list,
-                endpoint_override=final_endpoint,
-                on_batch_complete=on_batch_complete,
-                hash_extras={
-                    "blur_intensity": blur_intensity,
-                    "custom_sigma": custom_sigma,
-                    "repair_mode": repair_mode,
-                    "style_prompt": style_prompt,
-                    "endpoint_override": final_endpoint or "",
-                    "blur_mask": hashlib.md5(blur_mask_b64.encode('utf-8')).hexdigest() if blur_mask_b64 else "",
-                    "blur_mode": blur_mode,
-                    "selection_boxes": str(selection_boxes) if selection_boxes else "",
-                },
-                hash_images_base64=images_base64,
-            )
+            # Selection mode: call generator per cropped box for independent aspect_ratios
+            if blur_mode == "selection" and selection_boxes:
+                from .image_utils import detect_aspect_ratio as _dar
+                all_preview_images = []
+                all_params_hashes = []
+                total_boxes = len(blurred_b64_list)
+                total_calls = total_boxes * batch_count
+                _progress_total_override = total_calls
+                
+                for box_idx, box_b64 in enumerate(blurred_b64_list):
+                    # Decode to get dimensions for aspect_ratio
+                    box_img = Image.open(BytesIO(base64.b64decode(box_b64)))
+                    box_extra = dict(extra_params)
+                    box_extra["aspect_ratio"] = _dar(box_img.width, box_img.height)
+                    print(f"[BlurUpscale-Independent] Generating box {box_idx+1}/{total_boxes}: {box_img.size} → {box_extra['aspect_ratio']}")
+                    
+                    box_result = await generator.generate(
+                        model=model,
+                        prompt=prompt,
+                        seed=seed + box_idx,
+                        batch_count=batch_count,
+                        extra_params=box_extra,
+                        images_base64=[box_b64],
+                        endpoint_override=final_endpoint,
+                        on_batch_complete=on_batch_complete,
+                        hash_extras={
+                            "blur_intensity": blur_intensity,
+                            "custom_sigma": custom_sigma,
+                            "repair_mode": repair_mode,
+                            "style_prompt": style_prompt,
+                            "endpoint_override": final_endpoint or "",
+                            "blur_mode": blur_mode,
+                            "box_index": str(box_idx),
+                            "selection_boxes": str(selection_boxes) if selection_boxes else "",
+                        },
+                        hash_images_base64=[box_b64],
+                    )
+                    
+                    if box_result.get("success") and box_result.get("preview_images"):
+                        all_preview_images.extend(box_result["preview_images"])
+                    if box_result.get("params_hash"):
+                        all_params_hashes.append(box_result["params_hash"])
+                
+                # Build combined result
+                result = {
+                    "success": bool(all_preview_images),
+                    "preview_images": all_preview_images,
+                    "params_hash": "_".join(all_params_hashes) if all_params_hashes else "",
+                }
+            else:
+                result = await generator.generate(
+                    model=model,
+                    prompt=prompt,
+                    seed=seed,
+                    batch_count=batch_count,
+                    extra_params=extra_params,
+                    images_base64=blurred_b64_list,
+                    endpoint_override=final_endpoint,
+                    on_batch_complete=on_batch_complete,
+                    hash_extras={
+                        "blur_intensity": blur_intensity,
+                        "custom_sigma": custom_sigma,
+                        "repair_mode": repair_mode,
+                        "style_prompt": style_prompt,
+                        "endpoint_override": final_endpoint or "",
+                        "blur_mask": hashlib.md5(blur_mask_b64.encode('utf-8')).hexdigest() if blur_mask_b64 else "",
+                        "blur_mode": blur_mode,
+                        "selection_boxes": str(selection_boxes) if selection_boxes else "",
+                    },
+                    hash_images_base64=images_base64,
+                )
 
             # --- Step 7: Send websocket events for UI update ---
             if result.get("success") and result.get("preview_images"):

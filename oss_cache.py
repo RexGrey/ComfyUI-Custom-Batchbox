@@ -32,6 +32,10 @@ from .batchbox_logger import logger
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _DB_PATH = os.path.join(_MODULE_DIR, "oss_cache.db")
 
+# Shared cache DB on NAS for cross-machine dedup
+_SHARED_CACHE_DIR = os.environ.get("BATCHBOX_SHARED_CACHE", "")
+_SHARED_DB_PATH = os.path.join(_SHARED_CACHE_DIR, "oss_cache.db") if _SHARED_CACHE_DIR else ""
+
 
 def _compute_hash(data: bytes) -> str:
     """Compute SHA-256 hash of image bytes."""
@@ -55,20 +59,42 @@ def _guess_extension(filename: str, mime_type: str = "") -> str:
 
 
 class CacheDB:
-    """Thread-safe SQLite cache database for image URL mappings."""
+    """Thread-safe SQLite cache database for image URL mappings.
+    
+    Supports an optional shared DB on NAS for cross-machine dedup:
+    - get(): local DB first → fallback to shared DB
+    - put(): write to local DB + try to write to shared DB
+    """
     
     def __init__(self, db_path: str = _DB_PATH):
         self.db_path = db_path
         self._local = threading.local()
+        self._shared_db_path = _SHARED_DB_PATH
         self._init_db()
+        self._init_shared_db()
     
     def _get_conn(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
         if not hasattr(self._local, 'conn') or self._local.conn is None:
             self._local.conn = sqlite3.connect(self.db_path, timeout=10)
             self._local.conn.row_factory = sqlite3.Row
-            self._local.conn.execute("PRAGMA journal_mode=WAL")  # Better concurrent access
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
         return self._local.conn
+
+    def _get_shared_conn(self):
+        """Get connection to shared NAS DB (read-heavy, write-tolerant)."""
+        if not self._shared_db_path:
+            return None
+        if not hasattr(self._local, 'shared_conn') or self._local.shared_conn is None:
+            try:
+                self._local.shared_conn = sqlite3.connect(
+                    self._shared_db_path, timeout=5
+                )
+                self._local.shared_conn.row_factory = sqlite3.Row
+                self._local.shared_conn.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                self._local.shared_conn = None
+        return self._local.shared_conn
     
     def _init_db(self):
         """Create tables if they don't exist."""
@@ -86,9 +112,36 @@ class CacheDB:
             CREATE INDEX IF NOT EXISTS idx_last_used ON image_cache(last_used);
         """)
         conn.commit()
+
+    def _init_shared_db(self):
+        """Initialize shared DB table if NAS path is configured."""
+        if not self._shared_db_path:
+            return
+        try:
+            shared_dir = os.path.dirname(self._shared_db_path)
+            os.makedirs(shared_dir, exist_ok=True)
+            conn = self._get_shared_conn()
+            if conn:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS image_cache (
+                        hash        TEXT PRIMARY KEY,
+                        oss_url     TEXT NOT NULL,
+                        oss_key     TEXT NOT NULL,
+                        file_size   INTEGER,
+                        uploaded_at DATETIME DEFAULT (datetime('now')),
+                        last_used   DATETIME DEFAULT (datetime('now')),
+                        use_count   INTEGER DEFAULT 1
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_last_used ON image_cache(last_used);
+                """)
+                conn.commit()
+                logger.info(f"[OSSCache] Shared cache DB: {self._shared_db_path}")
+        except Exception as e:
+            logger.warning(f"[OSSCache] Cannot init shared DB: {e}")
     
     def get(self, file_hash: str) -> Optional[str]:
-        """Look up cached URL by hash. Returns URL or None."""
+        """Look up cached URL by hash. Local first, then shared."""
+        # 1. Check local DB
         conn = self._get_conn()
         row = conn.execute(
             "SELECT oss_url FROM image_cache WHERE hash = ?",
@@ -96,17 +149,32 @@ class CacheDB:
         ).fetchone()
         
         if row:
-            # Update usage stats
             conn.execute(
                 "UPDATE image_cache SET last_used = datetime('now'), use_count = use_count + 1 WHERE hash = ?",
                 (file_hash,)
             )
             conn.commit()
             return row["oss_url"]
+        
+        # 2. Fallback to shared DB
+        shared_conn = self._get_shared_conn()
+        if shared_conn:
+            try:
+                row = shared_conn.execute(
+                    "SELECT oss_url, oss_key, file_size FROM image_cache WHERE hash = ?",
+                    (file_hash,)
+                ).fetchone()
+                if row:
+                    # Promote to local DB
+                    self.put(file_hash, row["oss_url"], row["oss_key"], row["file_size"], _skip_shared=True)
+                    logger.info(f"[OSSCache] ✅ Shared cache hit: {file_hash[:12]}...")
+                    return row["oss_url"]
+            except Exception:
+                pass
         return None
     
-    def put(self, file_hash: str, oss_url: str, oss_key: str, file_size: int):
-        """Store a new cache entry."""
+    def put(self, file_hash: str, oss_url: str, oss_key: str, file_size: int, _skip_shared: bool = False):
+        """Store a new cache entry in local DB and shared DB."""
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO image_cache 
@@ -115,6 +183,21 @@ class CacheDB:
             (file_hash, oss_url, oss_key, file_size)
         )
         conn.commit()
+        
+        # Also write to shared DB (best-effort)
+        if not _skip_shared:
+            shared_conn = self._get_shared_conn()
+            if shared_conn:
+                try:
+                    shared_conn.execute(
+                        """INSERT OR IGNORE INTO image_cache 
+                           (hash, oss_url, oss_key, file_size, uploaded_at, last_used, use_count) 
+                           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 1)""",
+                        (file_hash, oss_url, oss_key, file_size)
+                    )
+                    shared_conn.commit()
+                except Exception:
+                    pass  # NAS write failure is non-critical
     
     def get_stats(self) -> Dict:
         """Get cache statistics."""

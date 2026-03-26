@@ -6,6 +6,7 @@ __pycache__/
 
 # API 密钥配置
 secrets.yaml
+.secrets_key
 
 # Account 登录凭据 (token, email)
 .auth.json

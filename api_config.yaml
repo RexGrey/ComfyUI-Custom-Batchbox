@@ -373,7 +373,28 @@ models:
           default: '0'
           api_name: seed
     api_endpoints:
-    - display_name: Google 官方 API
+    - display_name: Google 付费层级 (优先)
+      provider: google_official_paid
+      priority: 0
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+    - display_name: Google 官方 API (备用池)
       provider: google_official
       priority: 1
       model_name: gemini-3-pro-image-preview
@@ -474,7 +495,28 @@ models:
           default: '0'
           api_name: seed
     api_endpoints:
-    - display_name: Google 官方 API
+    - display_name: Google 付费层级 (优先)
+      provider: google_official_paid
+      priority: 0
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+    - display_name: Google 官方 API (备用池)
       provider: google_official
       priority: 1
       model_name: gemini-3-pro-image-preview
@@ -596,7 +638,29 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
-    - display_name: Google 官方 API
+    - display_name: Google 付费层级 (优先)
+      provider: google_official_paid
+      priority: 0
+      model_name: gemini-3-pro-image-preview
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3-pro-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+          use_oss_cache: true
+    - display_name: Google 官方 API (备用池)
       provider: google_official
       priority: 1
       model_name: gemini-3-pro-image-preview
@@ -773,9 +837,31 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
-    - display_name: Google 官方 API
+    - display_name: Google 付费层级 (优先)
+      provider: google_official_paid
+      priority: 1
+      model_name: gemini-3.1-flash-image-preview
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-3.1-flash-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-3.1-flash-image-preview:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+          use_oss_cache: true
+    - display_name: Google 官方 API (备用池)
       provider: google_official
-      priority: 2
+      priority: 3
       model_name: gemini-3.1-flash-image-preview
       api_format: gemini
       base_url: https://generativelanguage.googleapis.com/v1beta
@@ -866,9 +952,31 @@ models:
           content_type: application/json
           response_type: sync
           use_oss_cache: true
-    - display_name: Google 官方 API
+    - display_name: Google 付费层级 (优先)
+      provider: google_official_paid
+      priority: 1
+      model_name: gemini-2.5-flash-image
+      api_format: gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta
+      auth_header_format: none
+      extra_params:
+        responseModalities:
+        - IMAGE
+      modes:
+        text2img:
+          endpoint: /models/gemini-2.5-flash-image:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+        img2img:
+          endpoint: /models/gemini-2.5-flash-image:generateContent?key={api_key}
+          method: POST
+          content_type: application/json
+          response_type: sync
+          use_oss_cache: true
+    - display_name: Google 官方 API (备用池)
       provider: google_official
-      priority: 2
+      priority: 3
       model_name: gemini-2.5-flash-image
       api_format: gemini
       base_url: https://generativelanguage.googleapis.com/v1beta

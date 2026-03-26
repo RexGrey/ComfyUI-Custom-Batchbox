@@ -94,6 +94,7 @@ class ConfigManager:
 
         self.config_path = resolved_config_path
         self.secrets_path = resolved_secrets_path
+        self.secrets_enc_path = resolved_secrets_path + ".enc"
         self.load_config()
 
     def load_config(self, force: bool = False) -> bool:
@@ -125,7 +126,11 @@ class ConfigManager:
         try:
             # Check main config file
             mtime = os.path.getmtime(self.config_path)
-            secrets_mtime = os.path.getmtime(self.secrets_path) if os.path.exists(self.secrets_path) else 0
+            secrets_mtime = 0
+            if os.path.exists(self.secrets_path):
+                secrets_mtime = os.path.getmtime(self.secrets_path)
+            elif os.path.exists(self.secrets_enc_path):
+                secrets_mtime = os.path.getmtime(self.secrets_enc_path)
             
             # Reload if forced or either file changed
             if force or mtime > self._last_mtime or secrets_mtime > self._secrets_mtime:
@@ -147,26 +152,69 @@ class ConfigManager:
     
     def _merge_secrets(self):
         """
-        Merge providers from secrets.yaml into the main config.
-        The entire providers section is stored in secrets.yaml to keep
-        sensitive data (API keys, base URLs) together and out of version control.
-        """
-        if not os.path.exists(self.secrets_path):
-            print(f"[ConfigManager] Warning: secrets.yaml not found at {self.secrets_path}")
-            print(f"[ConfigManager] Please copy secrets.yaml.example to secrets.yaml and add your providers")
-            return
+        Merge providers from secrets.yaml (or secrets.yaml.enc) into the main config.
         
-        try:
-            with open(self.secrets_path, 'r', encoding='utf-8') as f:
-                secrets = yaml.safe_load(f) or {}
-            
-            # Merge entire providers section from secrets.yaml
-            if "providers" in secrets:
-                self._config["providers"] = secrets["providers"]
-            
-            print(f"[ConfigManager] Merged providers from {self.secrets_path}")
-        except Exception as e:
-            print(f"[ConfigManager] Error loading secrets: {e}")
+        Priority: plaintext secrets.yaml > encrypted secrets.yaml.enc
+        The plaintext path is used on the admin machine (E drive).
+        The encrypted path is used on student machines (Z drive).
+        """
+        # --- Priority 1: plaintext secrets.yaml (admin / dev machine) ---
+        if os.path.exists(self.secrets_path):
+            try:
+                with open(self.secrets_path, 'r', encoding='utf-8') as f:
+                    secrets = yaml.safe_load(f) or {}
+                if "providers" in secrets:
+                    self._config["providers"] = secrets["providers"]
+                    provider_names = list(secrets["providers"].keys())
+                    print(f"[ConfigManager] Merged {len(provider_names)} providers from {self.secrets_path}")
+                else:
+                    print(f"[ConfigManager] Warning: secrets.yaml has no 'providers' section")
+                return
+            except Exception as e:
+                print(f"[ConfigManager] Error loading secrets.yaml: {e}")
+                return
+
+        # --- Priority 2: encrypted secrets.yaml.enc (student machines) ---
+        if os.path.exists(self.secrets_enc_path):
+            try:
+                from .crypto_utils import decrypt_secrets_file, get_key_from_env, ENV_KEY_NAME
+            except ImportError:
+                print(f"[ConfigManager] ✗ crypto_utils 模块不可用, 无法解密 {self.secrets_enc_path}")
+                return
+
+            key = get_key_from_env()
+            if not key:
+                print(f"[ConfigManager] ✗ 加密 secrets 文件已找到, 但环境变量 {ENV_KEY_NAME} 未设置")
+                print(f"[ConfigManager]   请在启动脚本中添加: set {ENV_KEY_NAME}=<你的密钥>")
+                print(f"[ConfigManager]   所有 API provider 将不可用")
+                return
+
+            try:
+                plaintext = decrypt_secrets_file(self.secrets_enc_path, key)
+            except Exception as e:
+                error_type = type(e).__name__
+                print(f"[ConfigManager] ✗ secrets 解密失败 ({error_type}): {e}")
+                if "InvalidToken" in error_type:
+                    print(f"[ConfigManager]   密钥不正确或 .enc 文件已损坏, 请管理员重新运行 encrypt_secrets.py")
+                print(f"[ConfigManager]   所有 API provider 将不可用")
+                return
+
+            try:
+                secrets = yaml.safe_load(plaintext) or {}
+                if "providers" in secrets:
+                    self._config["providers"] = secrets["providers"]
+                    provider_names = list(secrets["providers"].keys())
+                    print(f"[ConfigManager] ✓ 已从加密文件解密并加载 {len(provider_names)} 个 provider")
+                else:
+                    print(f"[ConfigManager] Warning: 解密后的 secrets 中无 'providers' 段")
+            except yaml.YAMLError as e:
+                print(f"[ConfigManager] ✗ 解密后的内容不是有效的 YAML: {e}")
+                print(f"[ConfigManager]   .enc 文件可能已损坏, 请管理员重新加密")
+            return
+
+        # --- Neither file found ---
+        print(f"[ConfigManager] Warning: 未找到 secrets.yaml 或 secrets.yaml.enc")
+        print(f"[ConfigManager] 请复制 secrets.yaml.example 并配置, 或联系管理员")
 
     def _invalidate_caches(self):
         """Clear all cached data after config reload"""

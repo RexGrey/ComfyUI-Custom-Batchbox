@@ -1783,10 +1783,117 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             # Clear cache after use
             del GaussianBlurUpscaleNode._cached_blur_data[node_id_for_cache]
         elif blur_mode == "selection" and selection_boxes:
-            print(f"[GaussianBlurUpscale] Applying SELECTION blur with {len(selection_boxes)} boxes")
-            from .image_utils import apply_selection_boxes_blur
-            blurred_pil = apply_selection_boxes_blur(tensor2pil(image[:1])[0], selection_boxes)
-            blurred_tensor = pil2tensor(blurred_pil)
+            # ==========================================
+            # SELECTION MODE: crop each box → separate API call per box
+            # ==========================================
+            print(f"[GaussianBlurUpscale] SELECTION mode: cropping {len(selection_boxes)} boxes for independent API calls")
+            from .image_utils import crop_and_blur_selection_boxes, apply_selection_boxes_blur, detect_aspect_ratio
+            
+            # 1. Crop + blur each selection box
+            source_pil = tensor2pil(image[:1])[0]
+            cropped_list = crop_and_blur_selection_boxes(source_pil, selection_boxes)
+            
+            if not cropped_list:
+                raise ValueError("选区模式: 没有有效的选区框，请至少框选一个区域")
+            
+            # 2. Full-image blurred tensor for the blurred_image output
+            blurred_pil_full = apply_selection_boxes_blur(source_pil, selection_boxes)
+            blurred_tensor = pil2tensor(blurred_pil_full)
+            
+            # 3. Call API for each cropped box
+            all_pil_images = []
+            all_tensors = []
+            all_response_info = []
+            
+            for box_idx, (cropped_pil, box_info) in enumerate(cropped_list):
+                box_w, box_h = cropped_pil.size
+                box_ratio = detect_aspect_ratio(box_w, box_h)
+                print(f"[GaussianBlurUpscale] Box {box_idx+1}/{len(cropped_list)}: {box_w}x{box_h} → aspect_ratio={box_ratio}")
+                
+                buffered = BytesIO()
+                cropped_pil.save(buffered, format="PNG")
+                box_upload_files = [("image", (f"blurred_box_{box_idx}.png", buffered.getvalue(), "image/png"))]
+                
+                box_params = {
+                    "prompt": prompt,
+                    "seed": kwargs.get("seed", 0) + box_idx,
+                    "_upload_files": box_upload_files,
+                    "aspect_ratio": box_ratio,
+                }
+                
+                settings = config_manager.get_upscale_settings()
+                default_params = settings.get("default_params", {})
+                if default_params:
+                    for key, val in default_params.items():
+                        if key not in box_params:
+                            box_params[key] = val
+                box_params["aspect_ratio"] = box_ratio
+                
+                extra_params_parsed = self._parse_extra_params(extra_params_str)
+                for key, val in extra_params_parsed.items():
+                    if key != "aspect_ratio":
+                        box_params[key] = val
+                
+                box_images_tensor, box_resp_info, _, box_pil_images = self.process_batch(
+                    model, batch_count, box_params, "img2img", endpoint_override
+                )
+                
+                all_pil_images.extend(box_pil_images or [])
+                all_response_info.append(box_resp_info or "")
+                if box_images_tensor is not None:
+                    for bi in range(box_images_tensor.shape[0]):
+                        all_tensors.append(box_images_tensor[bi:bi+1])
+            
+            # 4. Save and return
+            preview_results = []
+            try:
+                from .save_settings import SaveSettings
+                save_cfg = config_manager.get_save_settings()
+                saver = SaveSettings(save_cfg)
+                if saver.enabled and all_pil_images:
+                    for i, img in enumerate(all_pil_images):
+                        context = {"model": model, "seed": kwargs.get("seed", 0) + i, "prompt": prompt, "batch": i + 1}
+                        result = saver.save_image(img, context)
+                        if result and "preview" in result:
+                            preview_results.append(result["preview"])
+            except Exception as e:
+                print(f"[GaussianBlurUpscale] AutoSave error: {e}")
+            
+            if not preview_results and all_pil_images:
+                preview_results = save_preview_images(all_pil_images, prefix="blur_upscale")
+            
+            last_images_json = json.dumps(preview_results) if preview_results else ""
+            current_hash = self._compute_params_hash(model, prompt, batch_count, hash_kwargs)
+            
+            selected_index = kwargs.get("_selected_image_index", 0)
+            try:
+                selected_index = int(selected_index)
+            except (ValueError, TypeError):
+                selected_index = 0
+            selected_index = max(0, min(selected_index, len(all_tensors) - 1)) if all_tensors else 0
+            selected_tensor = all_tensors[selected_index] if all_tensors else blurred_tensor
+            
+            if all_tensors:
+                try:
+                    images_tensor_out = torch.cat(all_tensors, dim=0)
+                except RuntimeError:
+                    images_tensor_out = selected_tensor
+            else:
+                images_tensor_out = blurred_tensor
+            
+            info = f"Model: {model} | σ={sigma} | Mode: selection | {len(cropped_list)} boxes × {batch_count}"
+            combined_info = " | ".join(filter(None, all_response_info))
+            if combined_info and combined_info != "Success":
+                info += f"\n{combined_info}"
+            
+            return {
+                "ui": {
+                    "images": input_preview,
+                    "_last_images": [last_images_json],
+                    "_cached_hash": [current_hash],
+                },
+                "result": (selected_tensor, blurred_tensor, images_tensor_out, info)
+            }
         elif blur_mask_b64:
             print(f"[GaussianBlurUpscale] Applying MASKED Gaussian blur with σ={sigma}")
             blurred_tensor = apply_masked_gaussian_blur_tensor(image, blur_mask_b64, sigma)
@@ -1801,10 +1908,6 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         for i, img_tensor in enumerate(image_tensors):
             if i == 0:
                 blurred_t = blurred_tensor
-            elif blur_mode == "selection" and selection_boxes:
-                from .image_utils import apply_selection_boxes_blur
-                b_pil = apply_selection_boxes_blur(tensor2pil(img_tensor)[0], selection_boxes)
-                blurred_t = pil2tensor(b_pil)
             elif blur_mask_b64:
                 blurred_t = apply_masked_gaussian_blur_tensor(img_tensor, blur_mask_b64, sigma)
             else:
@@ -1827,7 +1930,6 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         print(f"[GaussianBlurUpscale] upscale_settings: {settings}")
         print(f"[GaussianBlurUpscale] default_params: {default_params}")
         if default_params:
-            # Only set keys not already present (don't overwrite prompt/seed/_upload_files)
             for key, val in default_params.items():
                 if key not in params:
                     params[key] = val
@@ -1844,7 +1946,6 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         # Resolve aspect_ratio='auto' from input image dimensions
         if params.get("aspect_ratio") in (None, "auto"):
             from .image_utils import detect_aspect_ratio
-            # image tensor shape: [B, H, W, C]
             h, w = image.shape[1], image.shape[2]
             params["aspect_ratio"] = detect_aspect_ratio(w, h)
             print(f"[GaussianBlurUpscale] Auto aspect_ratio: {w}x{h} → {params['aspect_ratio']}")

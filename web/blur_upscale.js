@@ -1402,7 +1402,33 @@ function openCustomPanel(node) {
   modeSelectionBtn.onclick = () => switchBlurMode("selection");
   modeTiledBtn.onclick = () => switchBlurMode("tiled");
 
-  // (Style Prompt section removed per user request)
+  // --- Style Prompt Input ---
+  const promptLabel = document.createElement("div");
+  promptLabel.textContent = "提示词 (Prompt)";
+  Object.assign(promptLabel.style, {
+    fontSize: "11px", color: "#888", marginTop: "12px", marginBottom: "4px",
+  });
+  panel.appendChild(promptLabel);
+
+  const promptTextarea = document.createElement("textarea");
+  const spWidget = node.widgets?.find(w => w.name === "style_prompt");
+  promptTextarea.value = spWidget?.value || "";
+  promptTextarea.placeholder = "输入自定义提示词，或通过下方风格预设按钮填入...";
+  Object.assign(promptTextarea.style, {
+    width: "100%", minHeight: "60px", maxHeight: "120px", resize: "vertical",
+    background: "#1a1a2e", border: "1px solid #2a2a3a", borderRadius: "8px",
+    color: "#ddd", fontSize: "12px", padding: "8px", boxSizing: "border-box",
+    fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+    lineHeight: "1.4", transition: "border-color 0.2s",
+  });
+  promptTextarea.onfocus = () => promptTextarea.style.borderColor = "#5a8abf";
+  promptTextarea.onblur = () => promptTextarea.style.borderColor = "#2a2a3a";
+  promptTextarea.oninput = () => {
+    if (spWidget) spWidget.value = promptTextarea.value;
+  };
+  panel.appendChild(promptTextarea);
+  // Expose for style preset buttons to update
+  node._blurUI._promptTextarea = promptTextarea;
 
   // --- Apply Button ---
   const applyBtn = document.createElement("button");
@@ -1652,6 +1678,8 @@ function openStylePopup(node, screenX, screenY) {
       // Set style_prompt widget
       const pw = node.widgets?.find(w => w.name === "style_prompt");
       if (pw) pw.value = prompt;
+      // Sync prompt textarea
+      if (node._blurUI?._promptTextarea) node._blurUI._promptTextarea.value = prompt;
       // Set repair_mode to 风格
       const mw = node.widgets?.find(w => w.name === "repair_mode");
       if (mw) mw.value = "风格";
@@ -2313,6 +2341,29 @@ app.registerExtension({
               endpoint_override: endpointOverride,
               blur_mask: node.properties?._blur_mask || "",
             };
+
+            // Extract blur_mode and selection_boxes from extra_params or node.properties
+            if (extraW) {
+              try {
+                const ep = JSON.parse(extraW.value || "{}");
+                if (ep._blur_mode) requestBody.blur_mode = ep._blur_mode;
+                if (ep._selection_boxes) requestBody.selection_boxes = ep._selection_boxes;
+              } catch (e) { }
+            }
+            // Fallback: read from node.properties if not found in extra_params
+            if (!requestBody.blur_mode && node.properties?._blur_mode) {
+              requestBody.blur_mode = node.properties._blur_mode;
+            }
+            if (!requestBody.selection_boxes && node.properties?._selection_boxes) {
+              try {
+                requestBody.selection_boxes = JSON.parse(node.properties._selection_boxes);
+              } catch (e) { }
+            }
+            if (requestBody.selection_boxes?.length) {
+              // Auto-set blur_mode to "selection" if we have boxes but no explicit mode
+              if (!requestBody.blur_mode) requestBody.blur_mode = "selection";
+              console.log(`[BlurUpscale] Selection mode: ${requestBody.selection_boxes.length} boxes`);
+            }
 
             // Register progress listener
             const nodeIdStr = String(node.id);
