@@ -14,6 +14,9 @@ secrets.yaml
 service_accounts/
 *.service_account.json
 
+# Gateway client credentials
+gateway_client.json
+
 # GCS 凭据
 gcs_credentials*.json
 
