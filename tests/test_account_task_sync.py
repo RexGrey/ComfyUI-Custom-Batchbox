@@ -7,7 +7,8 @@ Covers: StatusResponseParser (_normalize_state, parse_batch_response, _detect_mi
 
 import importlib
 import os
-from unittest.mock import MagicMock
+import socket
+from unittest.mock import MagicMock, patch
 
 _pkg = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -127,6 +128,27 @@ class TestDetectMimeType:
     def test_default_png(self):
         parser = StatusResponseParser()
         assert parser._detect_mime_type("https://example.com/noext", b"unknown") == "image/png"
+
+
+class TestDownloadResultValidation:
+
+    def test_rejects_non_http_scheme(self):
+        parser = StatusResponseParser()
+        assert parser._is_safe_result_url("file:///tmp/result.png") is False
+
+    def test_rejects_loopback_ip(self):
+        parser = StatusResponseParser()
+        assert parser._is_safe_result_url("http://127.0.0.1/result.png") is False
+
+    def test_allows_public_https_url(self):
+        parser = StatusResponseParser()
+        with patch.object(_ts_mod.socket, "getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]):
+            assert parser._is_safe_result_url("https://example.com/result.png") is True
+
+    def test_rejects_hostname_resolving_to_private_ip(self):
+        parser = StatusResponseParser()
+        with patch.object(_ts_mod.socket, "getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443))]):
+            assert parser._is_safe_result_url("https://internal.example/result.png") is False
 
 
 # ──────────────────────────────────────────────────────────────────────────────

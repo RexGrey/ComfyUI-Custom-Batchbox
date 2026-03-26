@@ -218,7 +218,7 @@ class GenericAPIAdapter(APIAdapter):
                 logger.debug(f"[OSSCache] JSON payload with image_urls: {payload.get('image_urls', [])}")
                 # Log full payload keys for debugging 422 errors
                 safe_payload = {k: (v if k != 'image_urls' else f'[{len(v)} URLs]') for k, v in payload.items() if not k.startswith('_')}
-                logger.info(f"[DEBUG] 📦 OSS payload keys: {safe_payload}")
+                logger.debug(f"[DEBUG] 📦 OSS payload keys: {safe_payload}")
             
             request_info["json"] = payload
         elif content_type == "multipart/form-data":
@@ -858,17 +858,17 @@ class GenericAPIAdapter(APIAdapter):
             payload_data = request_info.get("json", {})
             has_image_urls = "image_urls" in payload_data
             if has_image_urls:
-                logger.info(f"[DEBUG] 📡 Request mode: JSON + URL (OSS cache)")
-                logger.info(f"[DEBUG]    image_urls: {payload_data['image_urls']}")
+                logger.debug(f"[DEBUG] 📡 Request mode: JSON + URL (OSS cache)")
+                logger.debug(f"[DEBUG]    image_url_count: {len(payload_data['image_urls'])}")
             else:
-                logger.info(f"[DEBUG] 📡 Request mode: JSON (no images)")
+                logger.debug(f"[DEBUG] 📡 Request mode: JSON (no images)")
         elif is_multipart_mode:
             file_count = len(request_info.get("files", []))
             total_size = sum(len(f[1][1]) for f in request_info.get("files", []) if len(f) > 1 and len(f[1]) > 1)
-            logger.info(f"[DEBUG] 📡 Request mode: Multipart (direct file upload)")
-            logger.info(f"[DEBUG]    Files: {file_count}, Total size: {total_size/1024:.0f}KB")
-        logger.info(f"[DEBUG] 🔗 URL: {url}")
-        logger.info(f"[DEBUG] ⏱️ Request build time: {_build_elapsed:.2f}s (includes OSS upload if any)")
+            logger.debug(f"[DEBUG] 📡 Request mode: Multipart (direct file upload)")
+            logger.debug(f"[DEBUG]    Files: {file_count}, Total size: {total_size/1024:.0f}KB")
+        logger.debug(f"[DEBUG] 🔗 URL: {url}")
+        logger.debug(f"[DEBUG] ⏱️ Request build time: {_build_elapsed:.2f}s (includes OSS upload if any)")
         # ─── End Debug ───
         
         # Log request

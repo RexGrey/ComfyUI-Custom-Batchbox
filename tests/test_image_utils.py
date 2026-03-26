@@ -279,9 +279,7 @@ class TestGaussianBlur:
         result = apply_gaussian_blur(pil_rgb_image, sigma=3)
         # Blurred image should differ from original
         assert result.size == pil_rgb_image.size
-        orig_pixels = list(pil_rgb_image.getdata())
-        blur_pixels = list(result.getdata())
-        assert orig_pixels != blur_pixels
+        assert pil_rgb_image.tobytes() != result.tobytes()
 
     def test_negative_sigma_returns_same(self, pil_rgb_image):
         result = apply_gaussian_blur(pil_rgb_image, sigma=-1)

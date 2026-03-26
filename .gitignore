@@ -6,6 +6,7 @@ __pycache__/
 
 # API 密钥配置
 secrets.yaml
+.secrets_key
 
 # Account 登录凭据 (token, email)
 .auth.json
@@ -13,6 +14,9 @@ secrets.yaml
 # Service Account JSON keys (Google Cloud)
 service_accounts/
 *.service_account.json
+
+# Gateway client credentials
+gateway_client.json
 
 # GCS 凭据
 gcs_credentials*.json

@@ -32,23 +32,45 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _DB_PATH = os.path.join(_MODULE_DIR, "gemini_files_cache.db")
 _FILES_API_BASE = "https://generativelanguage.googleapis.com"
 
+# Shared cache DB on NAS for cross-machine dedup
+_SHARED_CACHE_DIR = os.environ.get("BATCHBOX_SHARED_CACHE", "")
+_SHARED_DB_PATH = os.path.join(_SHARED_CACHE_DIR, "gemini_files_cache.db") if _SHARED_CACHE_DIR else ""
+
 
 def _compute_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 class GeminiFilesCacheDB:
-    """SQLite cache mapping image hash → file_uri (with 48h expiry)."""
+    """SQLite cache mapping image hash → file_uri (with 48h expiry).
+    
+    Supports shared DB on NAS for cross-machine dedup:
+    - get(): local DB first → fallback to shared DB
+    - put(): write local + best-effort write shared
+    """
 
     def __init__(self, db_path: str = _DB_PATH):
         self.db_path = db_path
         self._local = threading.local()
+        self._shared_db_path = _SHARED_DB_PATH
         self._init_db()
+        self._init_shared_db()
 
     def _get_conn(self):
         if not hasattr(self._local, 'conn') or self._local.conn is None:
             self._local.conn = sqlite3.connect(self.db_path)
         return self._local.conn
+
+    def _get_shared_conn(self):
+        if not self._shared_db_path:
+            return None
+        if not hasattr(self._local, 'shared_conn') or self._local.shared_conn is None:
+            try:
+                self._local.shared_conn = sqlite3.connect(self._shared_db_path, timeout=5)
+                self._local.shared_conn.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                self._local.shared_conn = None
+        return self._local.shared_conn
 
     def _init_db(self):
         conn = self._get_conn()
@@ -65,30 +87,93 @@ class GeminiFilesCacheDB:
         """)
         conn.commit()
 
+    def _init_shared_db(self):
+        if not self._shared_db_path:
+            return
+        try:
+            shared_dir = os.path.dirname(self._shared_db_path)
+            os.makedirs(shared_dir, exist_ok=True)
+            conn = self._get_shared_conn()
+            if conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS files_cache (
+                        file_hash TEXT PRIMARY KEY,
+                        file_uri TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        mime_type TEXT,
+                        file_size INTEGER,
+                        created_at REAL NOT NULL,
+                        expires_at REAL NOT NULL
+                    )
+                """)
+                conn.commit()
+                logger.info(f"[FilesAPI] Shared cache DB: {self._shared_db_path}")
+        except Exception as e:
+            logger.warning(f"[FilesAPI] Cannot init shared DB: {e}")
+
     def get(self, file_hash: str) -> Optional[str]:
-        """Get cached file_uri if not expired."""
-        conn = self._get_conn()
+        """Get cached file_uri if not expired. Local first, then shared."""
         now = time.time()
+        # 1. Check local DB
+        conn = self._get_conn()
         cursor = conn.execute(
             "SELECT file_uri FROM files_cache WHERE file_hash = ? AND expires_at > ?",
             (file_hash, now)
         )
         row = cursor.fetchone()
-        return row[0] if row else None
+        if row:
+            return row[0]
+        
+        # 2. Fallback to shared DB
+        shared_conn = self._get_shared_conn()
+        if shared_conn:
+            try:
+                cursor = shared_conn.execute(
+                    "SELECT file_uri, file_name, mime_type, file_size, created_at, expires_at "
+                    "FROM files_cache WHERE file_hash = ? AND expires_at > ?",
+                    (file_hash, now)
+                )
+                row = cursor.fetchone()
+                if row:
+                    # Promote to local DB
+                    self._put_local(file_hash, row[0], row[1], row[2], row[3], row[4], row[5])
+                    logger.info(f"[FilesAPI] ✅ Shared cache hit: {file_hash[:12]}...")
+                    return row[0]
+            except Exception:
+                pass
+        return None
 
-    def put(self, file_hash: str, file_uri: str, file_name: str,
-            mime_type: str, file_size: int, ttl_hours: float = 47):
-        """Store cache entry with TTL (default 47h, slightly less than 48h to be safe)."""
-        now = time.time()
-        expires_at = now + ttl_hours * 3600
+    def _put_local(self, file_hash, file_uri, file_name, mime_type, file_size, created_at, expires_at):
+        """Write to local DB only."""
         conn = self._get_conn()
         conn.execute(
             """INSERT OR REPLACE INTO files_cache 
                (file_hash, file_uri, file_name, mime_type, file_size, created_at, expires_at) 
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (file_hash, file_uri, file_name, mime_type, file_size, now, expires_at)
+            (file_hash, file_uri, file_name, mime_type, file_size, created_at, expires_at)
         )
         conn.commit()
+
+    def put(self, file_hash: str, file_uri: str, file_name: str,
+            mime_type: str, file_size: int, ttl_hours: float = 47):
+        """Store cache entry with TTL. Writes to both local and shared DB."""
+        now = time.time()
+        expires_at = now + ttl_hours * 3600
+        # Write local
+        self._put_local(file_hash, file_uri, file_name, mime_type, file_size, now, expires_at)
+        # Write shared (best-effort)
+        shared_conn = self._get_shared_conn()
+        if shared_conn:
+            try:
+                shared_conn.execute(
+                    """INSERT OR IGNORE INTO files_cache 
+                       (file_hash, file_uri, file_name, mime_type, file_size, created_at, expires_at) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (file_hash, file_uri, file_name, mime_type, file_size, now, expires_at)
+                )
+                shared_conn.commit()
+            except Exception:
+                pass
 
     def cleanup_expired(self):
         """Remove expired entries."""

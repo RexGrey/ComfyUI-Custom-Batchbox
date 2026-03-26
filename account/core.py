@@ -35,6 +35,9 @@ from .exceptions import (
 )
 
 logger = logging.getLogger("batchbox.account")
+ACCOUNT_REQUEST_TIMEOUT = (10, 30)
+ACCOUNT_PING_TIMEOUT = 2
+ACCOUNT_STATUS_TIMEOUT = 10
 
 # Auth modes
 AUTH_MODE_API = "api"
@@ -382,7 +385,7 @@ class Account:
         def job():
             try:
                 session = get_session()
-                resp = session.get(url, headers=headers, timeout=2)
+                resp = session.get(url, headers=headers, timeout=ACCOUNT_PING_TIMEOUT)
                 self.services_connected = resp.status_code == 200
             except Exception:
                 self.services_connected = False
@@ -401,7 +404,7 @@ class Account:
 
         try:
             session = get_session()
-            resp = session.post(url, headers=headers, json=payload)
+            resp = session.post(url, headers=headers, json=payload, timeout=ACCOUNT_REQUEST_TIMEOUT)
         except ConnectionError:
             return {"success": False, "error": "Network connection failed"}
         except Exception:
@@ -444,7 +447,7 @@ class Account:
             }
             try:
                 session = get_session()
-                resp = session.get(url, headers=headers)
+                resp = session.get(url, headers=headers, timeout=ACCOUNT_REQUEST_TIMEOUT)
             except ConnectionError:
                 self.push_error("Network connection failed")
                 return
@@ -501,7 +504,7 @@ class Account:
             }
             try:
                 session = get_session()
-                resp = session.get(url, headers=headers)
+                resp = session.get(url, headers=headers, timeout=ACCOUNT_REQUEST_TIMEOUT)
             except ConnectionError:
                 self.push_error("Network connection failed")
                 logger.error("[Account] Price fetch: ConnectionError")
@@ -593,7 +596,7 @@ class Account:
 
         try:
             session = get_session()
-            resp = session.get(url, headers=headers, json=payload, timeout=10)
+            resp = session.get(url, headers=headers, json=payload, timeout=ACCOUNT_STATUS_TIMEOUT)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:

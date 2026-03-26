@@ -25,6 +25,10 @@ from .batchbox_logger import logger
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _DB_PATH = os.path.join(_MODULE_DIR, "gcs_cache.db")
 
+# Shared cache DB on NAS for cross-machine dedup
+_SHARED_CACHE_DIR = os.environ.get("BATCHBOX_SHARED_CACHE", "")
+_SHARED_DB_PATH = os.path.join(_SHARED_CACHE_DIR, "gcs_cache.db") if _SHARED_CACHE_DIR else ""
+
 
 def _compute_hash(data: bytes) -> str:
     """Compute SHA-256 hash of image bytes."""
@@ -54,17 +58,38 @@ def _build_scoped_cache_key(file_hash: str, bucket_name: str, path_prefix: str) 
 
 
 class GCSCacheDB:
-    """Thread-safe SQLite cache database for GCS URI mappings."""
+    """Thread-safe SQLite cache database for GCS URI mappings.
+    
+    Supports an optional shared DB on NAS for cross-machine dedup:
+    - get(): local DB first → fallback to shared DB
+    - put(): write to local DB + try to write to shared DB
+    """
 
     def __init__(self, db_path: str = _DB_PATH):
         self.db_path = db_path
         self._local = threading.local()
+        self._shared_db_path = _SHARED_DB_PATH
         self._init_db()
+        self._init_shared_db()
 
     def _get_conn(self):
         if not hasattr(self._local, 'conn') or self._local.conn is None:
             self._local.conn = sqlite3.connect(self.db_path)
         return self._local.conn
+
+    def _get_shared_conn(self):
+        """Get connection to shared NAS DB (read-heavy, write-tolerant)."""
+        if not self._shared_db_path:
+            return None
+        if not hasattr(self._local, 'shared_conn') or self._local.shared_conn is None:
+            try:
+                self._local.shared_conn = sqlite3.connect(
+                    self._shared_db_path, timeout=5
+                )
+                self._local.shared_conn.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                self._local.shared_conn = None
+        return self._local.shared_conn
 
     def _init_db(self):
         conn = self._get_conn()
@@ -79,24 +104,80 @@ class GCSCacheDB:
         """)
         conn.commit()
 
+    def _init_shared_db(self):
+        """Initialize shared DB table if NAS path is configured."""
+        if not self._shared_db_path:
+            return
+        try:
+            shared_dir = os.path.dirname(self._shared_db_path)
+            os.makedirs(shared_dir, exist_ok=True)
+            conn = self._get_shared_conn()
+            if conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS gcs_cache (
+                        file_hash TEXT PRIMARY KEY,
+                        gs_uri TEXT NOT NULL,
+                        gcs_path TEXT NOT NULL,
+                        file_size INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.commit()
+                logger.info(f"[GCSCache] Shared cache DB: {self._shared_db_path}")
+        except Exception as e:
+            logger.warning(f"[GCSCache] Cannot init shared DB: {e}")
+
     def get(self, file_hash: str) -> Optional[str]:
-        """Look up cached gs:// URI by hash."""
+        """Look up cached gs:// URI by hash. Local first, then shared."""
+        # 1. Check local DB
         conn = self._get_conn()
         cursor = conn.execute(
             "SELECT gs_uri FROM gcs_cache WHERE file_hash = ?",
             (file_hash,)
         )
         row = cursor.fetchone()
-        return row[0] if row else None
+        if row:
+            return row[0]
+        
+        # 2. Fallback to shared DB
+        shared_conn = self._get_shared_conn()
+        if shared_conn:
+            try:
+                cursor = shared_conn.execute(
+                    "SELECT gs_uri, gcs_path, file_size FROM gcs_cache WHERE file_hash = ?",
+                    (file_hash,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    # Promote to local DB for faster future lookups
+                    self.put(file_hash, row[0], row[1], row[2], _skip_shared=True)
+                    logger.info(f"[GCSCache] ✅ Shared cache hit: {file_hash[:12]}...")
+                    return row[0]
+            except Exception:
+                pass
+        return None
 
-    def put(self, file_hash: str, gs_uri: str, gcs_path: str, file_size: int):
-        """Store a new cache entry."""
+    def put(self, file_hash: str, gs_uri: str, gcs_path: str, file_size: int, _skip_shared: bool = False):
+        """Store a new cache entry in local DB and shared DB."""
         conn = self._get_conn()
         conn.execute(
             "INSERT OR REPLACE INTO gcs_cache (file_hash, gs_uri, gcs_path, file_size) VALUES (?, ?, ?, ?)",
             (file_hash, gs_uri, gcs_path, file_size)
         )
         conn.commit()
+        
+        # Also write to shared DB (best-effort)
+        if not _skip_shared:
+            shared_conn = self._get_shared_conn()
+            if shared_conn:
+                try:
+                    shared_conn.execute(
+                        "INSERT OR IGNORE INTO gcs_cache (file_hash, gs_uri, gcs_path, file_size) VALUES (?, ?, ?, ?)",
+                        (file_hash, gs_uri, gcs_path, file_size)
+                    )
+                    shared_conn.commit()
+                except Exception:
+                    pass  # NAS write failure is non-critical
 
     def get_stats(self) -> Dict:
         conn = self._get_conn()

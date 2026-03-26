@@ -1605,6 +1605,7 @@ api.queuePrompt = async function (number, workflowData) {
         const persistedLastImages = node.properties?._last_images || "";
         nodeData.inputs._cached_hash = node.properties?._cached_hash || "";
         nodeData.inputs._last_images = persistedLastImages;
+        nodeData.inputs._blur_mask = node.properties?._blur_mask || "";
 
         // In bypass mode, button-driven nodes with persisted outputs should never
         // re-hit the external API on a plain global Queue Prompt.

@@ -155,6 +155,18 @@ class TestGetSavePath:
         parts = str(path).split(os.sep)
         assert not any(re.match(r'\d{4}-\d{2}-\d{2}$', p) for p in parts)
 
+    def test_rejects_output_dir_path_traversal(self, tmp_path):
+        s = SaveSettings({
+            "output_dir": "../escape",
+            "format": "png",
+            "create_date_subfolder": False,
+            "naming_pattern": "{seed}",
+        })
+        with patch("save_settings.folder_paths") as mock_fp:
+            mock_fp.get_output_directory.return_value = str(tmp_path)
+            with pytest.raises(ValueError):
+                s.get_save_path({"seed": 1})
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # save_image
