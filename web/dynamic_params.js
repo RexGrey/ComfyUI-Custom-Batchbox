@@ -1546,48 +1546,36 @@ app.registerExtension({
         origOnNodeCreated.apply(this, arguments);
       }
 
-      // === GLOBAL THUMBNAIL INTERCEPTOR ===
-      // Intercept ALL assignments to node.imgs (including from ComfyUI core)
-      // to auto-convert to lightweight thumbnails for canvas rendering performance.
-      let _rawImgs = null;
-      const nodeRef = this;
-      Object.defineProperty(this, "imgs", {
-        get() { return _rawImgs; },
-        set(newImgs) {
-          if (!newImgs || !Array.isArray(newImgs) || newImgs.length === 0) {
-            _rawImgs = newImgs;
-            return;
-          }
-          // Convert each image to thumbnail (async, progressively replace)
-          _rawImgs = newImgs;
-          newImgs.forEach((img, idx) => {
-            if (!img || !(img instanceof HTMLImageElement)) return;
-            // Skip if already a thumbnail (has _originalSrc set)
-            if (img._originalSrc) return;
-
-            const doThumb = () => {
+      // === GLOBAL THUMBNAIL INTERCEPTOR (JIT via Render Loop) ===
+      // ComfyUI core uses array mutation (`node.imgs[0] = ...`) which bypasses setters.
+      // Instead, we intercept the render cycle. Every time the node draws, we check
+      // if any image needs thumbnailing.
+      const origOnDrawBackground = this.onDrawBackground;
+      this.onDrawBackground = function (ctx) {
+        if (this.imgs && this.imgs.length > 0) {
+          let needsRedraw = false;
+          for (let i = 0; i < this.imgs.length; i++) {
+            const img = this.imgs[i];
+            // If it's a raw loaded image without a thumbnail badge (_originalSrc)
+            if (img && img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0 && !img._originalSrc) {
               const thumb = createPreviewThumbnail(img);
               if (thumb !== img) {
-                // createPreviewThumbnail already sets _originalSrc
-                _rawImgs[idx] = thumb;
-                app.graph?.setDirtyCanvas(true);
+                this.imgs[i] = thumb;
+                needsRedraw = true;
+                console.debug(`[BatchBox] Auto-thumnbailed image ${i} during render cycle`);
               }
-            };
-
-            if (img.complete && img.naturalWidth > 0) {
-              doThumb();
-            } else {
-              const origOnload = img.onload;
-              img.onload = function () {
-                if (origOnload) origOnload.apply(this, arguments);
-                doThumb();
-              };
             }
-          });
-        },
-        configurable: true,
-        enumerable: true
-      });
+          }
+          if (needsRedraw) {
+            // Trigger another frame to draw the newly swapped thumbnails
+            app.graph?.setDirtyCanvas(true, true);
+          }
+        }
+
+        if (origOnDrawBackground) {
+          origOnDrawBackground.apply(this, arguments);
+        }
+      };
 
       // Add the "开始生成" button (skip for Editor - it needs Queue Prompt for image+mask)
       if (!nodeData.name.includes("Editor")) {
