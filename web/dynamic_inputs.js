@@ -227,13 +227,11 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
     }
 
     // Calculate target count: connected count + 1 empty slot (up to max)
-    // Number of inputs specified by batch_count or default
-    const batchCountWidget = node.widgets.find(w => w.name === "batch_count");
-    let targetCount = batchCountWidget ? parseInt(batchCountWidget.value) || 1 : 1;
-
-    // CRITICAL: Cap targetCount to prevent browser crash (DOS) if JSON is corrupted 
-    // and randomly assigns massive seed values to batch_count due to version shifts.
-    targetCount = Math.max(1, Math.min(20, targetCount));
+    const connectedCount = connections.length;
+    let targetCount = Math.min(connectedCount + 1, maxInputs);
+    if (connectedCount >= maxInputs) {
+        targetCount = maxInputs;
+    }
 
     // Remove ALL existing inputs with this prefix
     // Must iterate backwards to avoid index shifting
