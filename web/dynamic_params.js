@@ -1033,28 +1033,11 @@ setTimeout(() => {
 
     const node = graphCanvas.graph.getNodeOnPos(canvasX, canvasY, graphCanvas.visible_nodes);
     if (node && node.imgs && node.imgs.length > 0) {
-      // Check if click is within the IMAGE area (not widgets/title/slots)
+      // Only exclude title bar (top ~30px), everything below can contain images
       const localY = canvasY - node.pos[1];
-      const localX = canvasX - node.pos[0];
+      const titleH = LiteGraph.NODE_TITLE_HEIGHT || 30;
 
-      // Calculate where the image area starts:
-      // Header (~30px) + inputs slots + widgets height
-      const headerH = LiteGraph.NODE_TITLE_HEIGHT || 30;
-      const slotsH = Math.max(node.inputs?.length || 0, node.outputs?.length || 0) * (LiteGraph.NODE_SLOT_HEIGHT || 20);
-      let widgetsH = 0;
-      if (node.widgets) {
-        for (const w of node.widgets) {
-          if (w.computeSize) {
-            widgetsH += w.computeSize(node.size[0])[1] + 4;
-          } else {
-            widgetsH += (LiteGraph.NODE_WIDGET_HEIGHT || 20) + 4;
-          }
-        }
-      }
-      const imageAreaTop = headerH + slotsH + widgetsH;
-
-      // Only trigger if click is below the widgets (in the image zone)
-      if (localY >= imageAreaTop && localX >= 0 && localX <= node.size[0]) {
+      if (localY > titleH) {
         const selectedImg = node.imgs[node.imageIndex || 0];
         if (selectedImg) {
           const src = selectedImg._originalSrc || selectedImg.src;
