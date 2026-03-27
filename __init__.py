@@ -860,18 +860,37 @@ try:
                     print(f"[BlurUpscale-Independent] Generating box {box_idx+1}/{total_boxes}: {box_img.size} → {box_extra['aspect_ratio']}")
                     
                     # Merge: blurred crop + this box's reference images
+                    # Read refRange directly from the box object (e.g. "2,3" or "2-4")
                     box_images = [box_b64]
-                    box_ref_indices = selection_ref_mapping.get(str(box_idx), [])
-                    if box_ref_indices:
-                        # Use explicitly mapped references for this box
-                        for ri in box_ref_indices:
+                    box_data = selection_boxes[box_idx] if box_idx < len(selection_boxes) else {}
+                    ref_range_str = str(box_data.get("refRange", "")).strip()
+                    
+                    if ref_range_str and reference_images_base64:
+                        # Parse refRange: "2-4" (range) or "2,3,4" (comma list)
+                        # Numbers are slot numbers starting from 2 → index 0 in reference_images_base64
+                        parsed_indices = []
+                        if "-" in ref_range_str:
+                            parts = ref_range_str.split("-")
+                            try:
+                                start, end = int(parts[0].strip()), int(parts[1].strip())
+                                parsed_indices = [n - 2 for n in range(start, end + 1)]
+                            except (ValueError, IndexError):
+                                pass
+                        else:
+                            for s in ref_range_str.replace("，", ",").split(","):
+                                try:
+                                    parsed_indices.append(int(s.strip()) - 2)
+                                except ValueError:
+                                    pass
+                        
+                        for ri in parsed_indices:
                             if 0 <= ri < len(reference_images_base64):
                                 box_images.append(reference_images_base64[ri])
-                        print(f"[BlurUpscale-Independent]   Box {box_idx}: {len(box_ref_indices)} mapped reference(s)")
-                    elif not selection_ref_mapping and reference_images_base64:
-                        # No explicit mapping: send all references with every box (single-person fallback)
+                        print(f"[BlurUpscale-Independent]   Box {box_idx}: refRange='{ref_range_str}' → {len(box_images)-1} reference(s)")
+                    elif reference_images_base64:
+                        # No refRange specified: send all references (single-person fallback)
                         box_images.extend(reference_images_base64)
-                        print(f"[BlurUpscale-Independent]   Box {box_idx}: all {len(reference_images_base64)} reference(s) (no mapping)")
+                        print(f"[BlurUpscale-Independent]   Box {box_idx}: all {len(reference_images_base64)} reference(s) (no refRange)")
 
                     # Generate per-box prompt: only reference images actually sent with THIS box
                     box_n_refs = len(box_images) - 1  # minus the blurred crop itself
