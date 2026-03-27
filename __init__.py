@@ -873,9 +873,26 @@ try:
                         box_images.extend(reference_images_base64)
                         print(f"[BlurUpscale-Independent]   Box {box_idx}: all {len(reference_images_base64)} reference(s) (no mapping)")
 
+                    # Generate per-box prompt: only reference images actually sent with THIS box
+                    box_n_refs = len(box_images) - 1  # minus the blurred crop itself
+                    if box_n_refs > 0:
+                        box_ref_nums = "、".join([f"图{i+2}" for i in range(box_n_refs)])
+                        box_prompt = (
+                            f"请仔细观察{box_ref_nums}中人物的面部特征（五官、肤色、脸型），"
+                            f"然后将图1中模糊的人脸替换为该人物的面孔。"
+                            f"要求：1）面部特征必须与{box_ref_nums}中的人物完全一致；"
+                            f"2）保持图1中人物的姿态、发型轮廓、光照和背景不变；"
+                            f"3）替换后的面部应清晰、高清、自然融合。"
+                        )
+                        if style_prompt:
+                            box_prompt += f"额外要求：{style_prompt}"
+                        print(f"[BlurUpscale-Independent]   Box {box_idx} prompt: {box_prompt[:80]}...")
+                    else:
+                        box_prompt = prompt  # No refs for this box, use global prompt
+
                     box_result = await generator.generate(
                         model=model,
-                        prompt=prompt,
+                        prompt=box_prompt,
                         seed=seed + box_idx,
                         batch_count=batch_count,
                         extra_params=box_extra,
