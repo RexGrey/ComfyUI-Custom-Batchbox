@@ -809,71 +809,117 @@ async function collectImageInputsBase64(node) {
 }
 
 /**
- * Resizes and compresses an image (Image element or Blob) to prevent browser 
- * UI freezes and backend 413 Payload Too Large errors when batch processing.
- * Converts to JPEG format to drastically cut Base64 payload size.
+ * Smart image-to-base64 converter with threshold-based compression.
+ * - Images < 45MB: sent in ORIGINAL format (PNG stays PNG, JPEG stays JPEG)
+ * - Images > 45MB: compressed to JPEG 0.92 to meet backend OSS limits
+ * This preserves maximum quality while preventing payload rejection.
  * @param {HTMLImageElement|Blob} source - Source image or blob
- * @param {number} maxDim - Maximum width/height limitation
- * @param {number} quality - JPEG compression quality (0.0 to 1.0)
  * @returns {Promise<string>} Base64 data URL
  */
-async function resizeAndCompressImage(source, maxDim = 2048, quality = 0.85) {
-  return new Promise((resolve, reject) => {
-    const processImage = (img, cleanupUrl = null) => {
-      try {
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
+const IMAGE_COMPRESS_THRESHOLD = 45 * 1024 * 1024; // 45MB, matches backend OSS threshold
 
-        if (w > maxDim || h > maxDim) {
-          const scale = Math.min(maxDim / w, maxDim / h);
-          w = Math.round(w * scale);
-          h = Math.round(h * scale);
-        }
-
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-
-        canvas.toBlob((blob) => {
-          if (cleanupUrl) URL.revokeObjectURL(cleanupUrl);
-          if (!blob) return reject(new Error("Canvas compression failed"));
-
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        }, "image/jpeg", quality);
-      } catch (e) {
-        if (cleanupUrl) URL.revokeObjectURL(cleanupUrl);
-        reject(e);
-      }
-    };
-
-    if (source instanceof Blob) {
+async function resizeAndCompressImage(source) {
+  // --- Path A: Blob input (from fetch responses) ---
+  if (source instanceof Blob) {
+    if (source.size <= IMAGE_COMPRESS_THRESHOLD) {
+      // Small enough: send original format as-is
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(source);
+      });
+    }
+    // Too large: load into Image then compress via Canvas
+    return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(source);
       const img = new Image();
-      img.onload = () => processImage(img, url);
+      img.onload = () => {
+        _compressViaCanvas(img, 0.92, resolve, reject);
+        URL.revokeObjectURL(url);
+      };
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        reject(new Error("Failed to load generic image blob for compression"));
+        reject(new Error("Failed to load image blob for compression"));
       };
       img.src = url;
-    } else if (source instanceof HTMLImageElement) {
-      if (source.complete) {
-        processImage(source);
-      } else {
-        source.onload = () => processImage(source);
-        source.onerror = () => reject(new Error("Failed to load source HTMLImageElement"));
+    });
+  }
+
+  // --- Path B: HTMLImageElement input (from node.imgs cache) ---
+  if (source instanceof HTMLImageElement) {
+    // For cached img elements, we can't know byte size directly.
+    // Estimate: draw to canvas as PNG, check blob size, then decide.
+    return new Promise((resolve, reject) => {
+      const doProcess = () => {
+        try {
+          const w = source.naturalWidth || source.width;
+          const h = source.naturalHeight || source.height;
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(source, 0, 0, w, h);
+
+          // Get PNG blob to check size
+          canvas.toBlob((pngBlob) => {
+            if (!pngBlob) return reject(new Error("Canvas export failed"));
+
+            if (pngBlob.size <= IMAGE_COMPRESS_THRESHOLD) {
+              // Small: send as PNG (original quality)
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(pngBlob);
+            } else {
+              // Large: compress to JPEG
+              _compressViaCanvas(source, 0.92, resolve, reject);
+            }
+          }, "image/png");
+        } catch (e) {
+          reject(e);
+        }
+      };
+
+      if (source.complete) doProcess();
+      else {
+        source.onload = doProcess;
+        source.onerror = () => reject(new Error("Image element failed to load"));
       }
-    } else {
-      reject(new Error("Unsupported source for compression"));
-    }
-  });
+    });
+  }
+
+  throw new Error("Unsupported source type for image conversion");
+}
+
+/**
+ * Internal: compress an Image element to JPEG via Canvas.
+ */
+function _compressViaCanvas(img, quality, resolve, reject) {
+  try {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    canvas.toBlob((blob) => {
+      if (!blob) return reject(new Error("JPEG compression failed"));
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        console.debug(`[BatchBox] Compressed image: ${(blob.size / 1024 / 1024).toFixed(1)}MB JPEG`);
+        resolve(reader.result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    }, "image/jpeg", quality);
+  } catch (e) {
+    reject(e);
+  }
 }
 
 /**
@@ -903,10 +949,90 @@ function createPreviewThumbnail(fullImg, maxSize = 512) {
 
   const thumbImg = new Image();
   thumbImg.src = canvas.toDataURL("image/jpeg", 0.85);
-  // Preserve original URL for potential full-res access
+  // Preserve original URL for full-res Lightbox access
   thumbImg._originalSrc = fullImg.src;
   return thumbImg;
 }
+
+// ================================================================
+// LIGHTBOX: Double-click node preview to view full-resolution image
+// ================================================================
+let _lightboxOverlay = null;
+
+function openImageLightbox(imageSrc) {
+  // Remove existing lightbox if any
+  if (_lightboxOverlay) closeLightbox();
+
+  const overlay = document.createElement("div");
+  overlay.id = "batchbox-lightbox";
+  overlay.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+    background: rgba(0,0,0,0.85); z-index: 99999;
+    display: flex; align-items: center; justify-content: center;
+    cursor: zoom-out; backdrop-filter: blur(4px);
+  `;
+
+  const img = document.createElement("img");
+  img.src = imageSrc;
+  img.style.cssText = `
+    max-width: 95vw; max-height: 95vh; object-fit: contain;
+    border-radius: 6px; box-shadow: 0 0 40px rgba(0,0,0,0.6);
+    cursor: default;
+  `;
+  // Prevent clicking image from closing
+  img.addEventListener("click", (e) => e.stopPropagation());
+
+  // Close hint
+  const hint = document.createElement("div");
+  hint.textContent = "点击空白处或按 ESC 关闭";
+  hint.style.cssText = `
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.6); font-size: 13px; pointer-events: none;
+  `;
+
+  overlay.appendChild(img);
+  overlay.appendChild(hint);
+  overlay.addEventListener("click", closeLightbox);
+  document.body.appendChild(overlay);
+  _lightboxOverlay = overlay;
+
+  // ESC key handler
+  const escHandler = (e) => {
+    if (e.key === "Escape") closeLightbox();
+  };
+  document.addEventListener("keydown", escHandler);
+  overlay._escHandler = escHandler;
+}
+
+function closeLightbox() {
+  if (!_lightboxOverlay) return;
+  if (_lightboxOverlay._escHandler) {
+    document.removeEventListener("keydown", _lightboxOverlay._escHandler);
+  }
+  _lightboxOverlay.remove();
+  _lightboxOverlay = null;
+}
+
+// Hook into ComfyUI: intercept double-click on node images
+const _origProcessMouseDown = LGraphCanvas.prototype.processMouseDown;
+LGraphCanvas.prototype.processMouseDown = function (e) {
+  // Detect double-click on a node with preview images
+  if (e.detail === 2) { // dblclick
+    const node = this.graph.getNodeOnPos(e.canvasX, e.canvasY, this.visible_nodes);
+    if (node && node.imgs && node.imgs.length > 0) {
+      const selectedImg = node.imgs[node.imageIndex || 0];
+      if (selectedImg) {
+        const src = selectedImg._originalSrc || selectedImg.src;
+        if (src) {
+          openImageLightbox(src);
+          return; // Consume the event
+        }
+      }
+    }
+  }
+  // Fallback to original behavior
+  return _origProcessMouseDown?.apply(this, arguments);
+};
 
 /**
  * Collect all parameters from a node
