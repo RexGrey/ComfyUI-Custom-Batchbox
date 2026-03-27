@@ -758,7 +758,7 @@ async function collectImageInputsBase64(node) {
           const response = await fetch(url);
           if (response.ok) {
             const blob = await response.blob();
-            const base64 = await blobToBase64(blob);
+            const base64 = await resizeAndCompressImage(blob);
             images.push(base64);
             console.debug(`[BatchBox] Loaded image from LoadImage node: ${filename}`);
           } else {
@@ -776,7 +776,7 @@ async function collectImageInputsBase64(node) {
     else if (sourceNode.imgs && sourceNode.imgs.length > 0) {
       try {
         const img = sourceNode.imgs[0];
-        const base64 = await imageElementToBase64(img);
+        const base64 = await resizeAndCompressImage(img);
         images.push(base64);
         console.debug(`[BatchBox] Loaded cached image from node ${sourceNode.id}`);
       } catch (e) {
@@ -791,7 +791,7 @@ async function collectImageInputsBase64(node) {
         const response = await fetch(url);
         if (response.ok) {
           const blob = await response.blob();
-          const base64 = await blobToBase64(blob);
+          const base64 = await resizeAndCompressImage(blob);
           images.push(base64);
           console.debug(`[BatchBox] Loaded image from node output`);
         }
@@ -809,32 +809,69 @@ async function collectImageInputsBase64(node) {
 }
 
 /**
- * Convert Blob to base64 data URL
+ * Resizes and compresses an image (Image element or Blob) to prevent browser 
+ * UI freezes and backend 413 Payload Too Large errors when batch processing.
+ * Converts to JPEG format to drastically cut Base64 payload size.
+ * @param {HTMLImageElement|Blob} source - Source image or blob
+ * @param {number} maxDim - Maximum width/height limitation
+ * @param {number} quality - JPEG compression quality (0.0 to 1.0)
+ * @returns {Promise<string>} Base64 data URL
  */
-async function blobToBase64(blob) {
+async function resizeAndCompressImage(source, maxDim = 2048, quality = 0.85) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
+    const processImage = (img, cleanupUrl = null) => {
+      try {
+        let w = img.naturalWidth || img.width;
+        let h = img.naturalHeight || img.height;
 
-/**
- * Convert Image element to base64 data URL
- */
-async function imageElementToBase64(img) {
-  return new Promise((resolve, reject) => {
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth || img.width;
-      canvas.height = img.naturalHeight || img.height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
-      const base64 = canvas.toDataURL("image/png");
-      resolve(base64);
-    } catch (e) {
-      reject(e);
+        if (w > maxDim || h > maxDim) {
+          const scale = Math.min(maxDim / w, maxDim / h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+
+        canvas.toBlob((blob) => {
+          if (cleanupUrl) URL.revokeObjectURL(cleanupUrl);
+          if (!blob) return reject(new Error("Canvas compression failed"));
+
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        }, "image/jpeg", quality);
+      } catch (e) {
+        if (cleanupUrl) URL.revokeObjectURL(cleanupUrl);
+        reject(e);
+      }
+    };
+
+    if (source instanceof Blob) {
+      const url = URL.createObjectURL(source);
+      const img = new Image();
+      img.onload = () => processImage(img, url);
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Failed to load generic image blob for compression"));
+      };
+      img.src = url;
+    } else if (source instanceof HTMLImageElement) {
+      if (source.complete) {
+        processImage(source);
+      } else {
+        source.onload = () => processImage(source);
+        source.onerror = () => reject(new Error("Failed to load source HTMLImageElement"));
+      }
+    } else {
+      reject(new Error("Unsupported source for compression"));
     }
   });
 }
