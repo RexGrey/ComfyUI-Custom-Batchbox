@@ -731,19 +731,25 @@ try:
             else:
                 prompt = base_prompt
 
-            # Auto-append face-swap instruction when reference images are provided
+            # Auto face-swap: when reference images exist, face replacement is the PRIMARY task
             if reference_images_base64:
                 n_refs = len(reference_images_base64)
-                # Image numbering: image1 = blurred, image2..N = references
-                ref_nums = ", ".join([f"图{i+2}" for i in range(n_refs)])
-                face_swap_hint = f"。图1中的人脸是模糊的，请将其替换为{ref_nums}中提供的清晰人脸，保持原图的构图、姿态和背景不变"
-                # Only auto-append if user hasn't already written custom face-swap instructions
-                if style_prompt and "人脸" in style_prompt:
-                    # User wrote custom prompt mentioning faces — respect it
-                    pass
+                ref_nums = "、".join([f"图{i+2}" for i in range(n_refs)])
+                # Override the repair prompt entirely — face swap IS the main task
+                if style_prompt and ("人脸" in style_prompt or "换" in style_prompt or "替换" in style_prompt):
+                    # User wrote custom face-swap prompt — respect it
+                    prompt = style_prompt
                 else:
-                    prompt += face_swap_hint
-                print(f"[BlurUpscale] Auto face-swap prompt: {prompt[:100]}...")
+                    prompt = (
+                        f"请仔细观察{ref_nums}中人物的面部特征（五官、肤色、脸型），"
+                        f"然后将图1中模糊的人脸替换为该人物的面孔。"
+                        f"要求：1）面部特征必须与{ref_nums}中的人物完全一致；"
+                        f"2）保持图1中人物的姿态、发型轮廓、光照和背景不变；"
+                        f"3）替换后的面部应清晰、高清、自然融合。"
+                    )
+                    if style_prompt:
+                        prompt += f"额外要求：{style_prompt}"
+                print(f"[BlurUpscale] Face-swap prompt: {prompt[:120]}...")
 
             # --- Step 3: Compute sigma ---
             sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
