@@ -731,6 +731,20 @@ try:
             else:
                 prompt = base_prompt
 
+            # Auto-append face-swap instruction when reference images are provided
+            if reference_images_base64:
+                n_refs = len(reference_images_base64)
+                # Image numbering: image1 = blurred, image2..N = references
+                ref_nums = ", ".join([f"图{i+2}" for i in range(n_refs)])
+                face_swap_hint = f"。图1中的人脸是模糊的，请将其替换为{ref_nums}中提供的清晰人脸，保持原图的构图、姿态和背景不变"
+                # Only auto-append if user hasn't already written custom face-swap instructions
+                if style_prompt and "人脸" in style_prompt:
+                    # User wrote custom prompt mentioning faces — respect it
+                    pass
+                else:
+                    prompt += face_swap_hint
+                print(f"[BlurUpscale] Auto face-swap prompt: {prompt[:100]}...")
+
             # --- Step 3: Compute sigma ---
             sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
 

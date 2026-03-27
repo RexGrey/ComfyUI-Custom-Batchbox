@@ -1552,11 +1552,13 @@ function openCustomPanel(node) {
         applyBtn.textContent = "⏳ 正在应用模糊...";
         applyBtn.style.pointerEvents = "none";
 
-        let imagesBase64 = [];
+        let allImages = [];
         if (window.batchboxAPI?.collectImageInputsBase64) {
-          imagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+          allImages = await window.batchboxAPI.collectImageInputsBase64(node);
         }
-        if (imagesBase64.length > 0) {
+        // Only send the first image (blur target) — reference face images should NOT be blurred/previewed
+        const blurTargetOnly = allImages.length > 0 ? [allImages[0]] : [];
+        if (blurTargetOnly.length > 0) {
           const selectedIndexWidget = node.widgets?.find(w => w.name === "_selected_image_index");
           const selectedIndex = selectedIndexWidget ? selectedIndexWidget.value : 0;
           const resp = await api.fetchApi("/api/batchbox/apply-blur", {
@@ -1568,7 +1570,7 @@ function openCustomPanel(node) {
               blur_mode: blurMode,
               blur_mask: node.properties?._blur_mask || "",
               selection_boxes: currentSelectionBoxes,
-              images_base64: imagesBase64,
+              images_base64: blurTargetOnly,
               selected_index: selectedIndex,
             }),
           });
