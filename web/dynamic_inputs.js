@@ -162,8 +162,8 @@ function addDynamicInput(node, prefix, index, inputType) {
     node.addInput(inputName, inputType);
 
     // Restore width after adding input, only update height
-    const computedSize = node.computeSize();
-    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
+    const computedSize = node.computeSize() || [500, 100];
+    node.setSize([Number(currentWidth) || 500, Math.max(Number(node.size[1]) || 100, Number(computedSize[1]) || 100)]);
     return true;
 }
 
@@ -185,8 +185,8 @@ function removeDynamicInput(node, inputName) {
     node.removeInput(index);
 
     // Restore width after removing input, only update height
-    const computedSize = node.computeSize();
-    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
+    const computedSize = node.computeSize() || [500, 100];
+    node.setSize([Number(currentWidth) || 500, Math.max(Number(node.size[1]) || 100, Number(computedSize[1]) || 100)]);
     return true;
 }
 
@@ -204,8 +204,8 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
     if (!node.inputs) {
         // No inputs yet, add the first empty slot
         node.addInput(`${prefix}1`, inputType);
-        const computedSize = node.computeSize();
-        node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
+        const computedSize = node.computeSize() || [500, 100];
+        node.setSize([Number(currentWidth) || 500, Math.max(Number(node.size[1]) || 100, Number(computedSize[1]) || 100)]);
         return;
     }
 
@@ -261,43 +261,49 @@ function updateInputsForType(node, prefix, inputType, maxInputs) {
     }
 
     // Restore width after input modifications, only update height
-    const computedSize = node.computeSize();
-    node.setSize([currentWidth, Math.max(node.size[1], computedSize[1])]);
+    const computedSize = node.computeSize() || [500, 100];
+    node.setSize([Number(currentWidth) || 500, Math.max(Number(node.size[1]) || 100, Number(computedSize[1]) || 100)]);
 }
 
 /**
  * Update all dynamic inputs based on connection state
  */
 async function updateAllDynamicInputs(node) {
-    // Get model name from widget
-    let modelName = null;
-    if (node.widgets) {
-        const modelWidget = node.widgets.find(w => w.name === "model" || w.name === "preset");
-        if (modelWidget) {
-            modelName = modelWidget.value;
+    if (node._is_updating_inputs) return;
+    node._is_updating_inputs = true;
+    try {
+        // Get model name from widget
+        let modelName = null;
+        if (node.widgets) {
+            const modelWidget = node.widgets.find(w => w.name === "model" || w.name === "preset");
+            if (modelWidget) {
+                modelName = modelWidget.value;
+            }
         }
-    }
 
-    let config;
-    if (modelName) {
-        config = await getDynamicInputsConfig(modelName);
-    } else {
-        const nodeType = node.comfyClass || node.type;
-        config = NODE_FIXED_DYNAMIC_INPUTS[nodeType] || {};
-    }
+        let config;
+        if (modelName) {
+            config = await getDynamicInputsConfig(modelName);
+        } else {
+            const nodeType = node.comfyClass || node.type;
+            config = NODE_FIXED_DYNAMIC_INPUTS[nodeType] || {};
+        }
 
-    // Process each configured input type
-    for (const [key, typeConfig] of Object.entries(config)) {
-        const prefix = key;  // e.g., "image", "file", "audio"
-        const inputType = typeConfig.type || "IMAGE";
-        const maxInputs = typeConfig.max || 1;
+        // Process each configured input type
+        for (const [key, typeConfig] of Object.entries(config)) {
+            const prefix = key;  // e.g., "image", "file", "audio"
+            const inputType = typeConfig.type || "IMAGE";
+            const maxInputs = typeConfig.max || 1;
 
-        updateInputsForType(node, prefix, inputType, maxInputs);
-    }
+            updateInputsForType(node, prefix, inputType, maxInputs);
+        }
 
-    // Trigger graph update (skip during restore to avoid intermediate renders)
-    if (app.graph && !node._isRestoring) {
-        app.graph.setDirtyCanvas(true, true);
+        // Trigger graph update (skip during restore to avoid intermediate renders)
+        if (app.graph && !node._isRestoring) {
+            app.graph.setDirtyCanvas(true, true);
+        }
+    } finally {
+        node._is_updating_inputs = false;
     }
 }
 
@@ -413,6 +419,9 @@ async function initializeDynamicInputs(node) {
             originalOnConnectionsChange.call(this, type, slotIndex, isConnected, link, ioSlot);
         }
 
+        // Prevent recursive updates when we are programmatically modifying inputs
+        if (this._is_updating_inputs) return;
+
         // Only handle input connections (type 1)
         if (type !== 1) return;
 
@@ -469,8 +478,8 @@ app.registerExtension({
                 // Set default width for newly created nodes (from config)
                 const nodeSettings = await getNodeSettings();
                 const defaultWidth = nodeSettings.default_width || 500;
-                const computedSize = node.computeSize();
-                node.size = [defaultWidth, computedSize[1]];
+                const computedSize = node.computeSize() || [500, 100];
+                node.size = [defaultWidth, Number(computedSize[1]) || 100];
                 node.setDirtyCanvas(true, true);
                 console.debug(`[Batchbox] Set initial width for new ${nodeType}: ${defaultWidth}px`);
             }
@@ -494,11 +503,13 @@ app.registerExtension({
         node._isRestoring = true;
 
         // Apply saved size IMMEDIATELY to prevent initial wrong size
-        const savedWidth = node.size[0];
+        const savedWidth = Number(node.size[0]) || 500;
         if (node.properties?._last_size) {
             try {
                 const savedSize = JSON.parse(node.properties._last_size);
-                node.size = [savedWidth, savedSize[1]];
+                if (savedSize && typeof savedSize[1] !== 'undefined' && savedSize[1] !== null) {
+                    node.size = [savedWidth, Number(savedSize[1]) || 100];
+                }
             } catch (e) { }
         }
 
@@ -548,23 +559,26 @@ app.registerExtension({
 
             // Final size: always use computeSize() to match current widgets
             // Use saved height as minimum to preserve user's manual resize
-            const computedSize = node.computeSize();
-            let finalHeight = computedSize[1];
+            const computedSize = node.computeSize() || [500, 100];
+            let finalHeight = Number(computedSize[1]) || 100;
             if (node.properties?._last_size) {
                 try {
                     const savedSize = JSON.parse(node.properties._last_size);
-                    finalHeight = Math.max(computedSize[1], savedSize[1]);
+                    if (savedSize && typeof savedSize[1] !== 'undefined' && savedSize[1] !== null) {
+                        finalHeight = Math.max(finalHeight, Number(savedSize[1]) || 100);
+                    }
                 } catch (e) { }
             }
-            node.size = [savedWidth, finalHeight];
+            node.size = [Number(savedWidth) || 500, finalHeight];
 
             // Execute any resize that was deferred during restore
             // (dynamic widgets may have been added while _isRestoring was true)
             if (node._needsPostRestoreResize) {
                 delete node._needsPostRestoreResize;
-                const recomputedSize = node.computeSize();
-                if (recomputedSize[1] > node.size[1]) {
-                    node.size = [savedWidth, recomputedSize[1]];
+                const recomputedSize = node.computeSize() || [500, 100];
+                const rcHeight = Number(recomputedSize[1]) || 100;
+                if (rcHeight > (Number(node.size[1]) || 0)) {
+                    node.size = [Number(savedWidth) || 500, rcHeight];
                 }
             }
 
@@ -576,9 +590,10 @@ app.registerExtension({
             // Schedule a final resize to catch any late widget additions.
             setTimeout(() => {
                 if (!node.graph) return; // Node may have been removed
-                const safetySize = node.computeSize();
-                if (safetySize[1] > node.size[1] + 5) {
-                    node.size = [node.size[0], safetySize[1]];
+                const safetySize = node.computeSize() || [500, 100];
+                const sfHeight = Number(safetySize[1]) || 100;
+                if (sfHeight > (Number(node.size[1]) || 0) + 5) {
+                    node.size = [Number(node.size[0]) || 500, sfHeight];
                     node.setDirtyCanvas(true, true);
                 }
             }, 500);  // ⚡ Reduced from 1000ms — widgets settle within 500ms

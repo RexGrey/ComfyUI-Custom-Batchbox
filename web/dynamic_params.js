@@ -265,13 +265,14 @@ function resizeNodePreservingWidth(node) {
     node._needsPostRestoreResize = true;
     return;
   }
-  const currentWidth = node.size[0];
-  const currentHeight = node.size[1];
-  const computedSize = node.computeSize();
+  const currentWidth = Number(node.size[0]) || 500;
+  const currentHeight = Number(node.size[1]) || 100;
+  const computedSize = node.computeSize() || [500, 100];
+  const computedHeight = Number(computedSize[1]) || 100;
   // Use the LARGER of current height vs computed minimum height
   // This allows users to manually enlarge nodes (e.g. for longer prompts)
   // while still growing when new widgets are added
-  const newHeight = Math.max(currentHeight, computedSize[1]);
+  const newHeight = Math.max(currentHeight, computedHeight);
   node.setSize([currentWidth, newHeight]);
 }
 
