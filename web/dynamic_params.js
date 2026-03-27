@@ -996,18 +996,21 @@ function openImageLightbox(imageSrc) {
   document.body.appendChild(overlay);
   _lightboxOverlay = overlay;
 
-  // ESC key handler
+  // ESC key handler — use CAPTURE phase on window to beat LiteGraph's keydown interception
   const escHandler = (e) => {
-    if (e.key === "Escape") closeLightbox();
+    if (e.key === "Escape") {
+      e.stopImmediatePropagation(); // Prevent LiteGraph from processing this ESC
+      closeLightbox();
+    }
   };
-  document.addEventListener("keydown", escHandler);
+  window.addEventListener("keydown", escHandler, true); // true = capture phase
   overlay._escHandler = escHandler;
 }
 
 function closeLightbox() {
   if (!_lightboxOverlay) return;
   if (_lightboxOverlay._escHandler) {
-    document.removeEventListener("keydown", _lightboxOverlay._escHandler);
+    window.removeEventListener("keydown", _lightboxOverlay._escHandler, true);
   }
   _lightboxOverlay.remove();
   _lightboxOverlay = null;
@@ -1542,6 +1545,49 @@ app.registerExtension({
       if (origOnNodeCreated) {
         origOnNodeCreated.apply(this, arguments);
       }
+
+      // === GLOBAL THUMBNAIL INTERCEPTOR ===
+      // Intercept ALL assignments to node.imgs (including from ComfyUI core)
+      // to auto-convert to lightweight thumbnails for canvas rendering performance.
+      let _rawImgs = null;
+      const nodeRef = this;
+      Object.defineProperty(this, "imgs", {
+        get() { return _rawImgs; },
+        set(newImgs) {
+          if (!newImgs || !Array.isArray(newImgs) || newImgs.length === 0) {
+            _rawImgs = newImgs;
+            return;
+          }
+          // Convert each image to thumbnail (async, progressively replace)
+          _rawImgs = newImgs;
+          newImgs.forEach((img, idx) => {
+            if (!img || !(img instanceof HTMLImageElement)) return;
+            // Skip if already a thumbnail (has _originalSrc set)
+            if (img._originalSrc) return;
+
+            const doThumb = () => {
+              const thumb = createPreviewThumbnail(img);
+              if (thumb !== img) {
+                // createPreviewThumbnail already sets _originalSrc
+                _rawImgs[idx] = thumb;
+                app.graph?.setDirtyCanvas(true);
+              }
+            };
+
+            if (img.complete && img.naturalWidth > 0) {
+              doThumb();
+            } else {
+              const origOnload = img.onload;
+              img.onload = function () {
+                if (origOnload) origOnload.apply(this, arguments);
+                doThumb();
+              };
+            }
+          });
+        },
+        configurable: true,
+        enumerable: true
+      });
 
       // Add the "开始生成" button (skip for Editor - it needs Queue Prompt for image+mask)
       if (!nodeData.name.includes("Editor")) {
