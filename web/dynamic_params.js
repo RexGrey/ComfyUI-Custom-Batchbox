@@ -20,6 +20,28 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 // ================================================================
+// SYSTEM PATCH: Prevent ComfyUI Core from crashing Canvas Loop on 404 images
+// ================================================================
+// When workflows are imported from another machine/drive, missing image inputs (404)
+// will silently become "broken" HTMLImageElements. ComfyUI natively forgets to check
+// naturalWidth > 0 before calling drawImage on them, causing InvalidStateError Uncaught
+// exceptions that instantly permanently paralyze the LiteGraph requestAnimationFrame loop.
+const _originalDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+CanvasRenderingContext2D.prototype.drawImage = function (image, ...args) {
+  if (image instanceof HTMLImageElement) {
+    if (image.complete && image.naturalWidth === 0) {
+      // Image is broken/404, silently drop the draw call to prevent Canvas crash
+      return;
+    }
+  }
+  try {
+    _originalDrawImage.apply(this, [image, ...args]);
+  } catch (e) {
+    if (e.name !== 'InvalidStateError') throw e; // Let genuine errors bubble up
+  }
+};
+
+// ================================================================
 // SECTION 1: SCHEMA CACHE WITH TTL
 // ================================================================
 
@@ -265,13 +287,14 @@ function resizeNodePreservingWidth(node) {
     node._needsPostRestoreResize = true;
     return;
   }
-  const currentWidth = node.size[0];
-  const currentHeight = node.size[1];
-  const computedSize = node.computeSize();
+  const currentWidth = Number(node.size[0]) || 500;
+  const currentHeight = Number(node.size[1]) || 100;
+  const computedSize = node.computeSize() || [500, 100];
+  const computedHeight = Number(computedSize[1]) || 100;
   // Use the LARGER of current height vs computed minimum height
   // This allows users to manually enlarge nodes (e.g. for longer prompts)
   // while still growing when new widgets are added
-  const newHeight = Math.max(currentHeight, computedSize[1]);
+  const newHeight = Math.max(currentHeight, computedHeight);
   node.setSize([currentWidth, newHeight]);
 }
 
@@ -735,20 +758,25 @@ async function collectImageInputsBase64(node) {
           const response = await fetch(url);
           if (response.ok) {
             const blob = await response.blob();
-            const base64 = await blobToBase64(blob);
+            const base64 = await resizeAndCompressImage(blob);
             images.push(base64);
             console.debug(`[BatchBox] Loaded image from LoadImage node: ${filename}`);
+          } else {
+            // Let logic flow to Case 4 if input image fetch failed
           }
         } catch (e) {
           console.error(`[BatchBox] Failed to load image from LoadImage:`, e);
         }
+      } else {
+        // Explictly catch empty image node
+        throw new Error(`您连接的“加载图像”节点 (${sourceNode.id}) 没有选取任何图片。请先上传或选择一张要生成的图片。`);
       }
     }
     // Case 2: Node has cached preview images (imgs array)
     else if (sourceNode.imgs && sourceNode.imgs.length > 0) {
       try {
         const img = sourceNode.imgs[0];
-        const base64 = await imageElementToBase64(img);
+        const base64 = await resizeAndCompressImage(img);
         images.push(base64);
         console.debug(`[BatchBox] Loaded cached image from node ${sourceNode.id}`);
       } catch (e) {
@@ -763,7 +791,7 @@ async function collectImageInputsBase64(node) {
         const response = await fetch(url);
         if (response.ok) {
           const blob = await response.blob();
-          const base64 = await blobToBase64(blob);
+          const base64 = await resizeAndCompressImage(blob);
           images.push(base64);
           console.debug(`[BatchBox] Loaded image from node output`);
         }
@@ -781,32 +809,69 @@ async function collectImageInputsBase64(node) {
 }
 
 /**
- * Convert Blob to base64 data URL
+ * Resizes and compresses an image (Image element or Blob) to prevent browser 
+ * UI freezes and backend 413 Payload Too Large errors when batch processing.
+ * Converts to JPEG format to drastically cut Base64 payload size.
+ * @param {HTMLImageElement|Blob} source - Source image or blob
+ * @param {number} maxDim - Maximum width/height limitation
+ * @param {number} quality - JPEG compression quality (0.0 to 1.0)
+ * @returns {Promise<string>} Base64 data URL
  */
-async function blobToBase64(blob) {
+async function resizeAndCompressImage(source, maxDim = 2048, quality = 0.85) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
+    const processImage = (img, cleanupUrl = null) => {
+      try {
+        let w = img.naturalWidth || img.width;
+        let h = img.naturalHeight || img.height;
 
-/**
- * Convert Image element to base64 data URL
- */
-async function imageElementToBase64(img) {
-  return new Promise((resolve, reject) => {
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth || img.width;
-      canvas.height = img.naturalHeight || img.height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
-      const base64 = canvas.toDataURL("image/png");
-      resolve(base64);
-    } catch (e) {
-      reject(e);
+        if (w > maxDim || h > maxDim) {
+          const scale = Math.min(maxDim / w, maxDim / h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+
+        canvas.toBlob((blob) => {
+          if (cleanupUrl) URL.revokeObjectURL(cleanupUrl);
+          if (!blob) return reject(new Error("Canvas compression failed"));
+
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        }, "image/jpeg", quality);
+      } catch (e) {
+        if (cleanupUrl) URL.revokeObjectURL(cleanupUrl);
+        reject(e);
+      }
+    };
+
+    if (source instanceof Blob) {
+      const url = URL.createObjectURL(source);
+      const img = new Image();
+      img.onload = () => processImage(img, url);
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Failed to load generic image blob for compression"));
+      };
+      img.src = url;
+    } else if (source instanceof HTMLImageElement) {
+      if (source.complete) {
+        processImage(source);
+      } else {
+        source.onload = () => processImage(source);
+        source.onerror = () => reject(new Error("Failed to load source HTMLImageElement"));
+      }
+    } else {
+      reject(new Error("Unsupported source for compression"));
     }
   });
 }
