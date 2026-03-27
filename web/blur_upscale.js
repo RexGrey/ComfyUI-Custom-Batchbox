@@ -493,25 +493,8 @@ function openCustomPanel(node) {
         updateSelOverlay();
       };
       const label = document.createElement("span");
-      label.textContent = `${box.ratio}  σ=${box.sigma}`;
+      label.textContent = `选区${idx + 1}  ${box.ratio}  σ=${box.sigma}`;
       label.style.cssText = "color:#ddd; font-size:12px; flex:1;";
-
-      // Reference image range input (e.g. "2-4" or "2,3,4")
-      const refLabel = document.createElement("span");
-      refLabel.textContent = "参考图:";
-      refLabel.style.cssText = "color:#888; font-size:11px; white-space:nowrap;";
-      const refInput = document.createElement("input");
-      refInput.type = "text";
-      refInput.value = box.refRange || "";
-      refInput.placeholder = "如 2-4";
-      refInput.title = "输入对应的参考图输入槽编号（从2开始），如 2-4 或 2,3,4";
-      refInput.style.cssText = "width:50px; background:#111; color:#ccc; border:1px solid #333; border-radius:3px; padding:1px 4px; font-size:11px; text-align:center;";
-      refInput.onclick = (e) => e.stopPropagation();
-      refInput.oninput = (e) => {
-        e.stopPropagation();
-        box.refRange = refInput.value.trim();
-        saveSelBoxes();
-      };
 
       const delBtn = document.createElement("span");
       delBtn.textContent = "✕";
@@ -530,8 +513,31 @@ function openCustomPanel(node) {
         rebuildSelBoxList();
         updateSelOverlay();
       };
-      row.append(label, refLabel, refInput, delBtn);
+      row.append(label, delBtn);
       selBoxListContainer.appendChild(row);
+
+      // Reference image input — separate row below the box, full width
+      const refRow = document.createElement("div");
+      refRow.style.cssText = `display:flex; align-items:center; gap:8px; padding:4px 12px; margin-top:2px; margin-bottom:4px;
+        background:#151520; border-radius:4px; border:1px solid #222;`;
+      refRow.onclick = (e) => e.stopPropagation();
+      const refLabel = document.createElement("span");
+      refLabel.textContent = `  📷 参考图编号:`;
+      refLabel.style.cssText = "color:#8ab4f8; font-size:12px; white-space:nowrap;";
+      const refInput = document.createElement("input");
+      refInput.type = "text";
+      refInput.value = box.refRange || "";
+      refInput.placeholder = "如 2-4 或 2,3,4（输入槽编号）";
+      refInput.title = "输入此人对应的参考图输入槽编号（从image2开始），如 2-4 或 2,3,4";
+      refInput.style.cssText = `flex:1; background:#0a0a15; color:#ddd; border:1px solid #333; border-radius:4px;
+        padding:4px 8px; font-size:12px;`;
+      refInput.oninput = (e) => {
+        e.stopPropagation();
+        box.refRange = refInput.value.trim();
+        saveSelBoxes();
+      };
+      refRow.append(refLabel, refInput);
+      selBoxListContainer.appendChild(refRow);
     });
     // Show/hide sigma row
     selSigmaRow.style.display = selBoxes.length > 0 ? "flex" : "none";
