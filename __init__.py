@@ -557,7 +557,21 @@ try:
             # For selection mode, cache the full-image tensor (not the cropped previews)
             cache_tensors = full_tensors if full_tensors else blurred_tensors
             if cache_tensors and node_id:
-                combined = torch.cat(cache_tensors, dim=0)
+                # Handle different-sized images by padding to max dimensions
+                if len(cache_tensors) > 1:
+                    max_h = max(t.shape[1] for t in cache_tensors)
+                    max_w = max(t.shape[2] for t in cache_tensors)
+                    padded = []
+                    for t in cache_tensors:
+                        if t.shape[1] != max_h or t.shape[2] != max_w:
+                            p = torch.zeros(1, max_h, max_w, t.shape[3])
+                            p[:, :t.shape[1], :t.shape[2], :] = t
+                            padded.append(p)
+                        else:
+                            padded.append(t)
+                    combined = torch.cat(padded, dim=0)
+                else:
+                    combined = cache_tensors[0]
                 GaussianBlurUpscaleNode._cached_blur_data[node_id] = {
                     "tensor": combined,
                     "sigma": sigma,
@@ -632,6 +646,7 @@ try:
             from .independent_generator import IndependentGenerator
             from .image_utils import apply_gaussian_blur, apply_masked_gaussian_blur
             import json, base64
+            import hashlib
             from io import BytesIO
             from PIL import Image
 
