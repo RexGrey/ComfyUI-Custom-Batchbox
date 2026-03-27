@@ -685,6 +685,14 @@ try:
                 if legacy:
                     images_base64 = [legacy]
 
+            # Reference face images (not blurred, passed directly to AI model)
+            reference_images_base64 = data.get("reference_images_base64") or []
+            # Selection mode: per-box reference mapping, e.g. {"0": [0,1,2], "1": [3,4]}
+            # Keys are box indices (str), values are reference image indices (0-based into reference_images_base64)
+            selection_ref_mapping = data.get("selection_ref_mapping") or {}
+            if reference_images_base64:
+                print(f"[BlurUpscale] {len(reference_images_base64)} reference image(s) received")
+
             if not images_base64:
                 return web.json_response({"success": False, "error": "images_base64 is required"}, status=400)
 
@@ -831,13 +839,27 @@ try:
                     box_extra["aspect_ratio"] = _dar(box_img.width, box_img.height)
                     print(f"[BlurUpscale-Independent] Generating box {box_idx+1}/{total_boxes}: {box_img.size} → {box_extra['aspect_ratio']}")
                     
+                    # Merge: blurred crop + this box's reference images
+                    box_images = [box_b64]
+                    box_ref_indices = selection_ref_mapping.get(str(box_idx), [])
+                    if box_ref_indices:
+                        # Use explicitly mapped references for this box
+                        for ri in box_ref_indices:
+                            if 0 <= ri < len(reference_images_base64):
+                                box_images.append(reference_images_base64[ri])
+                        print(f"[BlurUpscale-Independent]   Box {box_idx}: {len(box_ref_indices)} mapped reference(s)")
+                    elif not selection_ref_mapping and reference_images_base64:
+                        # No explicit mapping: send all references with every box (single-person fallback)
+                        box_images.extend(reference_images_base64)
+                        print(f"[BlurUpscale-Independent]   Box {box_idx}: all {len(reference_images_base64)} reference(s) (no mapping)")
+
                     box_result = await generator.generate(
                         model=model,
                         prompt=prompt,
                         seed=seed + box_idx,
                         batch_count=batch_count,
                         extra_params=box_extra,
-                        images_base64=[box_b64],
+                        images_base64=box_images,
                         endpoint_override=final_endpoint,
                         on_batch_complete=on_batch_complete,
                         hash_extras={
@@ -865,13 +887,18 @@ try:
                     "params_hash": "_".join(all_params_hashes) if all_params_hashes else "",
                 }
             else:
+                # Merge: blurred image(s) + all reference images
+                merged_images = blurred_b64_list + reference_images_base64
+                if reference_images_base64:
+                    print(f"[BlurUpscale-Independent] Merged {len(blurred_b64_list)} blurred + {len(reference_images_base64)} reference = {len(merged_images)} total images")
+
                 result = await generator.generate(
                     model=model,
                     prompt=prompt,
                     seed=seed,
                     batch_count=batch_count,
                     extra_params=extra_params,
-                    images_base64=blurred_b64_list,
+                    images_base64=merged_images,
                     endpoint_override=final_endpoint,
                     on_batch_complete=on_batch_complete,
                     hash_extras={

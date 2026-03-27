@@ -495,6 +495,24 @@ function openCustomPanel(node) {
       const label = document.createElement("span");
       label.textContent = `${box.ratio}  σ=${box.sigma}`;
       label.style.cssText = "color:#ddd; font-size:12px; flex:1;";
+
+      // Reference image range input (e.g. "2-4" or "2,3,4")
+      const refLabel = document.createElement("span");
+      refLabel.textContent = "参考图:";
+      refLabel.style.cssText = "color:#888; font-size:11px; white-space:nowrap;";
+      const refInput = document.createElement("input");
+      refInput.type = "text";
+      refInput.value = box.refRange || "";
+      refInput.placeholder = "如 2-4";
+      refInput.title = "输入对应的参考图输入槽编号（从2开始），如 2-4 或 2,3,4";
+      refInput.style.cssText = "width:50px; background:#111; color:#ccc; border:1px solid #333; border-radius:3px; padding:1px 4px; font-size:11px; text-align:center;";
+      refInput.onclick = (e) => e.stopPropagation();
+      refInput.oninput = (e) => {
+        e.stopPropagation();
+        box.refRange = refInput.value.trim();
+        saveSelBoxes();
+      };
+
       const delBtn = document.createElement("span");
       delBtn.textContent = "✕";
       delBtn.title = "删除此选区";
@@ -512,7 +530,7 @@ function openCustomPanel(node) {
         rebuildSelBoxList();
         updateSelOverlay();
       };
-      row.append(label, delBtn);
+      row.append(label, refLabel, refInput, delBtn);
       selBoxListContainer.appendChild(row);
     });
     // Show/hide sigma row
@@ -2305,16 +2323,23 @@ app.registerExtension({
           let progressHandler = null;
           try {
             // Collect all connected image inputs via shared API
-            let imagesBase64 = [];
+            let allImagesBase64 = [];
             if (window.batchboxAPI?.collectImageInputsBase64) {
-              imagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+              allImagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
             } else {
               // Fallback to legacy single-image method
               const singleB64 = await getInputImageBase64(node);
-              if (singleB64) imagesBase64 = [singleB64];
+              if (singleB64) allImagesBase64 = [singleB64];
             }
-            if (imagesBase64.length === 0) {
+            if (allImagesBase64.length === 0) {
               throw new Error("无法获取输入图片，请确保已连接加载图像节点");
+            }
+
+            // Split: first image = blur target, rest = reference face images
+            const blurTargetImages = [allImagesBase64[0]];
+            const referenceImages = allImagesBase64.slice(1);
+            if (referenceImages.length > 0) {
+              console.log(`[BlurUpscale] ${blurTargetImages.length} blur target(s) + ${referenceImages.length} reference image(s)`);
             }
 
             const generationToken = `blur_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2337,7 +2362,8 @@ app.registerExtension({
               seed: getVal("seed", 0),
               batch_count: getVal("batch_count", 1),
               aspect_ratio: getVal("aspect_ratio", "auto"),
-              images_base64: imagesBase64,
+              images_base64: blurTargetImages,
+              reference_images_base64: referenceImages,
               endpoint_override: endpointOverride,
               blur_mask: node.properties?._blur_mask || "",
             };
@@ -2363,6 +2389,37 @@ app.registerExtension({
               // Auto-set blur_mode to "selection" if we have boxes but no explicit mode
               if (!requestBody.blur_mode) requestBody.blur_mode = "selection";
               console.log(`[BlurUpscale] Selection mode: ${requestBody.selection_boxes.length} boxes`);
+
+              // Build selection_ref_mapping from each box's refRange
+              // refRange format: "2-4" (range) or "2,3,4" (list) — slot numbers starting from 2
+              // Convert to 0-based indices into reference_images_base64 (slot 2 = index 0)
+              if (referenceImages.length > 0) {
+                const refMapping = {};
+                requestBody.selection_boxes.forEach((box, idx) => {
+                  if (!box.refRange) return;
+                  const range = box.refRange.trim();
+                  let indices = [];
+                  if (range.includes("-")) {
+                    // Range: "2-4" → [2,3,4] → indices [0,1,2]
+                    const parts = range.split("-").map(s => parseInt(s.trim()));
+                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                      for (let n = parts[0]; n <= parts[1]; n++) {
+                        indices.push(n - 2); // slot 2 → ref index 0
+                      }
+                    }
+                  } else {
+                    // Comma list: "2,3,4" → indices [0,1,2]
+                    indices = range.split(",").map(s => parseInt(s.trim()) - 2).filter(n => !isNaN(n));
+                  }
+                  if (indices.length > 0) {
+                    refMapping[String(idx)] = indices;
+                  }
+                });
+                if (Object.keys(refMapping).length > 0) {
+                  requestBody.selection_ref_mapping = refMapping;
+                  console.log(`[BlurUpscale] Reference mapping:`, refMapping);
+                }
+              }
             }
 
             // Register progress listener
