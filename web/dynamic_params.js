@@ -41,23 +41,6 @@ CanvasRenderingContext2D.prototype.drawImage = function (image, ...args) {
   }
 };
 
-// [DEBUG] Fatal error sniffer for identifying LiteGraph death states
-window.addEventListener('error', (event) => {
-  const errBox = document.getElementById('batchbox-fatal-sniffer') || document.createElement('div');
-  errBox.id = 'batchbox-fatal-sniffer';
-  errBox.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99999;background:rgba(255,0,0,0.8);color:white;padding:15px;border-radius:8px;font-family:monospace;pointer-events:none;white-space:pre-wrap;box-shadow:0 0 10px black;';
-  errBox.innerText += `\n[Fatal Error]: ${event.message}\nFile: ${event.filename}\nLine: ${event.lineno}\nStack: ${event.error?.stack || ''}`;
-  if (!document.getElementById('batchbox-fatal-sniffer')) document.body.appendChild(errBox);
-});
-
-window.addEventListener('unhandledrejection', (event) => {
-  const errBox = document.getElementById('batchbox-fatal-sniffer') || document.createElement('div');
-  errBox.id = 'batchbox-fatal-sniffer';
-  errBox.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99999;background:rgba(255,0,0,0.8);color:white;padding:15px;border-radius:8px;font-family:monospace;pointer-events:none;white-space:pre-wrap;box-shadow:0 0 10px black;';
-  errBox.innerText += `\n[Unhandled Promise Rejection]: ${event.reason}`;
-  if (!document.getElementById('batchbox-fatal-sniffer')) document.body.appendChild(errBox);
-});
-
 // ================================================================
 // SECTION 1: SCHEMA CACHE WITH TTL
 // ================================================================
@@ -778,10 +761,15 @@ async function collectImageInputsBase64(node) {
             const base64 = await blobToBase64(blob);
             images.push(base64);
             console.debug(`[BatchBox] Loaded image from LoadImage node: ${filename}`);
+          } else {
+            // Let logic flow to Case 4 if input image fetch failed
           }
         } catch (e) {
           console.error(`[BatchBox] Failed to load image from LoadImage:`, e);
         }
+      } else {
+        // Explictly catch empty image node
+        throw new Error(`您连接的“加载图像”节点 (${sourceNode.id}) 没有选取任何图片。请先上传或选择一张要生成的图片。`);
       }
     }
     // Case 2: Node has cached preview images (imgs array)
