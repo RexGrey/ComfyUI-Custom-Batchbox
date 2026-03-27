@@ -2381,16 +2381,23 @@ app.registerExtension({
               try {
                 const ep = JSON.parse(extraW.value || "{}");
                 if (ep._blur_mode) requestBody.blur_mode = ep._blur_mode;
-                if (ep._selection_boxes) requestBody.selection_boxes = ep._selection_boxes;
               } catch (e) { }
             }
             // Fallback: read from node.properties if not found in extra_params
             if (!requestBody.blur_mode && node.properties?._blur_mode) {
               requestBody.blur_mode = node.properties._blur_mode;
             }
-            if (!requestBody.selection_boxes && node.properties?._selection_boxes) {
+            // Always read selection_boxes from node.properties (has latest refRange data)
+            if (node.properties?._selection_boxes) {
               try {
                 requestBody.selection_boxes = JSON.parse(node.properties._selection_boxes);
+              } catch (e) { }
+            }
+            // Fallback to extra_params if node.properties has nothing
+            if (!requestBody.selection_boxes && extraW) {
+              try {
+                const ep = JSON.parse(extraW.value || "{}");
+                if (ep._selection_boxes) requestBody.selection_boxes = ep._selection_boxes;
               } catch (e) { }
             }
             if (requestBody.selection_boxes?.length) {
