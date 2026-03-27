@@ -20,6 +20,45 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 // ================================================================
+// SYSTEM PATCH: Prevent ComfyUI Core from crashing Canvas Loop on 404 images
+// ================================================================
+// When workflows are imported from another machine/drive, missing image inputs (404)
+// will silently become "broken" HTMLImageElements. ComfyUI natively forgets to check
+// naturalWidth > 0 before calling drawImage on them, causing InvalidStateError Uncaught
+// exceptions that instantly permanently paralyze the LiteGraph requestAnimationFrame loop.
+const _originalDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+CanvasRenderingContext2D.prototype.drawImage = function (image, ...args) {
+  if (image instanceof HTMLImageElement) {
+    if (image.complete && image.naturalWidth === 0) {
+      // Image is broken/404, silently drop the draw call to prevent Canvas crash
+      return;
+    }
+  }
+  try {
+    _originalDrawImage.apply(this, [image, ...args]);
+  } catch (e) {
+    if (e.name !== 'InvalidStateError') throw e; // Let genuine errors bubble up
+  }
+};
+
+// [DEBUG] Fatal error sniffer for identifying LiteGraph death states
+window.addEventListener('error', (event) => {
+  const errBox = document.getElementById('batchbox-fatal-sniffer') || document.createElement('div');
+  errBox.id = 'batchbox-fatal-sniffer';
+  errBox.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99999;background:rgba(255,0,0,0.8);color:white;padding:15px;border-radius:8px;font-family:monospace;pointer-events:none;white-space:pre-wrap;box-shadow:0 0 10px black;';
+  errBox.innerText += `\n[Fatal Error]: ${event.message}\nFile: ${event.filename}\nLine: ${event.lineno}\nStack: ${event.error?.stack || ''}`;
+  if (!document.getElementById('batchbox-fatal-sniffer')) document.body.appendChild(errBox);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const errBox = document.getElementById('batchbox-fatal-sniffer') || document.createElement('div');
+  errBox.id = 'batchbox-fatal-sniffer';
+  errBox.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99999;background:rgba(255,0,0,0.8);color:white;padding:15px;border-radius:8px;font-family:monospace;pointer-events:none;white-space:pre-wrap;box-shadow:0 0 10px black;';
+  errBox.innerText += `\n[Unhandled Promise Rejection]: ${event.reason}`;
+  if (!document.getElementById('batchbox-fatal-sniffer')) document.body.appendChild(errBox);
+});
+
+// ================================================================
 // SECTION 1: SCHEMA CACHE WITH TTL
 // ================================================================
 
