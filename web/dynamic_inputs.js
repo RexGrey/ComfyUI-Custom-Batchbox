@@ -521,11 +521,18 @@ app.registerExtension({
                 if (images && images.length > 0) {
                     node.imageIndex = 0;
                     node.images = images;
-                    node.imgs = images.map(img => {
+                    node.imgs = [];
+                    images.forEach((img, idx) => {
                         const url = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
                         const imgEl = new Image();
+                        imgEl.onload = () => {
+                            // Downscale to thumbnail for canvas display, preserve original for Lightbox
+                            const thumb = createPreviewThumbnail(imgEl);
+                            node.imgs[idx] = thumb;
+                            app.graph?.setDirtyCanvas(true);
+                        };
                         imgEl.src = url;
-                        return imgEl;
+                        node.imgs[idx] = imgEl; // placeholder until thumb ready
                     });
 
                     // === IMAGE SELECTION: Restore selection state early ===
@@ -636,11 +643,17 @@ function restorePreviewFromProperties(node) {
 
             // Pre-create Image objects for node.imgs
             // ComfyUI uses node.imgs for actual rendering
-            node.imgs = images.map(img => {
+            node.imgs = [];
+            images.forEach((img, idx) => {
                 const url = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
                 const imgEl = new Image();
+                imgEl.onload = () => {
+                    const thumb = createPreviewThumbnail(imgEl);
+                    node.imgs[idx] = thumb;
+                    app.graph?.setDirtyCanvas(true);
+                };
                 imgEl.src = url;
-                return imgEl;
+                node.imgs[idx] = imgEl; // placeholder until thumb ready
             });
 
             console.debug(`[Batchbox] Restored ${images.length} preview image(s) for node ${node.id}`);
