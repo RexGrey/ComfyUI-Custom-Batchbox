@@ -1013,26 +1013,40 @@ function closeLightbox() {
   _lightboxOverlay = null;
 }
 
-// Hook into ComfyUI: intercept double-click on node images
-const _origProcessMouseDown = LGraphCanvas.prototype.processMouseDown;
-LGraphCanvas.prototype.processMouseDown = function (e) {
-  // Detect double-click on a node with preview images
-  if (e.detail === 2) { // dblclick
-    const node = this.graph.getNodeOnPos(e.canvasX, e.canvasY, this.visible_nodes);
+// Hook: listen for native dblclick on the LiteGraph canvas element
+// Deferred until the canvas is ready (app.canvas may not exist at import time)
+setTimeout(() => {
+  const canvasEl = document.querySelector("canvas.lgraphcanvas") || document.querySelector("canvas");
+  if (!canvasEl) {
+    console.warn("[BatchBox] Could not find LiteGraph canvas for Lightbox hook");
+    return;
+  }
+
+  canvasEl.addEventListener("dblclick", (e) => {
+    const graphCanvas = app.canvas;
+    if (!graphCanvas || !graphCanvas.graph) return;
+
+    // Convert DOM mouse position to canvas coordinates
+    const rect = canvasEl.getBoundingClientRect();
+    const canvasX = (e.clientX - rect.left) / graphCanvas.ds.scale - graphCanvas.ds.offset[0];
+    const canvasY = (e.clientY - rect.top) / graphCanvas.ds.scale - graphCanvas.ds.offset[1];
+
+    const node = graphCanvas.graph.getNodeOnPos(canvasX, canvasY, graphCanvas.visible_nodes);
     if (node && node.imgs && node.imgs.length > 0) {
       const selectedImg = node.imgs[node.imageIndex || 0];
       if (selectedImg) {
         const src = selectedImg._originalSrc || selectedImg.src;
         if (src) {
           openImageLightbox(src);
-          return; // Consume the event
+          e.preventDefault();
+          e.stopPropagation();
         }
       }
     }
-  }
-  // Fallback to original behavior
-  return _origProcessMouseDown?.apply(this, arguments);
-};
+  });
+
+  console.debug("[BatchBox] Lightbox double-click hook installed on canvas");
+}, 2000); // 2s delay ensures ComfyUI canvas is fully initialized
 
 /**
  * Collect all parameters from a node
