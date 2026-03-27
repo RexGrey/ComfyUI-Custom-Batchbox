@@ -316,7 +316,7 @@ def apply_gaussian_blur(pil_image: Image.Image, sigma: float) -> Image.Image:
 def apply_selection_boxes_blur(pil_image: Image.Image, boxes: list) -> Image.Image:
     """
     Apply independent Gaussian blur to multiple rectangular regions.
-    Each box has: x, y, w, h (pixels), sigma.
+    Each box has: x, y, w, h (pixels or normalized 0-1), sigma.
     Overlapping regions use the largest sigma (sorted ascending, last paste wins).
     """
     from PIL import ImageFilter
@@ -327,7 +327,17 @@ def apply_selection_boxes_blur(pil_image: Image.Image, boxes: list) -> Image.Ima
         sigma = box.get('sigma', 0)
         if sigma <= 0:
             continue
-        x, y, w, h = int(box['x']), int(box['y']), int(box['w']), int(box['h'])
+            
+        bx, by, bw, bh = float(box['x']), float(box['y']), float(box['w']), float(box['h'])
+        # Convert normalized coords (0.0-1.0) to pixels
+        if bw <= 1.0 and bh <= 1.0:
+            bx *= pil_image.width
+            by *= pil_image.height
+            bw *= pil_image.width
+            bh *= pil_image.height
+            
+        x, y, w, h = int(bx), int(by), int(bw), int(bh)
+        
         # Clamp target paste bounds
         x = max(0, x)
         y = max(0, y)
@@ -370,7 +380,7 @@ def crop_and_blur_selection_boxes(pil_image: Image.Image, boxes: list) -> list:
     
     Args:
         pil_image: Source image
-        boxes: List of dicts with x, y, w, h (pixels) and sigma
+        boxes: List of dicts with x, y, w, h (pixels or 0-1) and sigma
         
     Returns:
         List of (cropped_blurred_pil, box_info) tuples.
@@ -381,7 +391,16 @@ def crop_and_blur_selection_boxes(pil_image: Image.Image, boxes: list) -> list:
     results = []
     for box in boxes:
         sigma = box.get('sigma', 0)
-        x, y, w, h = int(box['x']), int(box['y']), int(box['w']), int(box['h'])
+        bx, by, bw, bh = float(box['x']), float(box['y']), float(box['w']), float(box['h'])
+        # Convert normalized coords (0.0-1.0) to pixels
+        if bw <= 1.0 and bh <= 1.0:
+            bx *= pil_image.width
+            by *= pil_image.height
+            bw *= pil_image.width
+            bh *= pil_image.height
+            
+        x, y, w, h = int(bx), int(by), int(bw), int(bh)
+        
         # Clamp bounds
         x = max(0, x)
         y = max(0, y)
