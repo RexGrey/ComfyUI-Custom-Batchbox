@@ -43,6 +43,11 @@ Z盘实际运行目录 --[Start_Client.bat robocopy]--> C:\ComfyUI_Portable（�
 - **修改内容**：两个接口直接返回 `403 Forbidden`，防止通过 HTTP 工具抓取密钥
 - **标记注释**：`"""[STUDENT EDITION] Config endpoint disabled"""`
 
+### 敏感文件
+- Z 盘**不允许存在**明文 `secrets.yaml`、`.secrets_key`、`.auth.json`
+- 仅保留 `secrets.yaml.enc`（加密版，需 `BATCHBOX_KEY` 环境变量解密）
+- `Start_Client.bat` 已设置 `BATCHBOX_KEY`，学生端通过加密版正常生图
+
 ## E 盘完整版的自适应机制
 
 E 盘源码中还包含了一套基于 `.git` 目录存在性的运行时检测机制（`IS_ADMIN` 变量）。但由于 Z 盘采用的是**物理阉割**而非运行时检测，这套机制目前仅作为 E 盘的额外保险层存在。
