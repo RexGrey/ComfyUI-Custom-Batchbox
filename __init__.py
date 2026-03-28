@@ -557,7 +557,21 @@ try:
             # For selection mode, cache the full-image tensor (not the cropped previews)
             cache_tensors = full_tensors if full_tensors else blurred_tensors
             if cache_tensors and node_id:
-                combined = torch.cat(cache_tensors, dim=0)
+                # Handle different-sized images by padding to max dimensions
+                if len(cache_tensors) > 1:
+                    max_h = max(t.shape[1] for t in cache_tensors)
+                    max_w = max(t.shape[2] for t in cache_tensors)
+                    padded = []
+                    for t in cache_tensors:
+                        if t.shape[1] != max_h or t.shape[2] != max_w:
+                            p = torch.zeros(1, max_h, max_w, t.shape[3])
+                            p[:, :t.shape[1], :t.shape[2], :] = t
+                            padded.append(p)
+                        else:
+                            padded.append(t)
+                    combined = torch.cat(padded, dim=0)
+                else:
+                    combined = cache_tensors[0]
                 GaussianBlurUpscaleNode._cached_blur_data[node_id] = {
                     "tensor": combined,
                     "sigma": sigma,
@@ -632,6 +646,7 @@ try:
             from .independent_generator import IndependentGenerator
             from .image_utils import apply_gaussian_blur, apply_masked_gaussian_blur
             import json, base64
+            import hashlib
             from io import BytesIO
             from PIL import Image
 
@@ -670,6 +685,14 @@ try:
                 if legacy:
                     images_base64 = [legacy]
 
+            # Reference face images (not blurred, passed directly to AI model)
+            reference_images_base64 = data.get("reference_images_base64") or []
+            # Selection mode: per-box reference mapping, e.g. {"0": [0,1,2], "1": [3,4]}
+            # Keys are box indices (str), values are reference image indices (0-based into reference_images_base64)
+            selection_ref_mapping = data.get("selection_ref_mapping") or {}
+            if reference_images_base64:
+                print(f"[BlurUpscale] {len(reference_images_base64)} reference image(s) received")
+
             if not images_base64:
                 return web.json_response({"success": False, "error": "images_base64 is required"}, status=400)
 
@@ -707,6 +730,18 @@ try:
                 prompt = f"{base_prompt}{style_prompt}"
             else:
                 prompt = base_prompt
+
+            # Auto face-swap: when reference images exist, face replacement is the PRIMARY task
+            if reference_images_base64:
+                n_refs = len(reference_images_base64)
+                if style_prompt:
+                    prompt = style_prompt
+                    print(f"[BlurUpscale] Face-swap CUSTOM prompt: {prompt[:120]}...")
+                else:
+                    prompt = (
+                        f"将图1中模糊的人物变清晰，人物的角色特征参考{ref_nums}"
+                    )
+                    print(f"[BlurUpscale] Face-swap DEFAULT prompt: {prompt[:120]}...")
 
             # --- Step 3: Compute sigma ---
             sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
@@ -809,6 +844,13 @@ try:
                 total_calls = total_boxes * batch_count
                 _progress_total_override = total_calls
                 
+                # Pre-initialize result in case blurred_b64_list is empty (no valid boxes cropped)
+                result = {
+                    "success": False,
+                    "error": "未能截取到任何有效的选区框，请重新框选",
+                    "preview_images": [],
+                }
+                
                 for box_idx, box_b64 in enumerate(blurred_b64_list):
                     # Decode to get dimensions for aspect_ratio
                     box_img = Image.open(BytesIO(base64.b64decode(box_b64)))
@@ -816,13 +858,66 @@ try:
                     box_extra["aspect_ratio"] = _dar(box_img.width, box_img.height)
                     print(f"[BlurUpscale-Independent] Generating box {box_idx+1}/{total_boxes}: {box_img.size} → {box_extra['aspect_ratio']}")
                     
+                    # Merge: blurred crop + this box's reference images
+                    # Read refRange directly from the box object (e.g. "2,3" or "2-4")
+                    box_images = [box_b64]
+                    box_data = selection_boxes[box_idx] if box_idx < len(selection_boxes) else {}
+                    ref_range_str = str(box_data.get("refRange", "")).strip()
+                    parsed_indices = []
+                    if ref_range_str and reference_images_base64:
+                        # Parse refRange: "2-4" (range) or "2,3,4" (comma list)
+                        # Numbers are slot numbers starting from 2 → index 0 in reference_images_base64
+                        if "-" in ref_range_str:
+                            parts = ref_range_str.split("-")
+                            try:
+                                start, end = int(parts[0].strip()), int(parts[1].strip())
+                                parsed_indices = [n - 2 for n in range(start, end + 1)]
+                            except (ValueError, IndexError):
+                                pass
+                        else:
+                            for s in ref_range_str.replace("，", ",").split(","):
+                                try:
+                                    parsed_indices.append(int(s.strip()) - 2)
+                                except ValueError:
+                                    pass
+                        
+                        for ri in parsed_indices:
+                            if 0 <= ri < len(reference_images_base64):
+                                box_images.append(reference_images_base64[ri])
+                        print(f"[BlurUpscale-Independent]   Box {box_idx}: refRange='{ref_range_str}' → {len(box_images)-1} reference(s)")
+                    elif reference_images_base64:
+                        # No refRange specified: send all references (single-person fallback)
+                        parsed_indices = list(range(len(reference_images_base64)))
+                        box_images.extend(reference_images_base64)
+                        print(f"[BlurUpscale-Independent]   Box {box_idx}: all {len(reference_images_base64)} reference(s) (no refRange)")
+
+                    # Generate per-box prompt: only reference images actually sent with THIS box
+                    box_n_refs = len(box_images) - 1  # minus the blurred crop itself
+                    if box_n_refs > 0:
+                        # For the API prompt, we must use local indices (图2, 图3...) since that is what the API receives
+                        api_ref_nums = "、".join([f"图{i+2}" for i in range(box_n_refs)])
+                        
+                        # For the console print, we use the original mapped slot names to avoid confusing the user
+                        user_ref_slots = "、".join([f"输入槽图{r+2}" for r in parsed_indices])
+                        
+                        if style_prompt:
+                            box_prompt = style_prompt
+                            print(f"[BlurUpscale-Independent]   Box {box_idx} CUSTOM prompt (using refs {user_ref_slots}): {box_prompt[:200]}...")
+                        else:
+                            box_prompt = (
+                                f"将图1中模糊的人物变清晰，人物的角色特征参考{api_ref_nums}"
+                            )
+                            print(f"[BlurUpscale-Independent]   Box {box_idx} DEFAULT prompt (using refs {user_ref_slots}): {box_prompt[:200]}...")
+                    else:
+                        box_prompt = prompt  # No refs for this box, use global prompt
+
                     box_result = await generator.generate(
                         model=model,
-                        prompt=prompt,
+                        prompt=box_prompt,
                         seed=seed + box_idx,
                         batch_count=batch_count,
                         extra_params=box_extra,
-                        images_base64=[box_b64],
+                        images_base64=box_images,
                         endpoint_override=final_endpoint,
                         on_batch_complete=on_batch_complete,
                         hash_extras={
@@ -837,26 +932,31 @@ try:
                         },
                         hash_images_base64=[box_b64],
                     )
-                    
                     if box_result.get("success") and box_result.get("preview_images"):
                         all_preview_images.extend(box_result["preview_images"])
+                    elif "error" in box_result:
+                        result["error"] = box_result["error"]
+                        
                     if box_result.get("params_hash"):
                         all_params_hashes.append(box_result["params_hash"])
                 
-                # Build combined result
-                result = {
-                    "success": bool(all_preview_images),
-                    "preview_images": all_preview_images,
-                    "params_hash": "_".join(all_params_hashes) if all_params_hashes else "",
-                }
+                # Update combined result, preserving any existing error messages
+                result["success"] = bool(all_preview_images)
+                result["preview_images"] = all_preview_images
+                result["params_hash"] = "_".join(all_params_hashes) if all_params_hashes else ""
             else:
+                # Merge: blurred image(s) + all reference images
+                merged_images = blurred_b64_list + reference_images_base64
+                if reference_images_base64:
+                    print(f"[BlurUpscale-Independent] Merged {len(blurred_b64_list)} blurred + {len(reference_images_base64)} reference = {len(merged_images)} total images")
+
                 result = await generator.generate(
                     model=model,
                     prompt=prompt,
                     seed=seed,
                     batch_count=batch_count,
                     extra_params=extra_params,
-                    images_base64=blurred_b64_list,
+                    images_base64=merged_images,
                     endpoint_override=final_endpoint,
                     on_batch_complete=on_batch_complete,
                     hash_extras={

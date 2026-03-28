@@ -57,14 +57,25 @@ class IndependentGenerator:
                 mode_config=mode_config,
             )
 
+        # Build provider config dict, including raw fields like service_account_files
+        # that aren't in the ProviderConfig dataclass
+        prov_dict = {
+            "name": provider.name,
+            "display_name": provider.display_name,
+            "base_url": provider.base_url,
+            "api_key": provider.api_key,
+            "api_keys": provider.api_keys or [],
+            "project_id": provider.project_id or "",
+        }
+        # Merge raw provider fields (e.g. service_account_files for Vertex AI SA)
+        raw_config = config_manager.get_raw_config()
+        raw_providers = raw_config.get("providers", {})
+        raw_prov = raw_providers.get(provider.name, {})
+        if "service_account_files" in raw_prov:
+            prov_dict["service_account_files"] = raw_prov["service_account_files"]
+
         return GenericAPIAdapter(
-            provider_config={
-                "name": provider.name,
-                "base_url": provider.base_url,
-                "api_key": provider.api_key,
-                "api_keys": provider.api_keys or [],
-                "project_id": provider.project_id or "",
-            },
+            provider_config=prov_dict,
             endpoint_config=endpoint_config,
             mode_config=mode_config,
         )

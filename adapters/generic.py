@@ -300,7 +300,10 @@ class GenericAPIAdapter(APIAdapter):
             endpoint_path = endpoint_path.replace("{api_key}", _current_key)
         
         # Support {project_id} placeholder in endpoint path (e.g. Vertex AI)
-        if "{project_id}" in endpoint_path:
+        # For service_account auth, defer replacement to the SA token flow below
+        # which provides the correct per-SA-file project_id
+        auth_type_for_pid = self.endpoint.get("auth_type", "api")
+        if "{project_id}" in endpoint_path and auth_type_for_pid != "service_account":
             project_id = self.provider.get("project_id", "")
             endpoint_path = endpoint_path.replace("{project_id}", project_id)
         

@@ -314,7 +314,7 @@ function openCustomPanel(node) {
   const modeGlobalBtn = document.createElement("button");
   modeGlobalBtn.textContent = "全局模糊";
   const modeMaskBtn = document.createElement("button");
-  modeMaskBtn.textContent = "区域模糊";
+  modeMaskBtn.textContent = "涂抹模糊";
   const modeSelectionBtn = document.createElement("button");
   modeSelectionBtn.textContent = "选区模糊";
   const modeTiledBtn = document.createElement("button");
@@ -386,6 +386,8 @@ function openCustomPanel(node) {
   let selActiveIdx = -1;
   let selBoxIdCounter = 0;
   let selOverlayCanvas = null;
+  let selFloatingInputs = [];
+  let selInputsContainer = null;
 
   // Restore saved boxes
   if (node.properties?._selection_boxes) {
@@ -493,8 +495,9 @@ function openCustomPanel(node) {
         updateSelOverlay();
       };
       const label = document.createElement("span");
-      label.textContent = `${box.ratio}  σ=${box.sigma}`;
+      label.textContent = `选区${idx + 1}  ${box.ratio}  σ=${box.sigma}`;
       label.style.cssText = "color:#ddd; font-size:12px; flex:1;";
+
       const delBtn = document.createElement("span");
       delBtn.textContent = "✕";
       delBtn.title = "删除此选区";
@@ -522,6 +525,9 @@ function openCustomPanel(node) {
 
   function updateSelParamsVisibility() {
     selParamsSection.style.display = blurMode === "selection" ? "flex" : "none";
+    if (selInputsContainer) {
+      selInputsContainer.style.display = blurMode === "selection" ? "block" : "none";
+    }
   }
 
   // --- Selection overlay: use overlayRef + getImageRect (same as mask mode) ---
@@ -607,6 +613,59 @@ function openCustomPanel(node) {
       ctx.fillText(`${box.ratio} σ=${box.sigma}`, bx + 8, by + 18);
       ctx.shadowBlur = 0;
     });
+
+    // Phase 3: Update floating inputs
+    if (selInputsContainer) {
+      selInputsContainer.style.display = blurMode === "selection" ? "block" : "none";
+      if (blurMode === "selection") {
+        while (selFloatingInputs.length < selBoxes.length) {
+          const wrapper = document.createElement("div");
+          Object.assign(wrapper.style, {
+            position: "absolute", pointerEvents: "auto",
+            display: "flex", alignItems: "center", gap: "4px",
+            background: "rgba(20,20,30,0.85)", border: "1px solid #555",
+            borderRadius: "4px", padding: "2px 6px",
+            backdropFilter: "blur(4px)", boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
+            zIndex: "100"
+          });
+          const icon = document.createElement("span");
+          icon.textContent = "📷";
+          icon.style.fontSize = "12px";
+          const input = document.createElement("input");
+          input.type = "text";
+          input.placeholder = "参图编号(例 2-4)";
+          Object.assign(input.style, {
+            background: "transparent", border: "none", color: "#6cf",
+            width: "100px", fontSize: "12px", outline: "none"
+          });
+          wrapper.onmousedown = (e) => e.stopPropagation();
+          wrapper.onmousemove = (e) => e.stopPropagation();
+          input.oninput = (e) => {
+            const idx = selFloatingInputs.findIndex(fi => fi.wrapper === wrapper);
+            if (idx !== -1 && selBoxes[idx]) {
+              selBoxes[idx].refRange = input.value.trim();
+              saveSelBoxes();
+            }
+          };
+          wrapper.append(icon, input);
+          selInputsContainer.appendChild(wrapper);
+          selFloatingInputs.push({ wrapper, input });
+        }
+        while (selFloatingInputs.length > selBoxes.length) {
+          const fi = selFloatingInputs.pop();
+          fi.wrapper.remove();
+        }
+        selBoxes.forEach((box, idx) => {
+          const bx = ir.left + box.x * ir.width;
+          const by = ir.top + box.y * ir.height;
+          const bh = box.h * ir.height;
+          const fi = selFloatingInputs[idx];
+          fi.input.value = box.refRange || "";
+          fi.wrapper.style.left = `${bx}px`;
+          fi.wrapper.style.top = `${by + bh + 4}px`;
+        });
+      }
+    }
   }
 
   // Drag state
@@ -683,21 +742,32 @@ function openCustomPanel(node) {
         // Ratio-locked resize from corner
         const dx = mx - s.startMx, dy = my - s.startMy;
         const ob = s.origBox;
-        let nw = ob.w, nh = ob.h, nx = ob.x, ny = ob.y;
-        // Which corner?
         const isRight = s.corner === 1 || s.corner === 3;
         const isBottom = s.corner === 2 || s.corner === 3;
         // Use the dominant axis for ratio-locked scaling
         const scale = isRight ? (ob.w + dx) / ob.w : (ob.w - dx) / ob.w;
         const scaleY = isBottom ? (ob.h + dy) / ob.h : (ob.h - dy) / ob.h;
         const finalScale = Math.max(0.05, (Math.abs(dx) > Math.abs(dy)) ? scale : scaleY);
-        nw = ob.w * finalScale;
-        nh = ob.h * finalScale;
+        let nw = ob.w * finalScale;
+        let nh = ob.h * finalScale;
+
+        // Re-enforce pixel aspect ratio after scaling
+        // box.ratioValue = pixel_w / pixel_h, normRatio = ratioValue / imgAR
+        const img = panel.querySelector("#blur-preview-img");
+        const imgAR = img?.naturalWidth && img?.naturalHeight ? img.naturalWidth / img.naturalHeight : 1.5;
+        const targetNormRatio = (box.ratioValue || (ob.w / ob.h)) / imgAR;
+        // Correct: fix height based on width
+        nh = nw / targetNormRatio;
+
+        // Clamp and re-enforce ratio (shrink the dominant axis if one hit the boundary)
+        if (nw > 1) { nw = 1; nh = nw / targetNormRatio; }
+        if (nh > 1) { nh = 1; nw = nh * targetNormRatio; }
+        nw = Math.max(0.03, nw);
+        nh = Math.max(0.03, nh);
+
+        let nx = ob.x, ny = ob.y;
         if (!isRight) nx = ob.x + ob.w - nw;
         if (!isBottom) ny = ob.y + ob.h - nh;
-        // Clamp
-        nw = Math.max(0.03, Math.min(1, nw));
-        nh = Math.max(0.03, Math.min(1, nh));
         nx = Math.max(0, Math.min(1 - nw, nx));
         ny = Math.max(0, Math.min(1 - nh, ny));
         box.x = nx; box.y = ny; box.w = nw; box.h = nh;
@@ -1154,6 +1224,41 @@ function openCustomPanel(node) {
       const naturalW = img.naturalWidth;
       const naturalH = img.naturalHeight;
 
+      let imageChanged = false;
+      if (!node.properties) node.properties = {};
+      const lastW = node.properties._last_img_w;
+      const lastH = node.properties._last_img_h;
+      const lastSrc = node.properties._last_img_src;
+
+      function getImgSignature(url) {
+        if (!url) return "";
+        const m = url.match(/[?&]filename=([^&]+)/);
+        if (m) return decodeURIComponent(m[1]);
+        return url.replace(/[?&](rand|t)=[^&]+/g, "");
+      }
+
+      const currentSig = getImgSignature(imgSrc);
+      const lastSig = getImgSignature(lastSrc);
+
+      if (lastW !== undefined && lastH !== undefined && (Number(lastW) !== naturalW || Number(lastH) !== naturalH)) {
+        imageChanged = true;
+      } else if (lastSrc !== undefined && currentSig !== lastSig) {
+        imageChanged = true;
+      }
+
+      if (imageChanged) {
+        node.properties._selection_boxes = "[]";
+        selBoxes.splice(0, selBoxes.length);
+        selActiveIdx = -1;
+        node.properties._blur_mask = "";
+        rebuildSelBoxList();
+        if (blurMode === "selection") setTimeout(() => updateSelOverlay(), 10);
+      }
+
+      node.properties._last_img_w = naturalW;
+      node.properties._last_img_h = naturalH;
+      node.properties._last_img_src = imgSrc;
+
       // Double-rAF to ensure layout is fully settled
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const imgRect = img.getBoundingClientRect();
@@ -1209,6 +1314,30 @@ function openCustomPanel(node) {
         overlay.width = overlay.clientWidth;
         overlay.height = overlay.clientHeight;
         overlayRef = overlay;
+
+        selInputsContainer = document.createElement("div");
+        Object.assign(selInputsContainer.style, {
+          position: "absolute", left: "0", top: "0",
+          width: "100%", height: "100%", pointerEvents: "none",
+          zIndex: "10"
+        });
+        previewBox.appendChild(selInputsContainer);
+
+        // Keep canvas internal resolution in sync with CSS display size on window resize
+        const overlayResizeObserver = new ResizeObserver(() => {
+          if (!overlayRef) return;
+          const cw = overlayRef.clientWidth;
+          const ch = overlayRef.clientHeight;
+          if (cw > 0 && ch > 0 && (overlayRef.width !== cw || overlayRef.height !== ch)) {
+            overlayRef.width = cw;
+            overlayRef.height = ch;
+            // Redraw current mode's overlay
+            if (blurMode === "selection") updateSelOverlay();
+            else if (blurMode === "mask") updateMaskPreview();
+            else if (blurMode === "tiled") updateTiledOverlay();
+          }
+        });
+        overlayResizeObserver.observe(overlay);
 
         // Tiled mode uses overlayRef as well
 
@@ -1528,11 +1657,13 @@ function openCustomPanel(node) {
         applyBtn.textContent = "⏳ 正在应用模糊...";
         applyBtn.style.pointerEvents = "none";
 
-        let imagesBase64 = [];
+        let allImages = [];
         if (window.batchboxAPI?.collectImageInputsBase64) {
-          imagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+          allImages = await window.batchboxAPI.collectImageInputsBase64(node);
         }
-        if (imagesBase64.length > 0) {
+        // Only send the first image (blur target) — reference face images should NOT be blurred/previewed
+        const blurTargetOnly = allImages.length > 0 ? [allImages[0]] : [];
+        if (blurTargetOnly.length > 0) {
           const selectedIndexWidget = node.widgets?.find(w => w.name === "_selected_image_index");
           const selectedIndex = selectedIndexWidget ? selectedIndexWidget.value : 0;
           const resp = await api.fetchApi("/api/batchbox/apply-blur", {
@@ -1544,7 +1675,7 @@ function openCustomPanel(node) {
               blur_mode: blurMode,
               blur_mask: node.properties?._blur_mask || "",
               selection_boxes: currentSelectionBoxes,
-              images_base64: imagesBase64,
+              images_base64: blurTargetOnly,
               selected_index: selectedIndex,
             }),
           });
@@ -2305,16 +2436,23 @@ app.registerExtension({
           let progressHandler = null;
           try {
             // Collect all connected image inputs via shared API
-            let imagesBase64 = [];
+            let allImagesBase64 = [];
             if (window.batchboxAPI?.collectImageInputsBase64) {
-              imagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+              allImagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
             } else {
               // Fallback to legacy single-image method
               const singleB64 = await getInputImageBase64(node);
-              if (singleB64) imagesBase64 = [singleB64];
+              if (singleB64) allImagesBase64 = [singleB64];
             }
-            if (imagesBase64.length === 0) {
+            if (allImagesBase64.length === 0) {
               throw new Error("无法获取输入图片，请确保已连接加载图像节点");
+            }
+
+            // Split: first image = blur target, rest = reference face images
+            const blurTargetImages = [allImagesBase64[0]];
+            const referenceImages = allImagesBase64.slice(1);
+            if (referenceImages.length > 0) {
+              console.log(`[BlurUpscale] ${blurTargetImages.length} blur target(s) + ${referenceImages.length} reference image(s)`);
             }
 
             const generationToken = `blur_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2337,7 +2475,8 @@ app.registerExtension({
               seed: getVal("seed", 0),
               batch_count: getVal("batch_count", 1),
               aspect_ratio: getVal("aspect_ratio", "auto"),
-              images_base64: imagesBase64,
+              images_base64: blurTargetImages,
+              reference_images_base64: referenceImages,
               endpoint_override: endpointOverride,
               blur_mask: node.properties?._blur_mask || "",
             };
@@ -2347,22 +2486,60 @@ app.registerExtension({
               try {
                 const ep = JSON.parse(extraW.value || "{}");
                 if (ep._blur_mode) requestBody.blur_mode = ep._blur_mode;
-                if (ep._selection_boxes) requestBody.selection_boxes = ep._selection_boxes;
               } catch (e) { }
             }
             // Fallback: read from node.properties if not found in extra_params
             if (!requestBody.blur_mode && node.properties?._blur_mode) {
               requestBody.blur_mode = node.properties._blur_mode;
             }
-            if (!requestBody.selection_boxes && node.properties?._selection_boxes) {
+            // Always read selection_boxes from node.properties (has latest refRange data)
+            if (node.properties?._selection_boxes) {
               try {
                 requestBody.selection_boxes = JSON.parse(node.properties._selection_boxes);
+              } catch (e) { }
+            }
+            // Fallback to extra_params if node.properties has nothing
+            if (!requestBody.selection_boxes && extraW) {
+              try {
+                const ep = JSON.parse(extraW.value || "{}");
+                if (ep._selection_boxes) requestBody.selection_boxes = ep._selection_boxes;
               } catch (e) { }
             }
             if (requestBody.selection_boxes?.length) {
               // Auto-set blur_mode to "selection" if we have boxes but no explicit mode
               if (!requestBody.blur_mode) requestBody.blur_mode = "selection";
               console.log(`[BlurUpscale] Selection mode: ${requestBody.selection_boxes.length} boxes`);
+
+              // Build selection_ref_mapping from each box's refRange
+              // refRange format: "2-4" (range) or "2,3,4" (list) — slot numbers starting from 2
+              // Convert to 0-based indices into reference_images_base64 (slot 2 = index 0)
+              if (referenceImages.length > 0) {
+                const refMapping = {};
+                requestBody.selection_boxes.forEach((box, idx) => {
+                  if (!box.refRange) return;
+                  const range = box.refRange.trim();
+                  let indices = [];
+                  if (range.includes("-")) {
+                    // Range: "2-4" → [2,3,4] → indices [0,1,2]
+                    const parts = range.split("-").map(s => parseInt(s.trim()));
+                    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+                      for (let n = parts[0]; n <= parts[1]; n++) {
+                        indices.push(n - 2); // slot 2 → ref index 0
+                      }
+                    }
+                  } else {
+                    // Comma list: "2,3,4" → indices [0,1,2]
+                    indices = range.split(",").map(s => parseInt(s.trim()) - 2).filter(n => !isNaN(n));
+                  }
+                  if (indices.length > 0) {
+                    refMapping[String(idx)] = indices;
+                  }
+                });
+                if (Object.keys(refMapping).length > 0) {
+                  requestBody.selection_ref_mapping = refMapping;
+                  console.log(`[BlurUpscale] Reference mapping:`, refMapping);
+                }
+              }
             }
 
             // Register progress listener
