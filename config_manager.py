@@ -553,7 +553,8 @@ class ConfigManager:
         
         for ep in endpoints:
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
+            auth_type = ep.get("auth_type", "api")
+            if not provider or (not (provider.api_key or provider.access_key) and auth_type not in ("account", "service_account")):
                 continue
             
             modes = ep.get("modes", {})
@@ -593,7 +594,8 @@ class ConfigManager:
                 continue
             
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
+            auth_type = ep.get("auth_type", "api")
+            if not provider or (not (provider.api_key or provider.access_key) and auth_type not in ("account", "service_account")):
                 continue
             
             modes = ep.get("modes", {})
@@ -632,7 +634,8 @@ class ConfigManager:
         ep = endpoints[actual_idx]
         
         provider = self.get_provider_config(ep.get("provider"))
-        if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
+        auth_type = ep.get("auth_type", "api")
+        if not provider or (not (provider.api_key or provider.access_key) and auth_type not in ("account", "service_account")):
             # Try next endpoint
             return self.get_best_endpoint(model_name, mode)
         
@@ -668,7 +671,8 @@ class ConfigManager:
                 continue
             
             provider = self.get_provider_config(ep.get("provider"))
-            if not provider or (not (provider.api_key or provider.access_key) and ep.get("auth_type", "api") != "account"):
+            auth_type = ep.get("auth_type", "api")
+            if not provider or (not (provider.api_key or provider.access_key) and auth_type not in ("account", "service_account")):
                 continue
             
             modes = ep.get("modes", {})
