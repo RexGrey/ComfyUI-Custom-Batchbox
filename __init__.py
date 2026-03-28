@@ -734,22 +734,14 @@ try:
             # Auto face-swap: when reference images exist, face replacement is the PRIMARY task
             if reference_images_base64:
                 n_refs = len(reference_images_base64)
-                ref_nums = "、".join([f"图{i+2}" for i in range(n_refs)])
-                # Override the repair prompt entirely — face swap IS the main task
-                if style_prompt and ("人脸" in style_prompt or "换" in style_prompt or "替换" in style_prompt):
-                    # User wrote custom face-swap prompt — respect it
+                if style_prompt:
                     prompt = style_prompt
+                    print(f"[BlurUpscale] Face-swap CUSTOM prompt: {prompt[:120]}...")
                 else:
                     prompt = (
-                        f"请仔细观察{ref_nums}中人物的面部特征（五官、肤色、脸型），"
-                        f"然后将图1中模糊的人脸替换为该人物的面孔。"
-                        f"要求：1）面部特征必须与{ref_nums}中的人物完全一致；"
-                        f"2）保持图1中人物的姿态、发型轮廓、光照和背景不变；"
-                        f"3）替换后的面部应清晰、高清、自然融合。"
+                        f"将图1中模糊的人物变清晰，人物的角色特征参考{ref_nums}"
                     )
-                    if style_prompt:
-                        prompt += f"额外要求：{style_prompt}"
-                print(f"[BlurUpscale] Face-swap prompt: {prompt[:120]}...")
+                    print(f"[BlurUpscale] Face-swap DEFAULT prompt: {prompt[:120]}...")
 
             # --- Step 3: Compute sigma ---
             sigma = custom_sigma if custom_sigma > 0 else BLUR_PRESETS.get(blur_intensity, 2.0)
@@ -871,11 +863,10 @@ try:
                     box_images = [box_b64]
                     box_data = selection_boxes[box_idx] if box_idx < len(selection_boxes) else {}
                     ref_range_str = str(box_data.get("refRange", "")).strip()
-                    
+                    parsed_indices = []
                     if ref_range_str and reference_images_base64:
                         # Parse refRange: "2-4" (range) or "2,3,4" (comma list)
                         # Numbers are slot numbers starting from 2 → index 0 in reference_images_base64
-                        parsed_indices = []
                         if "-" in ref_range_str:
                             parts = ref_range_str.split("-")
                             try:
@@ -896,6 +887,7 @@ try:
                         print(f"[BlurUpscale-Independent]   Box {box_idx}: refRange='{ref_range_str}' → {len(box_images)-1} reference(s)")
                     elif reference_images_base64:
                         # No refRange specified: send all references (single-person fallback)
+                        parsed_indices = list(range(len(reference_images_base64)))
                         box_images.extend(reference_images_base64)
                         print(f"[BlurUpscale-Independent]   Box {box_idx}: all {len(reference_images_base64)} reference(s) (no refRange)")
 
@@ -913,9 +905,7 @@ try:
                             print(f"[BlurUpscale-Independent]   Box {box_idx} CUSTOM prompt (using refs {user_ref_slots}): {box_prompt[:200]}...")
                         else:
                             box_prompt = (
-                                f"将图1中的人物头部完全替换为{api_ref_nums}中的人物样貌。"
-                                f"要求：彻底换头（包括发型、面孔、五官），完全抛弃图1原本的发型轮廓；"
-                                f"同时将背景和边缘全部高清重绘，自然融合，不要保留任何模糊感。"
+                                f"将图1中模糊的人物变清晰，人物的角色特征参考{api_ref_nums}"
                             )
                             print(f"[BlurUpscale-Independent]   Box {box_idx} DEFAULT prompt (using refs {user_ref_slots}): {box_prompt[:200]}...")
                     else:

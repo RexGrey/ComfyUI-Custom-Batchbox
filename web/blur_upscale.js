@@ -314,7 +314,7 @@ function openCustomPanel(node) {
   const modeGlobalBtn = document.createElement("button");
   modeGlobalBtn.textContent = "全局模糊";
   const modeMaskBtn = document.createElement("button");
-  modeMaskBtn.textContent = "区域模糊";
+  modeMaskBtn.textContent = "涂抹模糊";
   const modeSelectionBtn = document.createElement("button");
   modeSelectionBtn.textContent = "选区模糊";
   const modeTiledBtn = document.createElement("button");
@@ -386,6 +386,8 @@ function openCustomPanel(node) {
   let selActiveIdx = -1;
   let selBoxIdCounter = 0;
   let selOverlayCanvas = null;
+  let selFloatingInputs = [];
+  let selInputsContainer = null;
 
   // Restore saved boxes
   if (node.properties?._selection_boxes) {
@@ -515,29 +517,6 @@ function openCustomPanel(node) {
       };
       row.append(label, delBtn);
       selBoxListContainer.appendChild(row);
-
-      // Reference image input — separate row below the box, full width
-      const refRow = document.createElement("div");
-      refRow.style.cssText = `display:flex; align-items:center; gap:8px; padding:4px 12px; margin-top:2px; margin-bottom:4px;
-        background:#151520; border-radius:4px; border:1px solid #222;`;
-      refRow.onclick = (e) => e.stopPropagation();
-      const refLabel = document.createElement("span");
-      refLabel.textContent = `  📷 参考图编号:`;
-      refLabel.style.cssText = "color:#8ab4f8; font-size:12px; white-space:nowrap;";
-      const refInput = document.createElement("input");
-      refInput.type = "text";
-      refInput.value = box.refRange || "";
-      refInput.placeholder = "如 2-4 或 2,3,4（输入槽编号）";
-      refInput.title = "输入此人对应的参考图输入槽编号（从image2开始），如 2-4 或 2,3,4";
-      refInput.style.cssText = `flex:1; background:#0a0a15; color:#ddd; border:1px solid #333; border-radius:4px;
-        padding:4px 8px; font-size:12px;`;
-      refInput.oninput = (e) => {
-        e.stopPropagation();
-        box.refRange = refInput.value.trim();
-        saveSelBoxes();
-      };
-      refRow.append(refLabel, refInput);
-      selBoxListContainer.appendChild(refRow);
     });
     // Show/hide sigma row
     selSigmaRow.style.display = selBoxes.length > 0 ? "flex" : "none";
@@ -546,6 +525,9 @@ function openCustomPanel(node) {
 
   function updateSelParamsVisibility() {
     selParamsSection.style.display = blurMode === "selection" ? "flex" : "none";
+    if (selInputsContainer) {
+      selInputsContainer.style.display = blurMode === "selection" ? "block" : "none";
+    }
   }
 
   // --- Selection overlay: use overlayRef + getImageRect (same as mask mode) ---
@@ -631,6 +613,59 @@ function openCustomPanel(node) {
       ctx.fillText(`${box.ratio} σ=${box.sigma}`, bx + 8, by + 18);
       ctx.shadowBlur = 0;
     });
+
+    // Phase 3: Update floating inputs
+    if (selInputsContainer) {
+      selInputsContainer.style.display = blurMode === "selection" ? "block" : "none";
+      if (blurMode === "selection") {
+        while (selFloatingInputs.length < selBoxes.length) {
+          const wrapper = document.createElement("div");
+          Object.assign(wrapper.style, {
+            position: "absolute", pointerEvents: "auto",
+            display: "flex", alignItems: "center", gap: "4px",
+            background: "rgba(20,20,30,0.85)", border: "1px solid #555",
+            borderRadius: "4px", padding: "2px 6px",
+            backdropFilter: "blur(4px)", boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
+            zIndex: "100"
+          });
+          const icon = document.createElement("span");
+          icon.textContent = "📷";
+          icon.style.fontSize = "12px";
+          const input = document.createElement("input");
+          input.type = "text";
+          input.placeholder = "参图编号(例 2-4)";
+          Object.assign(input.style, {
+            background: "transparent", border: "none", color: "#6cf",
+            width: "100px", fontSize: "12px", outline: "none"
+          });
+          wrapper.onmousedown = (e) => e.stopPropagation();
+          wrapper.onmousemove = (e) => e.stopPropagation();
+          input.oninput = (e) => {
+            const idx = selFloatingInputs.findIndex(fi => fi.wrapper === wrapper);
+            if (idx !== -1 && selBoxes[idx]) {
+              selBoxes[idx].refRange = input.value.trim();
+              saveSelBoxes();
+            }
+          };
+          wrapper.append(icon, input);
+          selInputsContainer.appendChild(wrapper);
+          selFloatingInputs.push({ wrapper, input });
+        }
+        while (selFloatingInputs.length > selBoxes.length) {
+          const fi = selFloatingInputs.pop();
+          fi.wrapper.remove();
+        }
+        selBoxes.forEach((box, idx) => {
+          const bx = ir.left + box.x * ir.width;
+          const by = ir.top + box.y * ir.height;
+          const bh = box.h * ir.height;
+          const fi = selFloatingInputs[idx];
+          fi.input.value = box.refRange || "";
+          fi.wrapper.style.left = `${bx}px`;
+          fi.wrapper.style.top = `${by + bh + 4}px`;
+        });
+      }
+    }
   }
 
   // Drag state
@@ -707,21 +742,32 @@ function openCustomPanel(node) {
         // Ratio-locked resize from corner
         const dx = mx - s.startMx, dy = my - s.startMy;
         const ob = s.origBox;
-        let nw = ob.w, nh = ob.h, nx = ob.x, ny = ob.y;
-        // Which corner?
         const isRight = s.corner === 1 || s.corner === 3;
         const isBottom = s.corner === 2 || s.corner === 3;
         // Use the dominant axis for ratio-locked scaling
         const scale = isRight ? (ob.w + dx) / ob.w : (ob.w - dx) / ob.w;
         const scaleY = isBottom ? (ob.h + dy) / ob.h : (ob.h - dy) / ob.h;
         const finalScale = Math.max(0.05, (Math.abs(dx) > Math.abs(dy)) ? scale : scaleY);
-        nw = ob.w * finalScale;
-        nh = ob.h * finalScale;
+        let nw = ob.w * finalScale;
+        let nh = ob.h * finalScale;
+
+        // Re-enforce pixel aspect ratio after scaling
+        // box.ratioValue = pixel_w / pixel_h, normRatio = ratioValue / imgAR
+        const img = panel.querySelector("#blur-preview-img");
+        const imgAR = img?.naturalWidth && img?.naturalHeight ? img.naturalWidth / img.naturalHeight : 1.5;
+        const targetNormRatio = (box.ratioValue || (ob.w / ob.h)) / imgAR;
+        // Correct: fix height based on width
+        nh = nw / targetNormRatio;
+
+        // Clamp and re-enforce ratio (shrink the dominant axis if one hit the boundary)
+        if (nw > 1) { nw = 1; nh = nw / targetNormRatio; }
+        if (nh > 1) { nh = 1; nw = nh * targetNormRatio; }
+        nw = Math.max(0.03, nw);
+        nh = Math.max(0.03, nh);
+
+        let nx = ob.x, ny = ob.y;
         if (!isRight) nx = ob.x + ob.w - nw;
         if (!isBottom) ny = ob.y + ob.h - nh;
-        // Clamp
-        nw = Math.max(0.03, Math.min(1, nw));
-        nh = Math.max(0.03, Math.min(1, nh));
         nx = Math.max(0, Math.min(1 - nw, nx));
         ny = Math.max(0, Math.min(1 - nh, ny));
         box.x = nx; box.y = ny; box.w = nw; box.h = nh;
@@ -1178,6 +1224,41 @@ function openCustomPanel(node) {
       const naturalW = img.naturalWidth;
       const naturalH = img.naturalHeight;
 
+      let imageChanged = false;
+      if (!node.properties) node.properties = {};
+      const lastW = node.properties._last_img_w;
+      const lastH = node.properties._last_img_h;
+      const lastSrc = node.properties._last_img_src;
+
+      function getImgSignature(url) {
+        if (!url) return "";
+        const m = url.match(/[?&]filename=([^&]+)/);
+        if (m) return decodeURIComponent(m[1]);
+        return url.replace(/[?&](rand|t)=[^&]+/g, "");
+      }
+
+      const currentSig = getImgSignature(imgSrc);
+      const lastSig = getImgSignature(lastSrc);
+
+      if (lastW !== undefined && lastH !== undefined && (Number(lastW) !== naturalW || Number(lastH) !== naturalH)) {
+        imageChanged = true;
+      } else if (lastSrc !== undefined && currentSig !== lastSig) {
+        imageChanged = true;
+      }
+
+      if (imageChanged) {
+        node.properties._selection_boxes = "[]";
+        selBoxes.splice(0, selBoxes.length);
+        selActiveIdx = -1;
+        node.properties._blur_mask = "";
+        rebuildSelBoxList();
+        if (blurMode === "selection") setTimeout(() => updateSelOverlay(), 10);
+      }
+
+      node.properties._last_img_w = naturalW;
+      node.properties._last_img_h = naturalH;
+      node.properties._last_img_src = imgSrc;
+
       // Double-rAF to ensure layout is fully settled
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const imgRect = img.getBoundingClientRect();
@@ -1233,6 +1314,30 @@ function openCustomPanel(node) {
         overlay.width = overlay.clientWidth;
         overlay.height = overlay.clientHeight;
         overlayRef = overlay;
+
+        selInputsContainer = document.createElement("div");
+        Object.assign(selInputsContainer.style, {
+          position: "absolute", left: "0", top: "0",
+          width: "100%", height: "100%", pointerEvents: "none",
+          zIndex: "10"
+        });
+        previewBox.appendChild(selInputsContainer);
+
+        // Keep canvas internal resolution in sync with CSS display size on window resize
+        const overlayResizeObserver = new ResizeObserver(() => {
+          if (!overlayRef) return;
+          const cw = overlayRef.clientWidth;
+          const ch = overlayRef.clientHeight;
+          if (cw > 0 && ch > 0 && (overlayRef.width !== cw || overlayRef.height !== ch)) {
+            overlayRef.width = cw;
+            overlayRef.height = ch;
+            // Redraw current mode's overlay
+            if (blurMode === "selection") updateSelOverlay();
+            else if (blurMode === "mask") updateMaskPreview();
+            else if (blurMode === "tiled") updateTiledOverlay();
+          }
+        });
+        overlayResizeObserver.observe(overlay);
 
         // Tiled mode uses overlayRef as well
 
