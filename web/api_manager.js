@@ -3056,6 +3056,22 @@ app.registerExtension({
                 return floatBtn;
             };
 
+            let isAdmin = false;
+            try {
+                const resp = await api.fetchApi("/api/batchbox/is-admin");
+                if (resp.status === 200) {
+                    const data = await resp.json();
+                    isAdmin = !!data.is_admin;
+                }
+            } catch (e) {
+                console.warn("[Batchbox] is-admin check failed or missing backend", e);
+            }
+
+            if (!isAdmin) {
+                console.log("[Batchbox] Environment isolated. API Manager UI is disabled.");
+                return;
+            }
+
             const floatBtn = createFloatingButton();
             document.body.appendChild(floatBtn);
             console.log("[Batchbox] Draggable floating button injected.");

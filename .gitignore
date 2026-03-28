@@ -41,3 +41,6 @@ gcs_credentials*.json
 .idea/
 *.swp
 *.swo
+
+# 本地测试与日志文件
+_bench_results.json
