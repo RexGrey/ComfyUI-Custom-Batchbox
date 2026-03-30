@@ -15,6 +15,7 @@ import requests
 import torch
 import numpy as np
 import uuid
+import hashlib
 from PIL import Image
 from io import BytesIO
 from typing import Dict, List, Optional, Any, Tuple, Union
@@ -106,7 +107,7 @@ class DynamicImageNodeBase:
         self.timeout = 600
 
     @staticmethod
-    def _parse_extra_params(extra_params_raw: Any) -> Dict[str, Any]:
+    def _parse_extra_params(extra_params_raw: Any) :
         """Parse dynamic params payload safely, returning a dict."""
         if isinstance(extra_params_raw, dict):
             return dict(extra_params_raw)
@@ -173,7 +174,7 @@ class DynamicImageNodeBase:
         return models
     
     @classmethod
-    def get_model_display_names(cls, category: str = "image") -> Dict[str, str]:
+    def get_model_display_names(cls, category: str = "image") :
         """Get mapping of model names to display names"""
         models_info = config_manager.get_models_by_category(category)
         return {m["name"]: m["display_name"] for m in models_info}
@@ -331,7 +332,7 @@ class DynamicImageNodeBase:
     
     def process_batch(self, model_name: str, batch_count: int, 
                       params: Dict[str, Any], mode: str = "text2img",
-                      endpoint_override: Optional[str] = None) -> Tuple[torch.Tensor, str, str]:
+                      endpoint_override: Optional[str] = None) :
         """
         Process batch of image generation requests in parallel.
         
@@ -491,7 +492,7 @@ class DynamicImageNodeBase:
         logger.debug("[Hash] computed=%s", result_hash)
         return result_hash
     
-    def _load_persisted_images(self, last_images_json: str, selected_index: int = 0, load_all: bool = False) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], List[Dict]]:
+    def _load_persisted_images(self, last_images_json: str, selected_index: int = 0, load_all: bool = False) :
         """
         Load images from persisted file paths based on connection status.
         
@@ -669,7 +670,7 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
     CATEGORY = "ComfyUI-Custom-Batchbox"
     OUTPUT_NODE = True  # Required for standalone execution
     
-    def generate(self, model: str, prompt: str, batch_count: int, **kwargs) -> Dict:
+    def generate(self, model: str, prompt: str, batch_count: int, **kwargs) :
         """Generate images using selected model"""
         
         # ==========================================
@@ -886,7 +887,7 @@ class DynamicTextGenerationNode(DynamicImageNodeBase):
     RETURN_NAMES = ("text_output", "response_info")
     FUNCTION = "generate"
     
-    def generate(self, model: str, prompt: str, **kwargs) -> Tuple:
+    def generate(self, model: str, prompt: str, **kwargs) :
         """Generate text using selected LLM model"""
         
         params = {
@@ -948,7 +949,7 @@ class DynamicVideoGenerationNode(DynamicImageNodeBase):
     RETURN_NAMES = ("video_url", "response_info", "task_id")
     FUNCTION = "generate"
     
-    def generate(self, model: str, prompt: str, **kwargs) -> Tuple:
+    def generate(self, model: str, prompt: str, **kwargs) :
         """Generate video using selected model"""
         
         has_image = any(
@@ -1027,7 +1028,7 @@ class DynamicAudioGenerationNode(DynamicImageNodeBase):
     RETURN_NAMES = ("audio_url", "response_info")
     FUNCTION = "generate"
     
-    def generate(self, model: str, prompt: str, **kwargs) -> Tuple:
+    def generate(self, model: str, prompt: str, **kwargs) :
         """Generate audio using selected model"""
         
         params = {
@@ -1087,7 +1088,7 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
     FUNCTION = "edit"
     OUTPUT_NODE = True  # Show preview inline like DynamicImageGeneration
     
-    def edit(self, model: str, image1, mask=None, **kwargs) -> Tuple:
+    def edit(self, model: str, image1, mask=None, **kwargs) :
         """Edit image using selected model — supports 1 image + 1 mask"""
         operation = "inpaint"
         
@@ -1312,7 +1313,7 @@ class NanoBananaPro(DynamicImageNodeBase):
     OUTPUT_NODE = True  # Required for standalone execution
     
     def generate(self, preset: str, auto_switch_provider: bool, batch_count: int,
-                 prompt: str, mode: str, aspect_ratio: str, image_size: str, **kwargs) -> Dict:
+                 prompt: str, mode: str, aspect_ratio: str, image_size: str, **kwargs) :
         """Generate using legacy preset interface"""
         
         # Determine actual mode
@@ -1505,7 +1506,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             return custom_sigma
         return self.BLUR_PRESETS.get(blur_intensity, 2.0)
     
-    def upscale(self, blur_intensity: str, repair_mode: str, **kwargs) -> Dict:
+    def upscale(self, blur_intensity: str, repair_mode: str, **kwargs) :
         """Apply Gaussian blur preprocessing and upscale via AI model."""
         from .image_utils import apply_gaussian_blur_tensor, apply_masked_gaussian_blur_tensor
 
@@ -1833,6 +1834,10 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 for key, val in extra_params_parsed.items():
                     if key != "aspect_ratio":
                         box_params[key] = val
+                
+                endpoint_override = saved_endpoint
+                if extra_params_parsed.get("endpoint_override"):
+                    endpoint_override = extra_params_parsed.get("endpoint_override")
                 
                 box_images_tensor, box_resp_info, _, box_pil_images = self.process_batch(
                     model, batch_count, box_params, "img2img", endpoint_override
