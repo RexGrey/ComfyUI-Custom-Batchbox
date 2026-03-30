@@ -48,3 +48,12 @@ _bench_results.json
 # Superpowers 技能隔离目录
 .worktrees/
 worktrees/
+
+# Cython & Build Artifacts
+build/
+dist/
+*.pyd
+*.exp
+*.lib
+*.obj
+*.c
