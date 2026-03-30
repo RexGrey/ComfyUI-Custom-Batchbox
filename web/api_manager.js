@@ -608,7 +608,11 @@ class BatchboxManager {
                                 tableContainer.innerHTML = '<p style="color: #888;">暂无定价信息</p>';
                             }
                         } catch (e) {
-                            tableContainer.innerHTML = `<p style="color: #f87171;">获取失败: ${e.message}</p>`;
+                            tableContainer.innerHTML = '';
+                            const errP = document.createElement("p");
+                            errP.style.color = "#f87171";
+                            errP.textContent = `获取失败: ${e.message}`;
+                            tableContainer.appendChild(errP);
                         }
                     }
                 };

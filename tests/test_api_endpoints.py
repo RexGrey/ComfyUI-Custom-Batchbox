@@ -129,7 +129,7 @@ def _build_nodes_module(module_name):
     nodes_module.DynamicAudioGenerationNode = dummy_cls
     nodes_module.DynamicImageEditorNode = dummy_cls
     nodes_module.GaussianBlurUpscaleNode = blur_cls
-    nodes_module.TiledUpscaleNode = dummy_cls
+
     nodes_module.save_preview_images = Mock(return_value=[])
     nodes_module.create_dynamic_node = Mock(
         return_value=("DynamicAlias", "Dynamic Alias", dummy_cls)

@@ -16,7 +16,6 @@ try:
         DynamicAudioGenerationNode,
         DynamicImageEditorNode,
         GaussianBlurUpscaleNode,
-        TiledUpscaleNode,
         create_dynamic_node
     )
     from .config_manager import config_manager
@@ -34,7 +33,6 @@ except ImportError:
     DynamicAudioGenerationNode = None
     DynamicImageEditorNode = None
     GaussianBlurUpscaleNode = None
-    TiledUpscaleNode = None
     create_dynamic_node = None
     config_manager = None
 
@@ -56,7 +54,6 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": DynamicAudioGenerationNode,
         "DynamicImageEditor": DynamicImageEditorNode,
         "GaussianBlurUpscale": GaussianBlurUpscaleNode,
-        "TiledUpscale": TiledUpscaleNode,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -67,7 +64,6 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
         "DynamicImageEditor": "🔧 Dynamic Image Editor",
         "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
-        "TiledUpscale": "🖼️ Tiled Batch (分块独立放大出图)",
     }
 
 # ==========================================

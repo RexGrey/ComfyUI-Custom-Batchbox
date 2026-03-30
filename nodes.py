@@ -1559,7 +1559,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         blur_mask_b64 = kwargs.get("_blur_mask") or ""
         
         # ==========================================
-        # TILED MODE: delegate to TiledUpscaleNode
+        # TILED MODE: Process inline
         # ==========================================
         extra_p = self._parse_extra_params(extra_params_str)
         
@@ -1570,10 +1570,10 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         selection_boxes = extra_p.get("_selection_boxes") or []
         
         # ==========================================
-        # TILED MODE: delegate to TiledUpscaleNode
+        # TILED MODE: Process inline
         # ==========================================
         if extra_p.get("_blur_mode") == "tiled":
-            print("[GaussianBlurUpscale] Detected tiled mode, delegating to TiledUpscaleNode...")
+            print("[GaussianBlurUpscale] Detected tiled mode, processing tiles inline...")
             from .image_utils import split_image_tiles, merge_image_tiles, apply_gaussian_blur
             import copy
             
@@ -1660,7 +1660,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 
                 pbar.update_absolute(tile_idx + 1, total_tiles)
             
-            # Output each tile as a separate batch image (same as TiledUpscaleNode)
+            # Output each tile as a separate batch image
             processed_tiles.sort(key=lambda t: (t['row'], t['col']))
             
             if not processed_tiles:
@@ -2027,219 +2027,6 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             "result": (selected_tensor, blurred_tensor, images_tensor, info)
         }
 
-# ==========================================
-# Tiled Upscale Node
-# ==========================================
-class TiledUpscaleNode(DynamicImageNodeBase):
-    """
-    Splits an image into tiles, upscales each tile concurrently using the API, 
-    and then merges them back with alpha blending to eliminate seams.
-    """
-    BLUR_PRESETS = {
-        "轻 (σ1-3)": 2.0,
-        "中 (σ3-6)": 4.5,
-        "重 (σ6-10)": 8.0
-    }
-    
-    REPAIR_PROMPTS = {
-        "直出": "把这张模糊的照片变高清",
-        "降噪": "把这张模糊的照片变高清，让画面变得干净整洁",
-    }
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "tile_mode": (["2×2 四等分", "3×3 九宫格", "竖切3块", "竖切4块", "竖切5块", "横切3块", "横切4块", "横切5块"], {"default": "2×2 四等分"}),
-                "blur_intensity": (list(cls.BLUR_PRESETS.keys()), {"default": "轻 (σ1-3)"}),
-                "repair_mode": (list(cls.REPAIR_PROMPTS.keys()), {"default": "直出"}),
-                "overlap": ("INT", {"default": 16, "min": 0, "max": 120, "step": 8}),
-                "style_prompt": ("STRING", {"multiline": True, "default": ""}),
-                "batch_count": ("INT", {"default": 1, "min": 1, "max": 4}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647}),
-            },
-            "hidden": {
-                "extra_params": ("STRING", {"default": "{}"}),
-                "_selected_image_index": ("INT", {"default": 0}),
-            }
-        }
-    
-    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING")
-    RETURN_NAMES = ("selected_image", "all_images", "response_info")
-    FUNCTION = "upscale_tiled"
-    OUTPUT_NODE = True
-    CATEGORY = "ComfyUI-Custom-Batchbox"
-
-    def _get_upscale_model(self, extra_params):
-        """Get model name and endpoint from upscale_settings (mirrors BlurUpscale pattern)."""
-        if "model_override" in extra_params:
-            return extra_params["model_override"], extra_params.get("endpoint_override", "")
-        settings = config_manager.get_upscale_settings()
-        model = settings.get("model", "")
-        endpoint = settings.get("endpoint", "")
-        if not model:
-            models = self.get_models_for_category("image")
-            model = models[0] if models and models[0] != "No Models Found" else ""
-        return model, endpoint
-        
-    def _build_prompt(self, repair_mode: str, style_prompt: str) -> str:
-        base_prompt = self.REPAIR_PROMPTS.get(repair_mode, self.REPAIR_PROMPTS["直出"])
-        if repair_mode == "风格" and style_prompt:
-            return f"{base_prompt}{style_prompt}"
-        return base_prompt
-
-    def upscale_tiled(self, image, tile_mode, blur_intensity, repair_mode, style_prompt, overlap, batch_count, seed, extra_params="{}", **kwargs):
-        import concurrent.futures
-        import copy
-        from io import BytesIO
-        import numpy as np
-        import torch
-        from PIL import Image
-        import json
-        from .image_utils import split_image_tiles, merge_image_tiles, apply_gaussian_blur
-        
-        extra_p = self._parse_extra_params(extra_params)
-        model, saved_endpoint = self._get_upscale_model(extra_p)
-        if not model:
-            return (image, image, "Error: No model configured")
-        
-        # Resolve endpoint override: extra_params > upscale_settings > auto
-        endpoint_override = extra_p.get("endpoint_override", saved_endpoint) or None
-        print(f"[TiledUpscale] Model: {model}, Endpoint: {endpoint_override or 'auto'}")
-            
-        sigma = self.BLUR_PRESETS.get(blur_intensity, 2.0)
-        prompt = self._build_prompt(repair_mode, style_prompt)
-        
-        all_final_tensors = []
-        all_pil_images = []
-        response_messages = []
-        
-        for batch_idx in range(image.shape[0]):
-            img_np = (image[batch_idx].cpu().numpy() * 255).astype(np.uint8)
-            pil_img = Image.fromarray(img_np)
-            original_size = pil_img.size
-            
-            # Split image into overlapping tiles
-            tiles = split_image_tiles(pil_img, tile_mode, overlap)
-            
-            # Filter tiles by user selection (if any)
-            selected_keys = extra_p.get("_selected_tiles", [])
-            if selected_keys and isinstance(selected_keys, list) and len(selected_keys) > 0:
-                selected_set = set(selected_keys)
-                tiles = [t for t in tiles if f"{t['col']}_{t['row']}" in selected_set]
-                print(f"[TiledUpscale] 选中 {len(tiles)} 块进行放大 (共 {len(split_image_tiles(pil_img, tile_mode, overlap))} 块)")
-            else:
-                print(f"[TiledUpscale] 放大全部 {len(tiles)} 块 (未指定选区)")
-            
-            for b_idx in range(batch_count):
-                current_seed = seed + b_idx + (batch_idx * 100)
-                
-                def process_tile(tile_info):
-                    blurred = apply_gaussian_blur(tile_info["image"], sigma) if sigma > 0 else tile_info["image"]
-                    buffered = BytesIO()
-                    blurred.save(buffered, format="PNG")
-                    upload_files = [("image", (f"tile_{tile_info['col']}_{tile_info['row']}.png", buffered.getvalue(), "image/png"))]
-                    
-                    params = {
-                        "prompt": prompt,
-                        "seed": current_seed,
-                        "_upload_files": upload_files,
-                        "aspect_ratio": "auto"
-                    }
-                    
-                    try:
-                        # process_batch automatically handles adapter execution, retries, and errors
-                        tensor, msg, _, pils = self.process_batch(model, 1, params, mode="img2img", endpoint_override=endpoint_override)
-                        if pils and len(pils) > 0:
-                            if msg and msg != "Success":
-                                response_messages.append(
-                                    f"tile {tile_info['col']}_{tile_info['row']}: {msg}"
-                                )
-                            return tile_info, pils[0]
-                        response_messages.append(
-                            f"tile {tile_info['col']}_{tile_info['row']}: empty API result, used blurred fallback"
-                        )
-                    except Exception as e:
-                        response_messages.append(
-                            f"tile {tile_info['col']}_{tile_info['row']}: API error ({e}), used blurred fallback"
-                        )
-                        print(f"[TiledUpscale] API fail on tile {tile_info['col']}_{tile_info['row']}: {e}")
-                    
-                    print(f"[TiledUpscale] Fallback to blurred original for tile {tile_info['col']}_{tile_info['row']}")
-                    return tile_info, blurred
-                    
-                processed_tiles = []
-                total_tiles = len(tiles)
-                
-                # Use ComfyUI's native ProgressBar for reliable progress reporting
-                from comfy.utils import ProgressBar
-                pbar = ProgressBar(total_tiles)
-                
-                # Process tiles sequentially to strictly avoid API concurrency limit/rate limiting failures
-                for tile_idx, t in enumerate(tiles):
-                    try:
-                        t_info, t_img = process_tile(t)
-                        t_info_copy = copy.deepcopy(t_info)
-                        t_info_copy["image"] = t_img
-                        processed_tiles.append(t_info_copy)
-                    except Exception as e:
-                        response_messages.append(
-                            f"tile {t.get('col', '?')}_{t.get('row', '?')}: tile processing exception ({e})"
-                        )
-                        print(f"[TiledUpscale] Tile processing exception: {e}")
-                    
-                    # Update built-in progress bar
-                    pbar.update_absolute(tile_idx + 1, total_tiles)
-                
-                # Sort tiles back into correct order (top-left to bottom-right sequence)
-                processed_tiles.sort(key=lambda t: (t['row'], t['col']))
-                
-                if not processed_tiles:
-                    continue
-                
-                # Make sure all tiles have the exact same dimensions to be stacked into a single batch tensor
-                first_img = processed_tiles[0]["image"]
-                target_size = first_img.size
-                
-                batch_tensors = []
-                for pt in processed_tiles:
-                    img = pt["image"]
-                    if img.size != target_size:
-                        img = img.resize(target_size, Image.LANCZOS)
-                    img_np = np.array(img).astype(np.float32) / 255.0
-                    batch_tensors.append(torch.from_numpy(img_np))
-                
-                # Stack all tiles of this image into [N, H, W, 3] batch sequence
-                stacked_tensor = torch.stack(batch_tensors, dim=0)
-                all_final_tensors.append(stacked_tensor)
-                
-        if not all_final_tensors:
-            return (image, image, "Generation failed")
-            
-        final_tensor_batch = torch.cat(all_final_tensors, dim=0)
-        
-        selected_index = kwargs.get("_selected_image_index", 0)
-        try: selected_index = int(selected_index)
-        except: selected_index = 0
-        selected_index = max(0, min(selected_index, final_tensor_batch.shape[0] - 1))
-        
-        selected_tensor = final_tensor_batch[selected_index:selected_index+1]
-        
-        # Save temp previews for UI
-        pil_images = [tensor2pil(t.unsqueeze(0))[0] for t in final_tensor_batch]
-        preview_results = save_preview_images(pil_images, prefix="tiled_upscale")
-        last_images_json = json.dumps(preview_results) if preview_results else ""
-        
-        response_info = "Success" if not response_messages else "Partial success:\n" + "\n".join(response_messages)
-
-        return {
-            "ui": {
-                "images": preview_results,
-                "_last_images": [last_images_json],
-            },
-            "result": (selected_tensor, final_tensor_batch, response_info)
-        }
 
 # ==========================================
 # Dynamic Node Factory
