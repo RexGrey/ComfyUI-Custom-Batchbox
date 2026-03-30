@@ -160,13 +160,35 @@ try:
         """Frontend check for administrator privileges"""
         return web.json_response({"is_admin": IS_ADMIN})
 
+    @server.PromptServer.instance.routes.get("/api/batchbox/mode")
+    async def get_mode(request):
+        """Frontend check for current operational mode (Admin vs Encrypted)"""
+        try:
+            return web.json_response({"is_encrypted_mode": config_manager.is_encrypted_mode()})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    def _mask_secrets(config: dict) -> dict:
+        """Deep copy and mask sensitive API keys and secrets in the config payload."""
+        import copy
+        masked = copy.deepcopy(config)
+        providers = masked.get("providers", {})
+        for name, p_data in providers.items():
+            for key in ["api_key", "secret_key", "access_key"]:
+                if p_data.get(key):
+                    val = str(p_data[key])
+                    p_data[key] = f"***{val[-4:]}" if len(val) > 4 else "***"
+        return masked
+
     @server.PromptServer.instance.routes.get("/api/batchbox/config")
     async def get_config(request):
-        """Get full configuration"""
-        if not IS_ADMIN:
+        """Get full configuration (Masked if encrypted)"""
+        if not IS_ADMIN and not config_manager.is_encrypted_mode():
             return web.json_response({"error": "Admin access required. Student-Node is restricted."}, status=403)
         try:
             data = config_manager.get_raw_config()
+            if config_manager.is_encrypted_mode():
+                data = _mask_secrets(data)
             return web.json_response(data)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -174,8 +196,11 @@ try:
     @server.PromptServer.instance.routes.post("/api/batchbox/config")
     async def save_config(request):
         """Save full configuration, providers go to secrets.yaml"""
-        if not IS_ADMIN:
+        if not IS_ADMIN and not config_manager.is_encrypted_mode():
             return web.json_response({"error": "Admin access required. Student-Node is restricted."}, status=403)
+        if config_manager.is_encrypted_mode():
+            return web.json_response({"error": "Admin access required. Student-Node is restricted (Encrypted Mode)."}, status=403)
+            
         try:
             data = await request.json()
             

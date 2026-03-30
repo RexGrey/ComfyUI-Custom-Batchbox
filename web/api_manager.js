@@ -52,6 +52,7 @@ function injectCSS() {
 class BatchboxManager {
     constructor() {
         this.config = null;
+        this.isReadOnly = false;
         injectCSS();
     }
 
@@ -62,8 +63,19 @@ class BatchboxManager {
 
     async loadConfig() {
         try {
+            try {
+                const modeResp = await api.fetchApi("/api/batchbox/mode");
+                if (modeResp.ok) {
+                    const modeData = await modeResp.json();
+                    this.isReadOnly = modeData.is_encrypted_mode === true;
+                }
+            } catch (e) {
+                console.warn("[Batchbox] Failed to fetch mode:", e);
+                this.isReadOnly = false;
+            }
+
             const resp = await api.fetchApi("/api/batchbox/config");
-            if (resp.status !== 200) throw new Error("Failed to load config");
+            if (resp.status !== 200 && resp.status !== 403) throw new Error("Failed to load config");
             this.config = await resp.json();
         } catch (e) {
             this.showToast("加载配置失败: " + e.message, "error");
@@ -121,7 +133,8 @@ class BatchboxManager {
         // Header
         const header = document.createElement("div");
         header.className = "batchbox-header";
-        header.innerHTML = `<h2>🍌 Batchbox API Manager</h2>`;
+        const titleBadge = this.isReadOnly ? '<span style="font-size: 14px; background: #600; padding: 2px 6px; border-radius: 4px; margin-left: 10px; vertical-align: middle;">🔒 只读模式</span>' : '';
+        header.innerHTML = `<h2>🍌 Batchbox API Manager ${titleBadge}</h2>`;
         const closeBtn = document.createElement("button");
         closeBtn.className = "batchbox-close-btn";
         closeBtn.innerHTML = "&times;";
@@ -139,28 +152,35 @@ class BatchboxManager {
         sidebar.className = "batchbox-sidebar";
         content.appendChild(sidebar);
 
-        ["供应商 Providers", "模型 Models", "保存设置 Save", "原始 JSON", "Account 服务"].forEach((label, i) => {
+        const tabLabels = ["供应商 Providers", "模型 Models", "保存设置 Save", "原始 JSON", "Account 服务"];
+        const tabIds = ["providers", "models", "save", "raw", "account"];
+
+        tabLabels.forEach((label, i) => {
+            const tabId = tabIds[i];
+            if (this.isReadOnly && (tabId === "save" || tabId === "raw" || tabId === "account")) return;
+
             const btn = document.createElement("button");
             btn.className = `batchbox-tab-btn ${i === 0 ? "active" : ""}`;
             btn.innerText = label;
-            btn.onclick = () => this.switchTab(["providers", "models", "save", "raw", "account"][i]);
+            btn.onclick = () => this.switchTab(tabId);
             sidebar.appendChild(btn);
         });
 
         // Panels
         this.panels = {};
-        ["providers", "models", "save", "raw", "account"].forEach((name, i) => {
+        tabIds.forEach((name, i) => {
+            if (this.isReadOnly && (name === "save" || name === "raw" || name === "account")) return;
             const panel = document.createElement("div");
             panel.className = `batchbox-panel ${i === 0 ? "active" : ""}`;
             this.panels[name] = panel;
             content.appendChild(panel);
         });
 
-        this.renderProviders(this.panels["providers"]);
-        this.renderModels(this.panels["models"]);
-        this.renderSaveSettings(this.panels["save"]);
-        this.renderRaw(this.panels["raw"]);
-        this.renderAccountTab(this.panels["account"]);
+        if (this.panels["providers"]) this.renderProviders(this.panels["providers"]);
+        if (this.panels["models"]) this.renderModels(this.panels["models"]);
+        if (this.panels["save"]) this.renderSaveSettings(this.panels["save"]);
+        if (this.panels["raw"]) this.renderRaw(this.panels["raw"]);
+        if (this.panels["account"]) this.renderAccountTab(this.panels["account"]);
 
         // Footer
         const footer = document.createElement("div");
@@ -192,7 +212,9 @@ class BatchboxManager {
         saveBtn.className = "batchbox-btn btn-primary";
         saveBtn.innerText = "💾 保存所有更改";
         saveBtn.onclick = () => this.saveConfig();
-        footer.appendChild(saveBtn);
+        if (!this.isReadOnly) {
+            footer.appendChild(saveBtn);
+        }
         modal.appendChild(footer);
 
         document.body.appendChild(this.modalOverlay);
@@ -206,17 +228,23 @@ class BatchboxManager {
     }
 
     switchTab(tabName) {
+        if (this.isReadOnly && (tabName === "save" || tabName === "raw" || tabName === "account")) return;
+
         const tabs = this.modalOverlay.querySelectorAll(".batchbox-tab-btn");
+        const visibleTabIds = ["providers", "models", "save", "raw", "account"].filter(id =>
+            !(this.isReadOnly && (id === "save" || id === "raw" || id === "account"))
+        );
+
         tabs.forEach((t, i) => {
-            t.classList.toggle("active", ["providers", "models", "save", "raw", "account"][i] === tabName);
+            t.classList.toggle("active", visibleTabIds[i] === tabName);
         });
         Object.entries(this.panels).forEach(([name, panel]) => {
             panel.classList.toggle("active", name === tabName);
         });
-        if (tabName === "raw") this.renderRaw(this.panels["raw"]);
-        if (tabName === "models") this.renderModels(this.panels["models"]);
-        if (tabName === "save") this.renderSaveSettings(this.panels["save"]);
-        if (tabName === "account") this.renderAccountTab(this.panels["account"]);
+        if (tabName === "raw" && this.panels["raw"]) this.renderRaw(this.panels["raw"]);
+        if (tabName === "models" && this.panels["models"]) this.renderModels(this.panels["models"]);
+        if (tabName === "save" && this.panels["save"]) this.renderSaveSettings(this.panels["save"]);
+        if (tabName === "account" && this.panels["account"]) this.renderAccountTab(this.panels["account"]);
     }
 
     // ================================================================
@@ -781,11 +809,13 @@ class BatchboxManager {
         header.className = "batchbox-panel-header";
         header.innerHTML = `<h3>供应商管理</h3>`;
 
-        const addBtn = document.createElement("button");
-        addBtn.className = "batchbox-btn btn-success";
-        addBtn.innerText = "+ 添加供应商";
-        addBtn.onclick = () => this.showProviderForm();
-        header.appendChild(addBtn);
+        if (!this.isReadOnly) {
+            const addBtn = document.createElement("button");
+            addBtn.className = "batchbox-btn btn-success";
+            addBtn.innerText = "+ 添加供应商";
+            addBtn.onclick = () => this.showProviderForm();
+            header.appendChild(addBtn);
+        }
         container.appendChild(header);
 
         const table = document.createElement("table");
@@ -812,17 +842,21 @@ class BatchboxManager {
             `;
             const actionCell = tr.querySelector("td:last-child");
 
-            const editBtn = document.createElement("button");
-            editBtn.className = "batchbox-btn btn-edit";
-            editBtn.innerText = "编辑";
-            editBtn.onclick = () => this.showProviderForm(name);
-            actionCell.appendChild(editBtn);
+            if (!this.isReadOnly) {
+                const editBtn = document.createElement("button");
+                editBtn.className = "batchbox-btn btn-edit";
+                editBtn.innerText = "编辑";
+                editBtn.onclick = () => this.showProviderForm(name);
+                actionCell.appendChild(editBtn);
 
-            const delBtn = document.createElement("button");
-            delBtn.className = "batchbox-btn btn-danger";
-            delBtn.innerText = "删除";
-            delBtn.onclick = () => this.confirmDelete("provider", name);
-            actionCell.appendChild(delBtn);
+                const delBtn = document.createElement("button");
+                delBtn.className = "batchbox-btn btn-danger";
+                delBtn.innerText = "删除";
+                delBtn.onclick = () => this.confirmDelete("provider", name);
+                actionCell.appendChild(delBtn);
+            } else {
+                actionCell.innerHTML = '<span style="color:#888;font-size:12px;">只读</span>';
+            }
 
             tbody.appendChild(tr);
         }
@@ -1114,11 +1148,13 @@ class BatchboxManager {
         header.className = "batchbox-panel-header";
         header.innerHTML = `<h3>模型管理</h3>`;
 
-        const addBtn = document.createElement("button");
-        addBtn.className = "batchbox-btn btn-success";
-        addBtn.innerText = "+ 添加模型";
-        addBtn.onclick = () => this.showModelForm();
-        header.appendChild(addBtn);
+        if (!this.isReadOnly) {
+            const addBtn = document.createElement("button");
+            addBtn.className = "batchbox-btn btn-success";
+            addBtn.innerText = "+ 添加模型";
+            addBtn.onclick = () => this.showModelForm();
+            header.appendChild(addBtn);
+        }
         container.appendChild(header);
 
         // Category tabs
@@ -1217,23 +1253,27 @@ class BatchboxManager {
             // Action buttons cell
             const actionCell = tr.querySelector(".batchbox-action-cell");
 
-            const editBtn = document.createElement("button");
-            editBtn.className = "batchbox-btn btn-edit";
-            editBtn.innerText = "编辑";
-            editBtn.onclick = () => this.showModelForm(name);
-            actionCell.appendChild(editBtn);
+            if (!this.isReadOnly) {
+                const editBtn = document.createElement("button");
+                editBtn.className = "batchbox-btn btn-edit";
+                editBtn.innerText = "编辑";
+                editBtn.onclick = () => this.showModelForm(name);
+                actionCell.appendChild(editBtn);
 
-            const copyBtn = document.createElement("button");
-            copyBtn.className = "batchbox-btn btn-secondary";
-            copyBtn.innerText = "复制";
-            copyBtn.onclick = () => this.duplicateModel(name);
-            actionCell.appendChild(copyBtn);
+                const copyBtn = document.createElement("button");
+                copyBtn.className = "batchbox-btn btn-secondary";
+                copyBtn.innerText = "复制";
+                copyBtn.onclick = () => this.duplicateModel(name);
+                actionCell.appendChild(copyBtn);
 
-            const delBtn = document.createElement("button");
-            delBtn.className = "batchbox-btn btn-danger";
-            delBtn.innerText = "删除";
-            delBtn.onclick = () => this.confirmDelete("model", name);
-            actionCell.appendChild(delBtn);
+                const delBtn = document.createElement("button");
+                delBtn.className = "batchbox-btn btn-danger";
+                delBtn.innerText = "删除";
+                delBtn.onclick = () => this.confirmDelete("model", name);
+                actionCell.appendChild(delBtn);
+            } else {
+                actionCell.innerHTML = '<span style="color:#888;font-size:12px;">只读</span>';
+            }
 
             tbody.appendChild(tr);
         });

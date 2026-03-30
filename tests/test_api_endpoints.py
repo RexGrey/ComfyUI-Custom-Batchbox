@@ -175,6 +175,7 @@ def _build_config_manager():
     config_manager.get_node_settings.return_value = {"default_width": 420}
     config_manager.get_model_order.return_value = ["model-a"]
     config_manager.get_style_presets.return_value = {"cinematic": "high contrast"}
+    config_manager.is_encrypted_mode.return_value = False
     return config_manager
 
 
@@ -324,6 +325,40 @@ class TestConfigRoutes:
         payload = _response_json(response)
         assert response.status == 200
         assert payload == {"success": True, "mtime": 123.45}
+
+    def test_get_mode_returns_encrypted_status(self, api_module):
+        handler = api_module.routes[("GET", "/api/batchbox/mode")]
+        api_module.config_manager.is_encrypted_mode.return_value = True
+        
+        response = asyncio.run(handler(DummyRequest()))
+        
+        payload = _response_json(response)
+        assert response.status == 200
+        assert payload == {"is_encrypted_mode": True}
+
+    def test_save_config_returns_403_in_encrypted_mode(self, api_module):
+        handler = api_module.routes[("POST", "/api/batchbox/config")]
+        api_module.config_manager.is_encrypted_mode.return_value = True
+        
+        response = asyncio.run(handler(DummyRequest()))
+        
+        assert response.status == 403
+        payload = _response_json(response)
+        assert "Student-Node is restricted" in payload["error"]
+
+    def test_get_config_masks_secrets_in_encrypted_mode(self, api_module):
+        handler = api_module.routes[("GET", "/api/batchbox/config")]
+        api_module.config_manager.is_encrypted_mode.return_value = True
+        api_module.config_manager.get_raw_config.return_value = {
+            "providers": {"test": {"api_key": "sk-1234567890", "secret_key": "abc"}}
+        }
+        
+        response = asyncio.run(handler(DummyRequest()))
+        
+        payload = _response_json(response)
+        assert response.status == 200
+        assert payload["providers"]["test"]["api_key"].startswith("***")
+        assert payload["providers"]["test"]["api_key"] != "sk-1234567890"
 
 
 class TestAccountRoutes:
