@@ -3112,8 +3112,7 @@ app.registerExtension({
             }
 
             if (!isAdmin) {
-                console.log("[Batchbox] Environment isolated. API Manager UI is disabled.");
-                return;
+                console.log("[Batchbox] Running in student/guest environment. Administrator privileges are false. UI will operate in Read-Only mode.");
             }
 
             const floatBtn = createFloatingButton();
