@@ -97,6 +97,10 @@ class ConfigManager:
         self.secrets_enc_path = resolved_secrets_path + ".enc"
         self.load_config()
 
+    def is_encrypted_mode(self) -> bool:
+        """Check if plugin is running in strictly encrypted mode (Z-drive)."""
+        return not os.path.exists(self.secrets_path) and os.path.exists(self.secrets_enc_path)
+
     def load_config(self, force: bool = False) -> bool:
         """
         Loads or reloads the configuration if file changed.

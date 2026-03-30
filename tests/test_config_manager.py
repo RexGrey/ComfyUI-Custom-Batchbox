@@ -217,6 +217,21 @@ class TestConfigManager(unittest.TestCase):
         provider = manager.get_provider_config("nonexistent")
         self.assertIsNone(provider)
 
+    def test_is_encrypted_mode(self):
+        """Test detection of encrypted (Z-drive) mode"""
+        from unittest.mock import patch
+        
+        manager = ConfigManager(self.temp_config_path)
+        
+        with patch('os.path.exists') as mock_exists:
+            # 1. When secrets.yaml exists (Admin mode) -> False
+            mock_exists.side_effect = lambda p: True if p.endswith('secrets.yaml') else False
+            self.assertFalse(manager.is_encrypted_mode())
+            
+            # 2. When only secrets.yaml.enc exists (Student mode) -> True
+            mock_exists.side_effect = lambda p: p.endswith('.enc')
+            self.assertTrue(manager.is_encrypted_mode())
+
 
 class TestTemplateEngine(unittest.TestCase):
     """Tests for TemplateEngine class"""
