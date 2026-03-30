@@ -951,6 +951,11 @@ function createPreviewThumbnail(fullImg, maxSize = 512) {
   thumbImg.src = canvas.toDataURL("image/jpeg", 0.85);
   // Preserve original URL for full-res Lightbox access
   thumbImg._originalSrc = fullImg.src;
+
+  // Mask the faked thumbnail dimensions with the real ones so ComfyUI UI text correctly reports original size
+  Object.defineProperty(thumbImg, 'naturalWidth', { get: () => w });
+  Object.defineProperty(thumbImg, 'naturalHeight', { get: () => h });
+
   return thumbImg;
 }
 
@@ -959,9 +964,12 @@ function createPreviewThumbnail(fullImg, maxSize = 512) {
 // ================================================================
 let _lightboxOverlay = null;
 
-function openImageLightbox(imageSrc) {
+function openImageLightbox(imgs, startIndex = 0) {
   // Remove existing lightbox if any
   if (_lightboxOverlay) closeLightbox();
+  if (!imgs || imgs.length === 0) return;
+
+  let currentIndex = startIndex;
 
   const overlay = document.createElement("div");
   overlay.id = "batchbox-lightbox";
@@ -972,39 +980,56 @@ function openImageLightbox(imageSrc) {
     cursor: zoom-out; backdrop-filter: blur(4px);
   `;
 
-  const img = document.createElement("img");
-  img.src = imageSrc;
-  img.style.cssText = `
+  const imgElement = document.createElement("img");
+  imgElement.style.cssText = `
     max-width: 95vw; max-height: 95vh; object-fit: contain;
     border-radius: 6px; box-shadow: 0 0 40px rgba(0,0,0,0.6);
     cursor: default;
   `;
   // Prevent clicking image from closing
-  img.addEventListener("click", (e) => e.stopPropagation());
+  imgElement.addEventListener("click", (e) => e.stopPropagation());
 
-  // Close hint
+  // Close hint and navigation info
   const hint = document.createElement("div");
-  hint.textContent = "点击空白处或按 ESC 关闭";
   hint.style.cssText = `
     position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
     color: rgba(255,255,255,0.6); font-size: 13px; pointer-events: none;
+    text-align: center;
   `;
 
-  overlay.appendChild(img);
+  const updateDisplay = () => {
+    const imgObj = imgs[currentIndex];
+    imgElement.src = imgObj._originalSrc || imgObj.src;
+    hint.innerHTML = imgs.length > 1
+      ? `目前: ${currentIndex + 1} / ${imgs.length} \u003cbr/\u003e 点击空白处或按 ESC 关闭 | ⬅️左右方向键切换➡️`
+      : `点击空白处或按 ESC 关闭`;
+  };
+
+  updateDisplay();
+
+  overlay.appendChild(imgElement);
   overlay.appendChild(hint);
   overlay.addEventListener("click", closeLightbox);
   document.body.appendChild(overlay);
   _lightboxOverlay = overlay;
 
-  // ESC key handler — use CAPTURE phase on window to beat LiteGraph's keydown interception
-  const escHandler = (e) => {
+  // ESC and Arrow key handler — use CAPTURE phase to beat LiteGraph's keydown interception
+  const keyHandler = (e) => {
     if (e.key === "Escape") {
-      e.stopImmediatePropagation(); // Prevent LiteGraph from processing this ESC
+      e.stopImmediatePropagation();
       closeLightbox();
+    } else if (e.key === "ArrowLeft" && imgs.length > 1) {
+      e.stopImmediatePropagation();
+      currentIndex = (currentIndex - 1 + imgs.length) % imgs.length;
+      updateDisplay();
+    } else if (e.key === "ArrowRight" && imgs.length > 1) {
+      e.stopImmediatePropagation();
+      currentIndex = (currentIndex + 1) % imgs.length;
+      updateDisplay();
     }
   };
-  window.addEventListener("keydown", escHandler, true); // true = capture phase
-  overlay._escHandler = escHandler;
+  window.addEventListener("keydown", keyHandler, true); // true = capture phase
+  overlay._escHandler = keyHandler;
 }
 
 function closeLightbox() {
@@ -1041,14 +1066,10 @@ setTimeout(() => {
       const titleH = LiteGraph.NODE_TITLE_HEIGHT || 30;
 
       if (localY > titleH) {
-        const selectedImg = node.imgs[node.imageIndex || 0];
-        if (selectedImg) {
-          const src = selectedImg._originalSrc || selectedImg.src;
-          if (src) {
-            openImageLightbox(src);
-            e.preventDefault();
-            e.stopPropagation();
-          }
+        if (node.imgs.length > 0) {
+          openImageLightbox(node.imgs, node.imageIndex || 0);
+          e.preventDefault();
+          e.stopPropagation();
         }
       }
     }
@@ -1528,7 +1549,8 @@ app.registerExtension({
       "DynamicVideo",
       "DynamicText",
       "DynamicAudio",
-      "NanoBananaPro"
+      "NanoBananaPro",
+      "GaussianBlurUpscale"
     ];
 
     const isMatchingNode = batchboxNodePatterns.some(pattern =>

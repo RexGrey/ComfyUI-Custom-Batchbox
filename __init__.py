@@ -16,7 +16,6 @@ try:
         DynamicAudioGenerationNode,
         DynamicImageEditorNode,
         GaussianBlurUpscaleNode,
-        TiledUpscaleNode,
         create_dynamic_node
     )
     from .config_manager import config_manager
@@ -34,7 +33,6 @@ except ImportError:
     DynamicAudioGenerationNode = None
     DynamicImageEditorNode = None
     GaussianBlurUpscaleNode = None
-    TiledUpscaleNode = None
     create_dynamic_node = None
     config_manager = None
 
@@ -56,7 +54,6 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": DynamicAudioGenerationNode,
         "DynamicImageEditor": DynamicImageEditorNode,
         "GaussianBlurUpscale": GaussianBlurUpscaleNode,
-        "TiledUpscale": TiledUpscaleNode,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -67,7 +64,6 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
         "DynamicImageEditor": "🔧 Dynamic Image Editor",
         "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
-        "TiledUpscale": "🖼️ Tiled Batch (分块独立放大出图)",
     }
 
 # ==========================================
@@ -110,7 +106,12 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 try:
     import json as _json
     import server
+    import os
     from aiohttp import web
+
+    # Detect admin environment using Git existence (Z-drive sync specifically excludes .git)
+    _ext_path = os.path.dirname(os.path.abspath(__file__))
+    IS_ADMIN = os.path.exists(os.path.join(_ext_path, ".git"))
 
     # Auto-increase ComfyUI body size limit for multi-image requests
     # Default is 100MB which is too small for 14 base64-encoded images
@@ -154,9 +155,16 @@ try:
         except Exception:
             return None, web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
 
+    @server.PromptServer.instance.routes.get("/api/batchbox/is-admin")
+    async def check_admin(request):
+        """Frontend check for administrator privileges"""
+        return web.json_response({"is_admin": IS_ADMIN})
+
     @server.PromptServer.instance.routes.get("/api/batchbox/config")
     async def get_config(request):
         """Get full configuration"""
+        if not IS_ADMIN:
+            return web.json_response({"error": "Admin access required. Student-Node is restricted."}, status=403)
         try:
             data = config_manager.get_raw_config()
             return web.json_response(data)
@@ -166,6 +174,8 @@ try:
     @server.PromptServer.instance.routes.post("/api/batchbox/config")
     async def save_config(request):
         """Save full configuration, providers go to secrets.yaml"""
+        if not IS_ADMIN:
+            return web.json_response({"error": "Admin access required. Student-Node is restricted."}, status=403)
         try:
             data = await request.json()
             
@@ -734,6 +744,7 @@ try:
             # Auto face-swap: when reference images exist, face replacement is the PRIMARY task
             if reference_images_base64:
                 n_refs = len(reference_images_base64)
+                ref_nums = "、".join([f"图{i+2}" for i in range(n_refs)])
                 if style_prompt:
                     prompt = style_prompt
                     print(f"[BlurUpscale] Face-swap CUSTOM prompt: {prompt[:120]}...")

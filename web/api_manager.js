@@ -608,7 +608,11 @@ class BatchboxManager {
                                 tableContainer.innerHTML = '<p style="color: #888;">暂无定价信息</p>';
                             }
                         } catch (e) {
-                            tableContainer.innerHTML = `<p style="color: #f87171;">获取失败: ${e.message}</p>`;
+                            tableContainer.innerHTML = '';
+                            const errP = document.createElement("p");
+                            errP.style.color = "#f87171";
+                            errP.textContent = `获取失败: ${e.message}`;
+                            tableContainer.appendChild(errP);
                         }
                     }
                 };
@@ -3055,6 +3059,22 @@ app.registerExtension({
 
                 return floatBtn;
             };
+
+            let isAdmin = false;
+            try {
+                const resp = await api.fetchApi("/api/batchbox/is-admin");
+                if (resp.status === 200) {
+                    const data = await resp.json();
+                    isAdmin = !!data.is_admin;
+                }
+            } catch (e) {
+                console.warn("[Batchbox] is-admin check failed or missing backend", e);
+            }
+
+            if (!isAdmin) {
+                console.log("[Batchbox] Environment isolated. API Manager UI is disabled.");
+                return;
+            }
 
             const floatBtn = createFloatingButton();
             document.body.appendChild(floatBtn);

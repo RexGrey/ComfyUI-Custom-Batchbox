@@ -323,28 +323,7 @@ class TestGaussianBlurUpscaleCache(unittest.TestCase):
         self.assertEqual(previews, [])
         image_open.assert_not_called()
 
-    def test_tiled_upscale_reports_partial_success_when_tile_falls_back(self):
-        nodes_mod = _load_nodes_module()
-        node = nodes_mod.TiledUpscaleNode()
 
-        nodes_mod.save_preview_images = Mock(return_value=[{"filename": "tile.png", "subfolder": "", "type": "temp"}])
-        nodes_mod.tensor2pil = Mock(return_value=[FakePILImage()])
-        node.process_batch = Mock(return_value=(FakeTensor(), "upstream failed", "", []))
-
-        result = node.upscale_tiled(
-            image=FakeImageBatch(),
-            tile_mode="2×2 四等分",
-            blur_intensity="轻 (σ1-3)",
-            repair_mode="直出",
-            style_prompt="",
-            overlap=16,
-            batch_count=1,
-            seed=1,
-            extra_params="{}",
-        )
-
-        self.assertIn("Partial success", result["result"][2])
-        self.assertIn("used blurred fallback", result["result"][2])
 
 
 if __name__ == "__main__":
