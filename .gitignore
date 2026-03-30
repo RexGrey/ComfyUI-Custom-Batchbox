@@ -44,3 +44,7 @@ gcs_credentials*.json
 
 # 本地测试与日志文件
 _bench_results.json
+
+# Superpowers 技能隔离目录
+.worktrees/
+worktrees/
