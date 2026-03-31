@@ -776,7 +776,9 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         # Handle image inputs for img2img
         if mode == "img2img":
             upload_files = []
-            for key, value in kwargs.items():
+            # Sort the kwargs keys to ensure image1, image2, image3 are processed in order
+            for key in sorted(kwargs.keys()):
+                value = kwargs[key]
                 if key.startswith("image") and isinstance(value, torch.Tensor):
                     pil_img = tensor2pil(value)[0]
                     buffered = BytesIO()
@@ -1333,10 +1335,11 @@ class NanoBananaPro(DynamicImageNodeBase):
             "response_format": kwargs.get("response_format", "url"),
         }
         
-        # Handle image inputs
+        # Handle image inputs for img2img
         if mode == "img2img":
             upload_files = []
-            for key, value in kwargs.items():
+            for key in sorted(kwargs.keys()):
+                value = kwargs[key]
                 if key.startswith("image") and isinstance(value, torch.Tensor):
                     pil_img = tensor2pil(value)[0]
                     buffered = BytesIO()
