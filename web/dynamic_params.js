@@ -1046,42 +1046,177 @@ function closeLightbox() {
   _lightboxOverlay = null;
 }
 
-// Hook: listen for native dblclick on the LiteGraph canvas element
-// Deferred until the canvas is ready (app.canvas may not exist at import time)
-setTimeout(() => {
-  const canvasEl = document.querySelector("canvas.lgraphcanvas") || document.querySelector("canvas");
-  if (!canvasEl) {
-    console.warn("[BatchBox] Could not find LiteGraph canvas for Lightbox hook");
-    return;
+const LIGHTBOX_IGNORED_DBLCLICK_SELECTOR = [
+  ".lg-node-widget",
+  ".p-inputnumber",
+  ".p-inputnumber-input",
+  ".p-inputnumber-button",
+  "input",
+  "textarea",
+  "select",
+  "button",
+  "[role='button']",
+  "[role='spinbutton']",
+  "[contenteditable='true']",
+].join(", ");
+
+function shouldIgnoreGlobalLightboxDblclick(e, graphSurfaceEl) {
+  const target = e?.target;
+  if (!(target instanceof Element)) {
+    return false;
   }
 
-  canvasEl.addEventListener("dblclick", (e) => {
-    const graphCanvas = app.canvas;
-    if (!graphCanvas || !graphCanvas.graph) return;
+  if (target.closest(LIGHTBOX_IGNORED_DBLCLICK_SELECTOR)) {
+    return true;
+  }
 
-    // Convert DOM mouse position to canvas coordinates
-    const rect = canvasEl.getBoundingClientRect();
-    const canvasX = (e.clientX - rect.left) / graphCanvas.ds.scale - graphCanvas.ds.offset[0];
-    const canvasY = (e.clientY - rect.top) / graphCanvas.ds.scale - graphCanvas.ds.offset[1];
+  if (!graphSurfaceEl) {
+    return target.tagName !== "CANVAS";
+  }
 
-    const node = graphCanvas.graph.getNodeOnPos(canvasX, canvasY, graphCanvas.visible_nodes);
-    if (node && node.imgs && node.imgs.length > 0) {
-      // Only exclude title bar (top ~30px), everything below can contain images
-      const localY = canvasY - node.pos[1];
-      const titleH = LiteGraph.NODE_TITLE_HEIGHT || 30;
+  if (target === graphSurfaceEl) {
+    return false;
+  }
 
-      if (localY > titleH) {
-        if (node.imgs.length > 0) {
-          openImageLightbox(node.imgs, node.imageIndex || 0);
-          e.preventDefault();
-          e.stopPropagation();
+  return target.closest("canvas") !== graphSurfaceEl;
+}
+
+function getLightboxPreviewImage(node) {
+  if (!node?.imgs || node.imgs.length === 0) return null;
+
+  const imageIndex = Number.isInteger(node.imageIndex) ? node.imageIndex : null;
+  if (imageIndex !== null && imageIndex >= 0 && imageIndex < node.imgs.length) {
+    return node.imgs[imageIndex];
+  }
+
+  return node.imgs.length === 1 ? node.imgs[0] : null;
+}
+
+function getNodePreviewContentRect(node) {
+  const nodeWidth = Number(node.size?.[0]) || 0;
+  const nodeHeight = Number(node.size?.[1]) || 0;
+  if (nodeWidth <= 0 || nodeHeight <= 0) return null;
+
+  const titleH = LiteGraph.NODE_TITLE_HEIGHT || 30;
+  const widgetH = LiteGraph.NODE_WIDGET_HEIGHT || 20;
+
+  // Strategy: Find the image preview widget ($$canvas-image-preview or similar)
+  // and use its position as the anchor for the preview area.
+  // ComfyUI places widgets BOTH above and below the preview image,
+  // so we can't simply assume "preview = everything below all widgets".
+  let previewWidgetY = null;
+  let nextWidgetAfterPreviewY = null;
+
+  if (Array.isArray(node.widgets)) {
+    // Pass 1: Find the image preview widget
+    for (const widget of node.widgets) {
+      if (!widget || widget.hidden || widget.type === "hidden") continue;
+      // ComfyUI uses "$$canvas-image-preview" as internal name for preview widgets
+      // Also check for PREVIEW type widgets
+      if (widget.name === "$$canvas-image-preview" || widget.type === "preview") {
+        const y = Number(widget.last_y);
+        if (Number.isFinite(y)) {
+          previewWidgetY = y;
+        }
+        break;
+      }
+    }
+
+    // Pass 2: If found, find the next visible widget AFTER the preview widget
+    if (previewWidgetY !== null) {
+      let foundPreview = false;
+      for (const widget of node.widgets) {
+        if (!widget || widget.hidden || widget.type === "hidden") continue;
+        if (widget.name === "$$canvas-image-preview" || widget.type === "preview") {
+          foundPreview = true;
+          continue;
+        }
+        if (foundPreview) {
+          const y = Number(widget.last_y);
+          if (Number.isFinite(y) && y > previewWidgetY) {
+            nextWidgetAfterPreviewY = y;
+            break;
+          }
         }
       }
     }
-  });
+  }
 
-  console.debug("[BatchBox] Lightbox double-click hook installed on canvas");
-}, 2000); // 2s delay ensures ComfyUI canvas is fully initialized
+  let previewTop, previewBottom;
+
+  if (previewWidgetY !== null) {
+    // We found the image preview widget — use its position
+    previewTop = previewWidgetY;
+    previewBottom = nextWidgetAfterPreviewY !== null
+      ? nextWidgetAfterPreviewY  // stop at the next widget below it
+      : nodeHeight;              // preview extends to node bottom
+  } else {
+    // Fallback: legacy behavior — preview is below all widgets
+    const widgetBottom = Array.isArray(node.widgets)
+      ? node.widgets.reduce((maxY, widget) => {
+        if (!widget || widget.hidden || widget.type === "hidden") return maxY;
+        const lastY = Number(widget.last_y);
+        return Number.isFinite(lastY) ? Math.max(maxY, lastY + widgetH) : maxY;
+      }, titleH)
+      : titleH;
+    previewTop = Math.max(titleH, Math.min(widgetBottom + 4, nodeHeight - 16));
+    previewBottom = nodeHeight;
+  }
+
+  const previewHeight = previewBottom - previewTop;
+  if (previewHeight <= 0) return null;
+
+  const innerPadding = 8;
+  const hasPreviewPager = node.imgs.length > 1;
+  const controlStripH = hasPreviewPager ? 28 : 0;
+  const contentLeft = innerPadding;
+  const contentTop = previewTop + innerPadding + controlStripH;
+  const contentWidth = Math.max(0, nodeWidth - innerPadding * 2);
+  const contentHeight = Math.max(0, previewHeight - innerPadding * 2 - controlStripH);
+  if (contentWidth <= 0 || contentHeight <= 0) return null;
+
+  return {
+    left: contentLeft,
+    top: contentTop,
+    width: contentWidth,
+    height: contentHeight,
+  };
+}
+
+function getNodePreviewImageHitRect(node) {
+  const contentRect = getNodePreviewContentRect(node);
+  if (!contentRect) return null;
+  return contentRect;
+}
+
+function isPointInNodePreviewImage(node, localX, localY) {
+  const hitRect = getNodePreviewImageHitRect(node);
+  if (!hitRect) return false;
+
+  return (
+    localX >= hitRect.left &&
+    localX <= hitRect.left + hitRect.width &&
+    localY >= hitRect.top &&
+    localY <= hitRect.top + hitRect.height
+  );
+}
+
+function tryOpenLightboxFromNodeEvent(node, e, localPos) {
+  if (!node?.imgs || node.imgs.length === 0 || !Array.isArray(localPos)) {
+    return false;
+  }
+
+  const [localX, localY] = localPos;
+  if (!isPointInNodePreviewImage(node, localX, localY)) {
+    return false;
+  }
+
+  openImageLightbox(node.imgs, Number.isInteger(node.imageIndex) ? node.imageIndex : 0);
+  e?.preventDefault?.();
+  e?.stopPropagation?.();
+  e?.stopImmediatePropagation?.();
+  return true;
+}
 
 /**
  * Collect all parameters from a node
@@ -1547,6 +1682,98 @@ app.registerExtension({
     }));
   },
 
+  // ================================================================
+  // GLOBAL LIGHTBOX: Double-click any node preview to view full-res
+  // ================================================================
+  // ComfyUI frontend >= v1.36 uses a Vue-based event system that
+  // bypasses LiteGraph's processNodeDblClicked / onDblClick entirely.
+  // This listener directly opens the lightbox for ANY node with images
+  // when the user double-clicks on it — no per-node handlers needed.
+  setup() {
+    const installCanvasListener = () => {
+      const canvasEl = document.getElementById("graph-canvas");
+      const lgCanvas = app.canvas;
+      const graphSurfaceEl = lgCanvas?.canvas || canvasEl?.querySelector?.("canvas");
+      if (!canvasEl || !lgCanvas) return false;
+
+      // Only install once
+      if (canvasEl._batchboxDblClickInstalled) return true;
+      canvasEl._batchboxDblClickInstalled = true;
+
+      canvasEl.addEventListener("dblclick", (e) => {
+        try {
+          if (shouldIgnoreGlobalLightboxDblclick(e, graphSurfaceEl)) return;
+          // Convert screen coordinates → graph-space
+          const rect = canvasEl.getBoundingClientRect();
+          const canvasX = e.clientX - rect.left;
+          const canvasY = e.clientY - rect.top;
+
+          // Match the DragAndScale transform used by the ComfyUI frontend:
+          // graphPos = canvasPos / scale - offset
+          let graphX, graphY;
+          if (lgCanvas.ds) {
+            const scale = Number(lgCanvas.ds.scale) || 1;
+            const offsetX = lgCanvas.ds.offset?.[0] ?? 0;
+            const offsetY = lgCanvas.ds.offset?.[1] ?? 0;
+            graphX = canvasX / scale - offsetX;
+            graphY = canvasY / scale - offsetY;
+          } else {
+            graphX = lgCanvas.graph_mouse?.[0] ?? canvasX;
+            graphY = lgCanvas.graph_mouse?.[1] ?? canvasY;
+          }
+
+          // Find the node at this graph-space position
+          const activeGraph = lgCanvas.graph || app.graph;
+          const activeNodes = lgCanvas.visible_nodes || activeGraph?._nodes;
+          const node = activeGraph?.getNodeOnPos(graphX, graphY, activeNodes);
+          if (!node?.imgs || node.imgs.length === 0) return;
+
+          // Convert to node-local coordinates for widget hit testing
+          const localX = graphX - node.pos[0];
+          const localY = graphY - node.pos[1];
+          const titleH = LiteGraph.NODE_TITLE_HEIGHT || 30;
+          const widgetH = LiteGraph.NODE_WIDGET_HEIGHT || 20;
+
+          // Skip if clicking on the title bar
+          if (localY < titleH) return;
+
+          // Skip if clicking on a widget area (buttons, text fields, combos, etc.)
+          if (Array.isArray(node.widgets)) {
+            for (const widget of node.widgets) {
+              if (!widget || widget.hidden || widget.type === "hidden") continue;
+              // The image preview widget should NOT block the lightbox
+              if (widget.name === "$$canvas-image-preview" || widget.type === "preview") continue;
+              const wy = Number(widget.last_y);
+              if (!Number.isFinite(wy)) continue;
+              const wh = widget.computedHeight || widgetH;
+              if (localY >= wy && localY <= wy + wh) {
+                return; // Click is on a widget — don't trigger lightbox
+              }
+            }
+          }
+
+          // Open lightbox directly
+          openImageLightbox(node.imgs, Number.isInteger(node.imageIndex) ? node.imageIndex : 0);
+          e.stopPropagation();
+          e.preventDefault();
+        } catch (err) {
+          console.warn("[BatchBox] dblclick lightbox error:", err);
+        }
+      }, true); // capture phase
+
+      console.debug("[BatchBox] Installed global canvas dblclick lightbox listener");
+      return true;
+    };
+
+    // Canvas element may not exist at setup() time — poll briefly
+    if (!installCanvasListener()) {
+      const poll = setInterval(() => {
+        if (installCanvasListener()) clearInterval(poll);
+      }, 300);
+      setTimeout(() => clearInterval(poll), 10000);
+    }
+  },
+
   async beforeRegisterNodeDef(nodeType, nodeData, app) {
     // Apply to all BatchBox dynamic nodes
     const batchboxNodePatterns = [
@@ -1650,6 +1877,32 @@ app.registerExtension({
             ep.value = JSON.stringify(dynamicParams);
           }
         }
+      };
+
+      const origOnDblClick = this.onDblClick;
+      this.onDblClick = function (e, localPos, canvas) {
+        if (tryOpenLightboxFromNodeEvent(this, e, localPos)) {
+          return true;
+        }
+
+        if (origOnDblClick) {
+          return origOnDblClick.apply(this, arguments);
+        }
+
+        return false;
+      };
+
+      const origOnMouseDown = this.onMouseDown;
+      this.onMouseDown = function (e, localPos, canvas) {
+        if (e?.detail >= 2 && tryOpenLightboxFromNodeEvent(this, e, localPos)) {
+          return false;
+        }
+
+        if (origOnMouseDown) {
+          return origOnMouseDown.apply(this, arguments);
+        }
+
+        return false;
       };
 
       // === IMAGE SELECTION: Track user's image selection ===
