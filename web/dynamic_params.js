@@ -177,6 +177,11 @@ function isBatchboxButtonNode(node) {
   return !!node?.widgets?.find(w => w._isGenerateButton);
 }
 
+function supportsQueuePromptBypass(node) {
+  const nodeType = node?.comfyClass || node?.type || "";
+  return isBatchboxButtonNode(node) && nodeType !== "GaussianBlurUpscale";
+}
+
 // Setting cache for bypass behavior (loaded from backend)
 let bypassQueuePromptEnabled = true; // Default: enabled
 let showInCanvasMenuEnabled = true; // Default: enabled (show BatchBox nodes in canvas right-click menu)
@@ -1879,7 +1884,7 @@ api.queuePrompt = async function (number, workflowData) {
         const shouldBypassNode = (
           bypassQueuePromptEnabled &&
           !wasButtonTriggered &&
-          isButtonNode &&
+          supportsQueuePromptBypass(node) &&
           !!persistedLastImages
         );
         nodeData.inputs._bypass_queue_prompt = shouldBypassNode ? "true" : "false";

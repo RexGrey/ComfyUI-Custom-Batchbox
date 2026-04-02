@@ -637,7 +637,7 @@ try:
                 preview_json = json.dumps(display_preview)
                 output_ui = {
                     "images": display_preview,
-                    "_last_images": [preview_json],
+                    "_blur_preview_images": [preview_json],
                 }
                 server.PromptServer.instance.send_sync("executed", {
                     "node": node_id,

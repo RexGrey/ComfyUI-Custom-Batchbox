@@ -61,6 +61,8 @@ class TestQueuePromptBypassPersistence(unittest.TestCase):
 
         assert "function markButtonTriggeredExecution()" in script
         assert "function isBatchboxButtonNode(node)" in script
+        assert "function supportsQueuePromptBypass(node)" in script
+        assert 'nodeType !== "GaussianBlurUpscale"' in script
         assert 'nodeData.inputs._bypass_queue_prompt = shouldBypassNode ? "true" : "false";' in script
         assert "window.batchboxAPI = {" in script
         assert "markButtonTriggeredExecution," in script
@@ -69,6 +71,11 @@ class TestQueuePromptBypassPersistence(unittest.TestCase):
         script = (PROJECT_ROOT / "web" / "blur_upscale.js").read_text(encoding="utf-8")
 
         assert "window.batchboxAPI?.markButtonTriggeredExecution?.();" in script
+
+    def test_blur_apply_stores_preview_separately_from_final_result_cache(self):
+        script = (PROJECT_ROOT / "web" / "blur_upscale.js").read_text(encoding="utf-8")
+
+        assert 'node.properties._blur_preview_images = JSON.stringify(result.preview_images);' in script
 
 
 class TestQueuePromptExtraParamsSync(unittest.TestCase):
