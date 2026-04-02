@@ -196,20 +196,22 @@ class TestGaussianBlurUpscaleCache(unittest.TestCase):
         node.process_batch.assert_not_called()
         self.assertEqual(result["result"][2], "Loaded from cache (no API call)")
 
-    def test_queue_prompt_bypass_returns_cached_images_for_blur_node(self):
+    def test_queue_prompt_bypass_is_ignored_for_blur_node(self):
         nodes_mod = _load_nodes_module()
         node = nodes_mod.GaussianBlurUpscaleNode()
         image = nodes_mod.torch.Tensor()
 
         nodes_mod.save_preview_images = Mock(
-            return_value=[{"filename": "blur_input.png", "subfolder": "", "type": "output"}]
+            side_effect=lambda _images, prefix="batchbox": [
+                {"filename": f"{prefix}.png", "subfolder": "", "type": "output"}
+            ]
         )
         nodes_mod.tensor2pil = Mock(return_value=[FakePILImage()])
         node._get_upscale_model = Mock(return_value=("upscale-model", ""))
         node._load_persisted_images = Mock(
             return_value=(image, image, [{"filename": "cached.png", "subfolder": "", "type": "output"}])
         )
-        node.process_batch = Mock()
+        node.process_batch = Mock(return_value=(image, "Success", "", [FakePILImage()]))
 
         result = node.upscale(
             "重 (σ6-10)",
@@ -228,8 +230,10 @@ class TestGaussianBlurUpscaleCache(unittest.TestCase):
             _all_images_connected="true",
         )
 
-        node.process_batch.assert_not_called()
-        self.assertEqual(result["result"][3], "Loaded from cache")
+        node._load_persisted_images.assert_not_called()
+        node.process_batch.assert_called_once()
+        self.assertEqual(result["ui"]["images"][0]["filename"], "blur_upscale.png")
+        self.assertIn("Model: upscale-model", result["result"][3])
 
     def test_blur_setting_change_invalidates_cache_and_updates_hash(self):
         nodes_mod = _load_nodes_module()

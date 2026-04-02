@@ -1682,8 +1682,9 @@ function openCustomPanel(node) {
           const result = await resp.json();
           if (result.success) {
             console.log("[BlurUpscale] Blur applied and cached:", result);
+            if (!node.properties) node.properties = {};
             if (result.preview_images) {
-              node.properties._last_images = JSON.stringify(result.preview_images);
+              node.properties._blur_preview_images = JSON.stringify(result.preview_images);
             }
           } else {
             console.error("[BlurUpscale] Apply blur failed:", result.error);

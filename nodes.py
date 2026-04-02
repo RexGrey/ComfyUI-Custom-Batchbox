@@ -1482,6 +1482,13 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
     RETURN_NAMES = ("selected_image", "blurred_image", "all_images", "response_info")
     FUNCTION = "upscale"
     OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Always return a unique value so ComfyUI re-executes this node
+        # and propagates fresh output tensors to downstream nodes.
+        import uuid
+        return str(uuid.uuid4())
     
     def _get_upscale_model(self):
         """Get the model and endpoint configured for upscaling from upscale_settings."""
@@ -1534,8 +1541,6 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
 
         # Save first input image as node preview (show input, not generated output)
         input_preview = save_preview_images(tensor2pil(image[:1]), prefix="blur_input")
-        input_preview_json = json.dumps(input_preview) if input_preview else ""
-        
         # Get model and endpoint from global upscale_settings
         model, saved_endpoint = self._get_upscale_model()
         if not model:
@@ -1732,48 +1737,11 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             },
         }
 
-        if bypass_queue_prompt and last_images_json and not force_generate:
-            need_api_call = False
-            print("[SmartCache] GaussianBlurUpscale Queue Prompt bypass active with persisted cache")
-        elif skip_hash_check:
-            need_api_call = force_generate or not last_images_json
-        else:
-            current_hash = self._compute_params_hash(model, prompt, batch_count, hash_kwargs)
-            need_api_call = (
-                force_generate or
-                not last_images_json or
-                (cached_hash and current_hash != cached_hash)
-            )
-        
-        if not need_api_call:
-            selected_index = kwargs.get("_selected_image_index", 0)
-            all_images_connected = kwargs.get("_all_images_connected", "false") == "true"
-            try:
-                selected_index = int(selected_index)
-            except (ValueError, TypeError):
-                selected_index = 0
-            
-            selected_tensor, all_tensor, preview_results = self._load_persisted_images(
-                last_images_json, selected_index, load_all=all_images_connected
-            )
-            if selected_tensor is not None:
-                # Also compute blurred image for the blurred_image output
-                if blur_mode == "selection" and selection_boxes:
-                    from .image_utils import apply_selection_boxes_blur
-                    blurred_pil = apply_selection_boxes_blur(tensor2pil(image[:1])[0], selection_boxes)
-                    blurred_tensor = pil2tensor(blurred_pil)
-                elif blur_mask_b64:
-                    blurred_tensor = apply_masked_gaussian_blur_tensor(image, blur_mask_b64, sigma)
-                else:
-                    blurred_tensor = apply_gaussian_blur_tensor(image, sigma)
-                return {
-                    "ui": {
-                        "images": input_preview,
-                        "_last_images": [last_images_json],
-                        "_cached_hash": [cached_hash],
-                    },
-                    "result": (selected_tensor, blurred_tensor, all_tensor, "Loaded from cache")
-                }
+        # Queue Prompt workflow execution must always produce fresh output tensors.
+        # This node has a separate independent-generation path; reusing persisted
+        # output cache here would cause downstream workflow nodes (for example
+        # SaveImage) to keep receiving stale tensors from an earlier run.
+        need_api_call = True
         
         # ==========================================
         # STEP 1: Apply Gaussian Blur
@@ -1896,7 +1864,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             
             return {
                 "ui": {
-                    "images": input_preview,
+                    "images": preview_results if preview_results else input_preview,
                     "_last_images": [last_images_json],
                     "_cached_hash": [current_hash],
                 },
@@ -2028,7 +1996,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
         
         return {
             "ui": {
-                "images": input_preview,
+                "images": preview_results if preview_results else input_preview,
                 "_last_images": [last_images_json],
                 "_cached_hash": [current_hash],
             },
