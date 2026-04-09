@@ -1,0 +1,2 @@
+{"task_id":"688e376da4fe","ts":"2026-04-07T19:30:40+08:00","dur_s":0.0,"machine":"WIN-D2FSOVOQSOP_C5259B","node":"independent","model":"model-a","batch":2,"gen":2,"saved":2,"ok":true,"providers":[],"err":""}
+{"task_id":"20de9dfef90a","ts":"2026-04-07T19:30:40+08:00","dur_s":0.0,"machine":"WIN-D2FSOVOQSOP_C5259B","node":"blur_upscale","model":"upscale-model","batch":1,"gen":1,"saved":1,"ok":true,"providers":[],"err":""}

@@ -431,6 +431,8 @@ class GenericAPIAdapter(APIAdapter):
                 filename, file_bytes, mime_type = file_tuple
                 cached_b64 = None
             
+
+            
             # Vertex AI: GCS gs:// URI (natively supported)
             if gcs_available:
                 try:

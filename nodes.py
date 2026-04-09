@@ -292,6 +292,7 @@ class DynamicImageNodeBase:
         """
         settings = config_manager.get_settings()
         auto_failover = settings.get("auto_failover", True)
+        providers_tried = []
         
         # If endpoint manually selected (has value), disable failover
         if endpoint_override:
@@ -303,7 +304,10 @@ class DynamicImageNodeBase:
         # Try primary endpoint (or manually selected endpoint)
         adapter = self.get_adapter(model_name, mode, endpoint_override)
         if adapter:
+            provider_name = adapter.provider.get("name", "unknown") if isinstance(adapter.provider, dict) else str(adapter.provider)
+            providers_tried.append(provider_name)
             result = adapter.execute(params, mode)
+            result.providers_tried = providers_tried
             if result.success:
                 return result
             print(f"[DynamicImageNode] Primary failed: {result.error_message}")
@@ -317,9 +321,12 @@ class DynamicImageNodeBase:
             
             for alt in alternatives:
                 alt_adapter = self._build_adapter_from_endpoint_info(alt)
+                alt_provider_name = alt['provider'].name if hasattr(alt['provider'], 'name') else str(alt['provider'])
+                providers_tried.append(alt_provider_name)
                 
                 print(f"[DynamicImageNode] Trying alternative: {alt['provider'].name}")
                 result = alt_adapter.execute(params, mode)
+                result.providers_tried = providers_tried
                 
                 if result.success:
                     return result
@@ -327,7 +334,8 @@ class DynamicImageNodeBase:
         
         return APIResponse(
             success=False,
-            error_message="All providers failed"
+            error_message="All providers failed",
+            providers_tried=providers_tried,
         )
     
     def process_batch(self, model_name: str, batch_count: int, 
@@ -790,9 +798,11 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         endpoint_override = extra_params.get("endpoint_override", "")
         
         # Process batch and get results including PIL images
+        _usage_t0 = time.time()
         images_tensor, response_info, last_url, pil_images = self.process_batch(
             model, batch_count, params, mode, endpoint_override
         )
+        _usage_duration = time.time() - _usage_t0
         
         # Try auto-save first and use saved paths for preview (persists after restart)
         preview_results = []
@@ -819,6 +829,24 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         # Fall back to temp folder if auto-save disabled or failed
         if not preview_results and pil_images:
             preview_results = save_preview_images(pil_images, prefix="batchbox")
+        
+        # --- Usage Tracking ---
+        try:
+            from .usage_tracker import get_tracker
+            _saved_count = sum(1 for p in preview_results if p.get("type") == "output")
+            get_tracker().record(
+                node_type="image",
+                model=model,
+                batch_count=batch_count,
+                images_generated=len(pil_images),
+                images_saved=_saved_count,
+                success=bool(pil_images),
+                providers_tried=[],  # Collected per-batch; aggregate not available here
+                error_message=response_info if not pil_images else "",
+                duration_seconds=_usage_duration,
+            )
+        except Exception as _e:
+            print(f"[UsageTracker] Error: {_e}")
         
         # Serialize preview info for persistence (frontend will save to widget)
         last_images_json = json.dumps(preview_results) if preview_results else ""
@@ -904,7 +932,26 @@ class DynamicTextGenerationNode(DynamicImageNodeBase):
         extra_params_str = kwargs.get("extra_params", "{}")
         params.update(self._parse_extra_params(extra_params_str))
         
+        _usage_t0 = time.time()
         result = self.execute_with_failover(model, params, "text2text")
+        _usage_duration = time.time() - _usage_t0
+        
+        # --- Usage Tracking ---
+        try:
+            from .usage_tracker import get_tracker
+            get_tracker().record(
+                node_type="text",
+                model=model,
+                batch_count=1,
+                images_generated=1 if result.success else 0,
+                images_saved=0,
+                success=result.success,
+                providers_tried=result.providers_tried,
+                error_message=result.error_message,
+                duration_seconds=_usage_duration,
+            )
+        except Exception as _e:
+            print(f"[UsageTracker] Error: {_e}")
         
         if result.success:
             text_output = result.raw_response.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -984,7 +1031,26 @@ class DynamicVideoGenerationNode(DynamicImageNodeBase):
                     upload_files.append((key, (f'{key}.png', buffered.getvalue(), 'image/png')))
             params["_upload_files"] = upload_files
         
+        _usage_t0 = time.time()
         result = self.execute_with_failover(model, params, mode)
+        _usage_duration = time.time() - _usage_t0
+        
+        # --- Usage Tracking ---
+        try:
+            from .usage_tracker import get_tracker
+            get_tracker().record(
+                node_type="video",
+                model=model,
+                batch_count=1,
+                images_generated=1 if result.success else 0,
+                images_saved=0,
+                success=result.success,
+                providers_tried=result.providers_tried,
+                error_message=result.error_message,
+                duration_seconds=_usage_duration,
+            )
+        except Exception as _e:
+            print(f"[UsageTracker] Error: {_e}")
         
         if result.success:
             video_url = result.image_urls[0] if result.image_urls else ""
@@ -1045,7 +1111,26 @@ class DynamicAudioGenerationNode(DynamicImageNodeBase):
         extra_params_str = kwargs.get("extra_params", "{}")
         params.update(self._parse_extra_params(extra_params_str))
         
+        _usage_t0 = time.time()
         result = self.execute_with_failover(model, params, "text2audio")
+        _usage_duration = time.time() - _usage_t0
+        
+        # --- Usage Tracking ---
+        try:
+            from .usage_tracker import get_tracker
+            get_tracker().record(
+                node_type="audio",
+                model=model,
+                batch_count=1,
+                images_generated=1 if result.success else 0,
+                images_saved=0,
+                success=result.success,
+                providers_tried=result.providers_tried,
+                error_message=result.error_message,
+                duration_seconds=_usage_duration,
+            )
+        except Exception as _e:
+            print(f"[UsageTracker] Error: {_e}")
         
         if result.success:
             audio_url = result.image_urls[0] if result.image_urls else ""
@@ -1203,6 +1288,8 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
         # With 429 auto-retry: if rate limited, wait and retry automatically
         import time
         
+        _usage_t0 = time.time()
+        
         def execute_with_retry(attempt_num):
             """Execute with automatic 429 retry"""
             max_retries = 3
@@ -1224,11 +1311,14 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
             print(f"[Editor] Generating {i+1}/{batch_count}...")
             results.append(execute_with_retry(i))
         
+        _usage_duration = time.time() - _usage_t0
+        
         # Process all results
         output_tensors = []
         all_previews = []
         all_urls = []
         success_count = 0
+        _saved_count = 0
         
         for i, result in enumerate(results):
             if result.success and result.images:
@@ -1249,12 +1339,35 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
                         save_result = saver.save_image(result_pil, context)
                         if save_result and "preview" in save_result:
                             all_previews.append(save_result["preview"])
+                            _saved_count += 1
                             continue
                 except Exception as e:
                     print(f"[Editor AutoSave] Error: {e}")
                 all_previews.extend(save_preview_images([result_pil], prefix="editor_result"))
             else:
                 print(f"[Editor] Batch {i+1}/{batch_count} failed: {result.error_message}")
+        
+        # --- Usage Tracking ---
+        try:
+            from .usage_tracker import get_tracker
+            _all_providers = []
+            for r in results:
+                for p in getattr(r, 'providers_tried', []):
+                    if p not in _all_providers:
+                        _all_providers.append(p)
+            get_tracker().record(
+                node_type="editor",
+                model=model,
+                batch_count=batch_count,
+                images_generated=success_count,
+                images_saved=_saved_count,
+                success=bool(output_tensors),
+                providers_tried=_all_providers,
+                error_message=results[-1].error_message if results and not results[-1].success else "",
+                duration_seconds=_usage_duration,
+            )
+        except Exception as _e:
+            print(f"[UsageTracker] Error: {_e}")
         
         if output_tensors:
             # Concatenate all results into batch tensor

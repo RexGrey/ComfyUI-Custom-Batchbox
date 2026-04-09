@@ -262,3 +262,37 @@ app.registerExtension({
         console.log("[ImageDrop] ✅ Image drop handler registered");
     },
 });
+
+/**
+ * Bugfix: In some ComfyUI environments (like specific aki-v3 versions or when conflicting with other custom nodes), 
+ * the native LoadImage node fails to trigger its preview refresh callback upon restoring from localStorage (browser F5 refresh).
+ * This explicitly hooks LoadImage's onConfigure to ensure the thumbnail renders.
+ */
+app.registerExtension({
+    name: "Batchbox.LoadImagePreviewFix",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.name === "LoadImage") {
+            const origOnConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (o) {
+                if (origOnConfigure) {
+                    origOnConfigure.apply(this, arguments);
+                }
+
+                // After standard configuration restores the widget values, forcefully trigger the callback
+                // to make sure ComfyUI fetches the image and displays the preview thumbnail.
+                setTimeout(() => {
+                    if (this.widgets) {
+                        const imageWidget = this.widgets.find(w => w.name === "image");
+                        if (imageWidget && imageWidget.value && typeof imageWidget.callback === "function") {
+                            // If the node doesn't have an image cached yet or it's empty, trigger callback
+                            if (!this.imgs || this.imgs.length === 0) {
+                                console.log(`[BatchBox.PreviewFix] Force refreshing LoadImage preview for: ${imageWidget.value}`);
+                                imageWidget.callback(imageWidget.value);
+                            }
+                        }
+                    }
+                }, 100);
+            };
+        }
+    }
+});

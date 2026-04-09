@@ -303,6 +303,73 @@ function resizeNodePreservingWidth(node) {
   node.setSize([currentWidth, newHeight]);
 }
 
+const PROMPT_WIDGET_FONT_SIZE_PX = 20;
+const PROMPT_WIDGET_LINE_HEIGHT = "1.6";
+const PROMPT_WIDGET_MIN_HEIGHT_PX = 120;
+const PROMPT_WIDGET_HEIGHT_PX = 140;
+const PROMPT_WIDGET_MAX_HEIGHT_PX = 400;
+
+function applyPromptWidgetSizing(node) {
+  const promptWidget = node?.widgets?.find((widget) => widget.name === "prompt");
+  if (!promptWidget) return false;
+
+  promptWidget.options ||= {};
+
+  if (!promptWidget._batchboxPromptSizingState) {
+    promptWidget._batchboxPromptSizingState = {
+      getMinHeight: promptWidget.options.getMinHeight,
+      getHeight: promptWidget.options.getHeight,
+      getMaxHeight: promptWidget.options.getMaxHeight,
+    };
+  }
+
+  const originalSizing = promptWidget._batchboxPromptSizingState;
+
+  promptWidget.options.getMinHeight = () =>
+    Math.max(originalSizing.getMinHeight?.() ?? 0, PROMPT_WIDGET_MIN_HEIGHT_PX);
+  promptWidget.options.getHeight = () =>
+    Math.max(originalSizing.getHeight?.() ?? 0, PROMPT_WIDGET_HEIGHT_PX);
+  promptWidget.options.getMaxHeight = () =>
+    Math.max(originalSizing.getMaxHeight?.() ?? 0, PROMPT_WIDGET_MAX_HEIGHT_PX);
+
+  promptWidget.computedHeight = Math.max(
+    Number(promptWidget.computedHeight) || 0,
+    PROMPT_WIDGET_HEIGHT_PX,
+  );
+
+  const rootEl = promptWidget.element instanceof HTMLElement ? promptWidget.element : null;
+  if (rootEl) {
+    rootEl.style.setProperty("--comfy-widget-min-height", `${PROMPT_WIDGET_MIN_HEIGHT_PX}px`);
+    rootEl.style.setProperty("--comfy-widget-height", `${PROMPT_WIDGET_HEIGHT_PX}px`);
+    rootEl.style.setProperty("--comfy-widget-max-height", `${PROMPT_WIDGET_MAX_HEIGHT_PX}px`);
+    rootEl.style.fontSize = `${PROMPT_WIDGET_FONT_SIZE_PX}px`;
+    rootEl.style.lineHeight = PROMPT_WIDGET_LINE_HEIGHT;
+
+    const inputEl = rootEl.matches("textarea, input")
+      ? rootEl
+      : rootEl.querySelector("textarea, input");
+    if (inputEl instanceof HTMLElement) {
+      inputEl.style.fontSize = `${PROMPT_WIDGET_FONT_SIZE_PX}px`;
+      inputEl.style.lineHeight = PROMPT_WIDGET_LINE_HEIGHT;
+    }
+  }
+
+  return true;
+}
+
+function schedulePromptWidgetSizing(node) {
+  const applyAndRefresh = () => {
+    if (!applyPromptWidgetSizing(node)) return;
+    resizeNodePreservingWidth(node);
+    node?.setDirtyCanvas?.(true, true);
+    app.graph?.setDirtyCanvas(true, true);
+  };
+
+  applyAndRefresh();
+  requestAnimationFrame(() => applyAndRefresh());
+  setTimeout(() => applyAndRefresh(), 120);
+}
+
 /**
  * Create a widget for a parameter definition.
  * @param {Object} node - ComfyUI node instance
@@ -1946,6 +2013,7 @@ app.registerExtension({
         enumerable: true
       });
 
+      schedulePromptWidgetSizing(this);
       console.debug('[DynamicParams] onNodeCreated END');
     };
 
@@ -2022,6 +2090,8 @@ app.registerExtension({
         this._selectedImageIndex = parseInt(this.properties._selected_image_index) || 0;
         console.debug(`[DynamicParams] Restored image selection from properties: index=${this._selectedImageIndex}`);
       }
+
+      schedulePromptWidgetSizing(this);
     };
   },
 
