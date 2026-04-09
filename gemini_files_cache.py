@@ -316,7 +316,7 @@ class GeminiFilesCache:
                 upload_url,
                 headers=upload_headers,
                 data=image_bytes,
-                timeout=120,
+                timeout=600,
             )
 
             if upload_resp.status_code != 200:

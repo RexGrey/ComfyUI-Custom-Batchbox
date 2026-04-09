@@ -107,6 +107,29 @@ class TestGlobalLightboxDomWidgetGuard(unittest.TestCase):
         assert "const node = activeGraph?.getNodeOnPos(graphX, graphY, activeNodes);" in script
 
 
+class TestPromptWidgetSizing(unittest.TestCase):
+    def test_prompt_widget_uses_larger_font_and_height(self):
+        script = (PROJECT_ROOT / "web" / "dynamic_params.js").read_text(encoding="utf-8")
+
+        assert "const PROMPT_WIDGET_FONT_SIZE_PX = 20;" in script
+        assert 'const PROMPT_WIDGET_LINE_HEIGHT = "1.6";' in script
+        assert "const PROMPT_WIDGET_MIN_HEIGHT_PX = 120;" in script
+        assert "const PROMPT_WIDGET_HEIGHT_PX = 140;" in script
+        assert "const PROMPT_WIDGET_MAX_HEIGHT_PX = 400;" in script
+        assert "function applyPromptWidgetSizing(node)" in script
+        assert 'widget.name === "prompt"' in script
+        assert "promptWidget.options.getMinHeight = () =>" in script
+        assert "promptWidget.options.getHeight = () =>" in script
+        assert "promptWidget.options.getMaxHeight = () =>" in script
+        assert 'rootEl.style.fontSize = `${PROMPT_WIDGET_FONT_SIZE_PX}px`;' in script
+        assert 'inputEl.style.fontSize = `${PROMPT_WIDGET_FONT_SIZE_PX}px`;' in script
+
+    def test_prompt_widget_sizing_runs_on_create_and_restore(self):
+        script = (PROJECT_ROOT / "web" / "dynamic_params.js").read_text(encoding="utf-8")
+
+        assert script.count("schedulePromptWidgetSizing(this);") >= 2
+
+
 class TestBlurUpscaleProgressCleanup(unittest.TestCase):
     def test_progress_listener_removed_in_finally(self):
         script = (PROJECT_ROOT / "web" / "blur_upscale.js").read_text(encoding="utf-8")

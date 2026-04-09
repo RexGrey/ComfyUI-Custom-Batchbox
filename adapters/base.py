@@ -22,6 +22,7 @@ class APIResponse:
     error_message: str = ""
     task_id: str = ""
     status: str = ""  # pending, processing, success, failed
+    providers_tried: List[str] = field(default_factory=list)  # Usage tracking: providers attempted
 
 
 @dataclass

@@ -852,6 +852,9 @@ try:
 
             # --- Step 6: Call IndependentGenerator ---
             generator = IndependentGenerator()
+            
+            import time as _time
+            _usage_t0 = _time.time()
 
             completed_count = 0
             # For selection mode, override total to reflect all boxes × batch_count
@@ -1009,6 +1012,27 @@ try:
                 )
 
             # --- Step 7: Send websocket events for UI update ---
+            _usage_duration = _time.time() - _usage_t0
+            
+            # --- Usage Tracking ---
+            try:
+                from .usage_tracker import get_tracker
+                _preview_images = result.get("preview_images", [])
+                _saved_count = sum(1 for p in _preview_images if p.get("type") == "output")
+                get_tracker().record(
+                    node_type="blur_upscale",
+                    model=model,
+                    batch_count=batch_count,
+                    images_generated=len(_preview_images),
+                    images_saved=_saved_count,
+                    success=result.get("success", False),
+                    providers_tried=[],
+                    error_message=result.get("error", ""),
+                    duration_seconds=_usage_duration,
+                )
+            except Exception as _e:
+                print(f"[UsageTracker] Error: {_e}")
+            
             if result.get("success") and result.get("preview_images"):
                 import uuid as _uuid
                 if node_id:
@@ -1102,16 +1126,41 @@ try:
                     "preview": preview,
                 })
             
+            import time as _time
+            _usage_t0 = _time.time()
+            _batch_count = min(int(data.get("batch_count", 1)), 20)
+            
             result = await generator.generate(
                 model=model,
                 prompt=prompt,
                 seed=data.get("seed", 0),
-                batch_count=min(int(data.get("batch_count", 1)), 20),  # 安全上限
+                batch_count=_batch_count,
                 extra_params=data.get("extra_params"),
                 images_base64=data.get("images_base64"),
                 endpoint_override=data.get("endpoint_override"),
                 on_batch_complete=on_batch_complete
             )
+            
+            _usage_duration = _time.time() - _usage_t0
+            
+            # --- Usage Tracking ---
+            try:
+                from .usage_tracker import get_tracker
+                _preview_images = result.get("preview_images", [])
+                _saved_count = sum(1 for p in _preview_images if p.get("type") == "output")
+                get_tracker().record(
+                    node_type="independent",
+                    model=model,
+                    batch_count=_batch_count,
+                    images_generated=len(_preview_images),
+                    images_saved=_saved_count,
+                    success=result.get("success", False),
+                    providers_tried=[],  # Aggregated per-batch, not available in result dict
+                    error_message=result.get("error", ""),
+                    duration_seconds=_usage_duration,
+                )
+            except Exception as _e:
+                print(f"[UsageTracker] Error: {_e}")
             
             # Send websocket "executed" event so ComfyUI's image viewer displays the result
             if result.get("success") and result.get("preview_images"):

@@ -180,6 +180,7 @@ class IndependentGenerator:
         """Execute API request with automatic failover."""
         settings = config_manager.get_settings()
         auto_failover = settings.get("auto_failover", True)
+        providers_tried = []
         
         if endpoint_override:
             auto_failover = False
@@ -189,7 +190,10 @@ class IndependentGenerator:
         
         adapter = self.get_adapter(model_name, mode, endpoint_override)
         if adapter:
+            provider_name = adapter.provider.get("name", "unknown") if isinstance(adapter.provider, dict) else str(adapter.provider)
+            providers_tried.append(provider_name)
             result = adapter.execute(params, mode)
+            result.providers_tried = providers_tried
             if result.success:
                 return result
             print(f"[IndependentGenerator] Primary failed: {result.error_message}")
@@ -202,9 +206,12 @@ class IndependentGenerator:
             
             for alt in alternatives:
                 alt_adapter = self._build_adapter_from_endpoint_info(alt)
+                alt_provider_name = alt['provider'].name if hasattr(alt['provider'], 'name') else str(alt['provider'])
+                providers_tried.append(alt_provider_name)
                 
                 print(f"[IndependentGenerator] Trying alternative: {alt['provider'].name}")
                 result = alt_adapter.execute(params, mode)
+                result.providers_tried = providers_tried
                 
                 if result.success:
                     return result
@@ -212,7 +219,8 @@ class IndependentGenerator:
         
         return APIResponse(
             success=False,
-            error_message="All providers failed"
+            error_message="All providers failed",
+            providers_tried=providers_tried,
         )
     
     async def generate(

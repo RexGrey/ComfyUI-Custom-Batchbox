@@ -1,0 +1,238 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1700" viewBox="0 0 2400 1700">
+  <defs>
+    <style>
+      .title { font: 700 36px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #e6eff8; }
+      .subtitle { font: 500 18px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #9db0c6; }
+      .panel-title { font: 700 24px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #f7fbff; }
+      .legend { font: 600 16px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #dce8f3; }
+      .box-title { font: 700 19px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #f4f9ff; }
+      .box-text { font: 500 15px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #d4deea; }
+      .small { font: 500 14px "Segoe UI", "Noto Sans SC", Arial, sans-serif; fill: #abc0d2; }
+      .bg { fill: #0b1220; }
+      .panel { fill: #101a2b; stroke: #223149; stroke-width: 2; rx: 24; ry: 24; }
+      .panel-muted { fill: #171c24; stroke: #485569; stroke-width: 2; rx: 24; ry: 24; }
+      .box-blue { fill: #18324d; stroke: #3ea5ff; stroke-width: 2; rx: 18; ry: 18; }
+      .box-green { fill: #183726; stroke: #42cf7c; stroke-width: 2; rx: 18; ry: 18; }
+      .box-yellow { fill: #4b3914; stroke: #f1c455; stroke-width: 2; rx: 18; ry: 18; }
+      .box-gray { fill: #2a313c; stroke: #6f7b8b; stroke-width: 2; rx: 18; ry: 18; }
+      .note { fill: #142235; stroke: #5b7694; stroke-width: 2; rx: 18; ry: 18; }
+      .active-line { stroke: #52d68c; stroke-width: 4; fill: none; marker-end: url(#arrow-active); }
+      .api-line { stroke: #58b5ff; stroke-width: 4; fill: none; marker-end: url(#arrow-api); }
+      .warn-line { stroke: #f0c24f; stroke-width: 4; fill: none; marker-end: url(#arrow-warn); }
+      .muted-line { stroke: #8390a0; stroke-width: 3; fill: none; stroke-dasharray: 10 10; marker-end: url(#arrow-muted); }
+    </style>
+    <marker id="arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#52d68c"/>
+    </marker>
+    <marker id="arrow-api" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#58b5ff"/>
+    </marker>
+    <marker id="arrow-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#f0c24f"/>
+    </marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8390a0"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2400" height="1700"/>
+
+  <text class="title" x="60" y="60">ComfyUI-Custom-Batchbox 当前工作流与监控方案</text>
+  <text class="subtitle" x="60" y="95">这张图只保留当前真实主链，以及你准备新增的局域网监控旁路，不画成目录树。</text>
+
+  <line class="active-line" x1="60" y1="138" x2="125" y2="138"/>
+  <text class="legend" x="145" y="144">绿色箭头：当前真实主链</text>
+  <line class="api-line" x1="350" y1="138" x2="415" y2="138"/>
+  <text class="legend" x="435" y="144">蓝色箭头：内部编排 / 配置 / UI 刷新</text>
+  <line class="warn-line" x1="760" y1="138" x2="825" y2="138"/>
+  <text class="legend" x="845" y="144">黄色箭头：拟新增监控链</text>
+  <line class="muted-line" x1="1120" y1="138" x2="1185" y2="138"/>
+  <text class="legend" x="1205" y="144">灰色虚线：辅助路径，不是主出图链</text>
+
+  <rect class="box-green" x="60" y="166" width="34" height="20"/>
+  <text class="legend" x="108" y="182">绿色方块：当前真实在用的功能点</text>
+  <rect class="box-blue" x="420" y="166" width="34" height="20"/>
+  <text class="legend" x="468" y="182">蓝色方块：服务 / 适配器 / 编排节点</text>
+  <rect class="box-yellow" x="860" y="166" width="34" height="20"/>
+  <text class="legend" x="908" y="182">黄色方块：拟新增监控模块</text>
+  <rect class="box-gray" x="1310" y="166" width="34" height="20"/>
+  <text class="legend" x="1358" y="182">灰色方块：存在但非当前主流程</text>
+
+  <rect class="panel" x="40" y="220" width="560" height="930"/>
+  <text class="panel-title" x="70" y="260">入口与触发</text>
+
+  <rect class="box-green" x="70" y="300" width="500" height="150"/>
+  <text class="box-title" x="92" y="335">ComfyUI Queue Prompt</text>
+  <text class="box-text" x="92" y="366">普通节点执行入口。</text>
+  <text class="box-text" x="92" y="392">用户点击 Queue Prompt 后，直接走 nodes.py 的生成链。</text>
+  <text class="small" x="92" y="420">对应：DynamicImageNode.generate / GaussianBlurUpscale 队列路径</text>
+
+  <rect class="box-green" x="70" y="500" width="500" height="170"/>
+  <text class="box-title" x="92" y="535">前端按钮入口</text>
+  <text class="box-text" x="92" y="566">web/dynamic_params.js</text>
+  <text class="box-text" x="92" y="592">web/blur_upscale.js</text>
+  <text class="box-text" x="92" y="618">点击“开始生成”时，请求后端独立生成接口。</text>
+  <text class="small" x="92" y="646">会携带 generation_token，用于前端实时回显和去重</text>
+
+  <rect class="note" x="70" y="720" width="500" height="270"/>
+  <text class="box-title" x="92" y="755">入口层结论</text>
+  <text class="box-text" x="92" y="786">系统实际上有两条主入口：</text>
+  <text class="box-text" x="92" y="812">1. ComfyUI 原生 Queue Prompt</text>
+  <text class="box-text" x="92" y="838">2. Batchbox 自己的前端按钮 + 后端路由</text>
+  <text class="box-text" x="92" y="864">两条入口最后都会收敛到“选 endpoint → 调 adapter → 保存 → 推 UI”。</text>
+  <text class="small" x="92" y="910">所以监控不要只挂在路由层，否则会漏掉 Queue Prompt 路径。</text>
+
+  <rect class="panel" x="650" y="220" width="760" height="930"/>
+  <text class="panel-title" x="680" y="260">服务与核心编排</text>
+
+  <rect class="box-green" x="680" y="300" width="320" height="150"/>
+  <text class="box-title" x="702" y="335">nodes.py 生成链</text>
+  <text class="box-text" x="702" y="366">DynamicImageNode.generate</text>
+  <text class="box-text" x="702" y="392">普通 Queue Prompt 会进这里。</text>
+  <text class="box-text" x="702" y="418">内部继续进入 process_batch 和 failover 逻辑。</text>
+
+  <rect class="box-green" x="1040" y="300" width="340" height="150"/>
+  <text class="box-title" x="1062" y="335">__init__.py 独立生成路由</text>
+  <text class="box-text" x="1062" y="366">/api/batchbox/generate-independent</text>
+  <text class="box-text" x="1062" y="392">/api/batchbox/generate-blur-upscale</text>
+  <text class="box-text" x="1062" y="418">按钮触发时走这里，再调用 IndependentGenerator。</text>
+
+  <rect class="box-blue" x="680" y="520" width="320" height="150"/>
+  <text class="box-title" x="702" y="555">process_batch</text>
+  <text class="box-text" x="702" y="586">按 batch_count 并发执行。</text>
+  <text class="box-text" x="702" y="612">一个任务可能拆成多次真实 API 调用。</text>
+  <text class="small" x="702" y="640">这里决定“任务数”和“请求数”不能混为一谈</text>
+
+  <rect class="box-blue" x="1040" y="520" width="340" height="150"/>
+  <text class="box-title" x="1062" y="555">execute_with_failover</text>
+  <text class="box-text" x="1062" y="586">失败时自动切备用 provider。</text>
+  <text class="box-text" x="1062" y="612">可能从 Google 切到 Vertex 或柏拉图。</text>
+  <text class="small" x="1062" y="640">所以一次 job 可能对应多个 provider attempt</text>
+
+  <rect class="box-blue" x="860" y="740" width="360" height="150"/>
+  <text class="box-title" x="882" y="775">ConfigManager</text>
+  <text class="box-text" x="882" y="806">get_best_endpoint</text>
+  <text class="box-text" x="882" y="832">get_endpoint_by_name / get_alternative_endpoints</text>
+  <text class="box-text" x="882" y="858">统一决定最终调用哪个 provider 和 endpoint。</text>
+
+  <rect class="note" x="680" y="950" width="700" height="160"/>
+  <text class="box-title" x="702" y="985">编排层结论</text>
+  <text class="box-text" x="702" y="1016">这里是整套系统的真正中枢。</text>
+  <text class="box-text" x="702" y="1042">无论走 Queue Prompt 还是按钮独立生成，最终都要经过 batch、failover、endpoint 选择。</text>
+  <text class="small" x="702" y="1088">监控埋点应挂在这里之后的 adapter / save 层，而不是散落到每个入口里。</text>
+
+  <rect class="panel" x="1460" y="220" width="900" height="930"/>
+  <text class="panel-title" x="1490" y="260">外部 API 与输出</text>
+
+  <rect class="box-blue" x="1490" y="300" width="250" height="150"/>
+  <text class="box-title" x="1512" y="335">GenericAPIAdapter.execute</text>
+  <text class="box-text" x="1512" y="366">Google / Vertex / 柏拉图</text>
+  <text class="box-text" x="1512" y="392">大多数主流 provider 都走这里。</text>
+  <text class="small" x="1512" y="420">最适合记录 API 次数 / 成功率 / 延迟</text>
+
+  <rect class="box-blue" x="1775" y="300" width="250" height="150"/>
+  <text class="box-title" x="1797" y="335">VolcengineAdapter.execute</text>
+  <text class="box-text" x="1797" y="366">火山即梦等异步接口。</text>
+  <text class="box-text" x="1797" y="392">提交成功后还可能轮询失败。</text>
+  <text class="small" x="1797" y="420">要区分 submit_success 和 complete_success</text>
+
+  <rect class="box-green" x="2060" y="300" width="270" height="150"/>
+  <text class="box-title" x="2082" y="335">外部 Provider</text>
+  <text class="box-text" x="2082" y="366">Google 官方 / Vertex / 柏拉图</text>
+  <text class="box-text" x="2082" y="392">Account / Volcengine</text>
+  <text class="box-text" x="2082" y="418">真正消耗 API 调用次数的边界就在这里。</text>
+
+  <rect class="box-green" x="1490" y="540" width="260" height="160"/>
+  <text class="box-title" x="1512" y="575">SaveSettings.save_image</text>
+  <text class="box-text" x="1512" y="606">正式保存到 ComfyUI output。</text>
+  <text class="box-text" x="1512" y="632">这是“正式产图数”的唯一可靠口径。</text>
+  <text class="small" x="1512" y="660">监控应在这里记 image_persisted</text>
+
+  <rect class="box-blue" x="1790" y="540" width="240" height="160"/>
+  <text class="box-title" x="1812" y="575">save_preview_images</text>
+  <text class="box-text" x="1812" y="606">临时预览图落在 temp。</text>
+  <text class="box-text" x="1812" y="632">方便 UI 展示，但不能算正式产图。</text>
+  <text class="small" x="1812" y="660">最多只能单独记 preview_count</text>
+
+  <rect class="box-green" x="2060" y="540" width="270" height="160"/>
+  <text class="box-title" x="2082" y="575">send_sync + history</text>
+  <text class="box-text" x="2082" y="606">把图片和进度回推给前端。</text>
+  <text class="box-text" x="2082" y="632">这就是你单机“实时显示”的来源。</text>
+  <text class="small" x="2082" y="660">不是靠独立监控服务器实现的</text>
+
+  <rect class="box-green" x="1655" y="790" width="520" height="140"/>
+  <text class="box-title" x="1677" y="825">ComfyUI output / temp</text>
+  <text class="box-text" x="1677" y="856">output 是正式结果，temp 是预览缓存。</text>
+  <text class="box-text" x="1677" y="882">日报和整网统计只能把 output 作为正式产量。</text>
+
+  <rect class="box-gray" x="1655" y="970" width="520" height="120"/>
+  <text class="box-title" x="1677" y="1005">TaskStatusPoller / Account 历史同步</text>
+  <text class="box-text" x="1677" y="1036">存在，但它是辅助路径，不是大多数主出图链的中枢。</text>
+
+  <rect class="panel" x="40" y="1190" width="1320" height="450"/>
+  <text class="panel-title" x="70" y="1230">拟新增：局域网监控链</text>
+
+  <rect class="box-yellow" x="70" y="1280" width="280" height="150"/>
+  <text class="box-title" x="92" y="1315">UsageMonitor</text>
+  <text class="box-text" x="92" y="1346">插件内轻量埋点入口。</text>
+  <text class="box-text" x="92" y="1372">接收 api_attempt / image_persisted / cache_hit。</text>
+  <text class="small" x="92" y="1400">不阻塞主链，只做本地写入</text>
+
+  <rect class="box-yellow" x="400" y="1280" width="280" height="150"/>
+  <text class="box-title" x="422" y="1315">本地 SQLite</text>
+  <text class="box-text" x="422" y="1346">每台机器先落本地事件库。</text>
+  <text class="box-text" x="422" y="1372">Collector 挂了也不丢数据。</text>
+  <text class="small" x="422" y="1400">建议 WAL + event_id 去重</text>
+
+  <rect class="box-yellow" x="730" y="1280" width="280" height="150"/>
+  <text class="box-title" x="752" y="1315">UsageUploader</text>
+  <text class="box-text" x="752" y="1346">后台线程批量上传。</text>
+  <text class="box-text" x="752" y="1372">每 10 到 30 秒推送一次未发送事件。</text>
+  <text class="small" x="752" y="1400">上传失败只重试，不影响生成</text>
+
+  <rect class="box-yellow" x="1060" y="1280" width="270" height="150"/>
+  <text class="box-title" x="1082" y="1315">Collector API</text>
+  <text class="box-text" x="1082" y="1346">局域网中心服务。</text>
+  <text class="box-text" x="1082" y="1372">负责汇总整网统计并供前端 Dashboard 查询。</text>
+
+  <rect class="note" x="70" y="1470" width="1260" height="130"/>
+  <text class="box-title" x="92" y="1505">监控链结论</text>
+  <text class="box-text" x="92" y="1536">单机实时：现有 send_sync 已经能做。整网实时：需要中心 Collector，但它应该是旁路，不要卡住出图主链。</text>
+  <text class="small" x="92" y="1570">主链只负责生成；监控链负责记录、补发、汇总、Dashboard 展示。</text>
+
+  <rect class="panel-muted" x="1400" y="1190" width="960" height="450"/>
+  <text class="panel-title" x="1430" y="1230">读图重点与冲突点</text>
+
+  <rect class="note" x="1430" y="1280" width="900" height="290"/>
+  <text class="box-title" x="1452" y="1315">为什么统计容易看错</text>
+  <text class="box-text" x="1452" y="1346">1. 一个 job 可能因为 batch_count 拆成多次 API 调用。</text>
+  <text class="box-text" x="1452" y="1372">2. 一个 job 可能因为 failover 先走 Google，再切 Vertex。</text>
+  <text class="box-text" x="1452" y="1398">3. temp 预览图不等于正式 output 产图。</text>
+  <text class="box-text" x="1452" y="1424">4. Smart Cache 命中时，会有“看到结果但没有 API 调用”的情况。</text>
+  <text class="box-text" x="1452" y="1450">5. 异步 provider 的提交成功，不等于最终生成成功。</text>
+  <text class="small" x="1452" y="1494">所以报表至少要分开：job_count / api_attempt_count / api_success_count / image_persisted_count。</text>
+
+  <path class="active-line" d="M570 375 C620 375, 650 375, 680 375"/>
+  <path class="active-line" d="M570 585 C720 585, 920 360, 1040 375"/>
+  <path class="api-line" d="M1000 375 C1030 375, 1030 585, 1040 585"/>
+  <path class="active-line" d="M1000 595 C1015 595, 1025 595, 1040 595"/>
+  <path class="api-line" d="M1210 740 C1210 700, 1210 660, 1210 670"/>
+  <path class="api-line" d="M1220 815 C1370 815, 1460 375, 1490 375"/>
+  <path class="api-line" d="M1220 835 C1460 835, 1700 375, 1775 375"/>
+  <path class="active-line" d="M1740 375 C1900 375, 2010 375, 2060 375"/>
+  <path class="active-line" d="M2025 375 C2050 375, 2095 375, 2120 375"/>
+  <path class="active-line" d="M1620 450 C1620 500, 1620 520, 1620 540"/>
+  <path class="active-line" d="M1900 450 C1900 500, 1900 520, 1900 540"/>
+  <path class="api-line" d="M2060 620 C2140 620, 2200 620, 2200 620"/>
+  <path class="api-line" d="M1620 700 C1620 750, 1750 790, 1915 790"/>
+  <path class="api-line" d="M1900 700 C1900 740, 1920 760, 1950 790"/>
+  <path class="api-line" d="M2200 700 C2200 760, 2100 790, 2060 790"/>
+  <path class="muted-line" d="M1915 970 C1915 930, 1915 900, 1915 880"/>
+
+  <path class="warn-line" d="M1490 375 C1180 375, 1120 1260, 350 1355"/>
+  <path class="warn-line" d="M1775 375 C1450 375, 1180 1260, 350 1355"/>
+  <path class="warn-line" d="M1620 620 C1620 1230, 1180 1355, 350 1355"/>
+  <path class="warn-line" d="M350 1355 C370 1355, 380 1355, 400 1355"/>
+  <path class="warn-line" d="M680 1355 C700 1355, 710 1355, 730 1355"/>
+  <path class="warn-line" d="M1010 1355 C1030 1355, 1040 1355, 1060 1355"/>
+</svg>
