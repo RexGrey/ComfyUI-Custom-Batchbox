@@ -246,6 +246,13 @@ app.registerExtension({
                 return;
             }
 
+            // Delegate to any custom node that implements onDropFile (e.g. BatchBoxImageAnnotator)
+            if (imageFiles.length === 1 && nodeUnderCursor && typeof nodeUnderCursor.onDropFile === "function" && nodeUnderCursor.type !== "LoadImage") {
+                console.log(`[ImageDrop] Delegating to ${nodeUnderCursor.type} node #${nodeUnderCursor.id}`);
+                nodeUnderCursor.onDropFile(imageFiles[0]);
+                return;
+            }
+
             // Not on a LoadImage node → create new node(s)
             // Space nodes vertically with ~220px gap
             for (let i = 0; i < imageFiles.length; i++) {

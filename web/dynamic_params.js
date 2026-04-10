@@ -1725,9 +1725,9 @@ app.registerExtension({
       { label: "🖼️ Dynamic Image Generation", type: "DynamicImageGeneration" },
       { label: "🎬 Dynamic Video Generation", type: "DynamicVideoGeneration" },
       { label: "📝 Dynamic Text Generation", type: "DynamicTextGeneration" },
-      { label: "✏️ Dynamic Image Editor", type: "DynamicImageEditor" },
       { label: "🔊 Dynamic Audio Generation", type: "DynamicAudioGeneration" },
       { label: "🔍 Gaussian Blur Upscale (高斯模糊放大)", type: "GaussianBlurUpscale" },
+      { label: "✏️ Image Annotator (编辑图像)", type: "BatchBoxImageAnnotator" },
     ];
 
     return batchboxNodes.map(nodeInfo => ({

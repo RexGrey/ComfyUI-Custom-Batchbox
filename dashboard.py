@@ -37,13 +37,17 @@ def find_data_dir():
     return None
 
 
-def load_all_records(data_dir: str, date_filter: str = "all") -> list:
+def load_all_records(data_dir: str, date_filter: str = "all",
+                     machine_filter: str = "", date_exact: str = "", status_filter: str = "all") -> list:
     """
     Load all JSONL records from usage_logs subdirectories.
-    
+
     Args:
         data_dir: Root directory containing usage_logs/
         date_filter: "today", "week", or "all"
+        machine_filter: If set, only load records from this machine
+        date_exact: If set (YYYY-MM-DD), only load records from this date
+        status_filter: "all", "success", or "fail"
     """
     logs_dir = os.path.join(data_dir, "usage_logs")
     if not os.path.isdir(logs_dir):
@@ -56,12 +60,21 @@ def load_all_records(data_dir: str, date_filter: str = "all") -> list:
     for machine_dir in glob.glob(os.path.join(logs_dir, "*")):
         if not os.path.isdir(machine_dir):
             continue
+        # Machine filter
+        if machine_filter:
+            dir_name = os.path.basename(machine_dir)
+            if dir_name != machine_filter:
+                continue
+
         for jsonl_file in glob.glob(os.path.join(machine_dir, "usage_*.jsonl")):
-            # Date filter: skip files outside date range
             basename = os.path.basename(jsonl_file)
             file_date = basename.replace("usage_", "").replace(".jsonl", "")
-            
-            if date_filter == "today" and file_date != today_str:
+
+            # Date exact filter (drill-down)
+            if date_exact:
+                if file_date != date_exact:
+                    continue
+            elif date_filter == "today" and file_date != today_str:
                 continue
             elif date_filter == "week":
                 try:
@@ -77,7 +90,16 @@ def load_all_records(data_dir: str, date_filter: str = "all") -> list:
                         line = line.strip()
                         if line:
                             try:
-                                records.append(json.loads(line))
+                                r = json.loads(line)
+                                # Apply machine filter on record level too
+                                if machine_filter and r.get("machine", "") != machine_filter:
+                                    continue
+                                # Apply status filter
+                                if status_filter == "success" and not r.get("ok", False):
+                                    continue
+                                if status_filter == "fail" and r.get("ok", False):
+                                    continue
+                                records.append(r)
                             except json.JSONDecodeError:
                                 pass
             except (IOError, PermissionError):
@@ -86,20 +108,18 @@ def load_all_records(data_dir: str, date_filter: str = "all") -> list:
     return records
 
 
-def compute_stats(records: list) -> dict:
+def compute_stats(records: list, date_filter: str = "today",
+                  date_exact: str = "") -> dict:
     """Compute aggregate statistics from records."""
+    empty = {
+        "total_tasks": 0, "total_generated": 0, "total_saved": 0,
+        "success_rate": 0, "total_api_calls": 0,
+        "dur_avg": 0, "dur_min": 0, "dur_max": 0,
+        "machines": [], "models": {}, "nodes": {},
+        "recent": [], "timeline": {}, "machine_list": [],
+    }
     if not records:
-        return {
-            "total_tasks": 0,
-            "total_generated": 0,
-            "total_saved": 0,
-            "success_rate": 0,
-            "total_api_calls": 0,
-            "machines": [],
-            "models": {},
-            "nodes": {},
-            "recent": [],
-        }
+        return empty
 
     total_tasks = len(records)
     total_gen = sum(r.get("gen", 0) for r in records)
@@ -108,13 +128,22 @@ def compute_stats(records: list) -> dict:
     success_count = sum(1 for r in records if r.get("ok"))
     success_rate = round(success_count / total_tasks * 100, 1) if total_tasks else 0
 
+    # Duration stats
+    durations = [r.get("dur_s", 0) for r in records if r.get("dur_s", 0) > 0]
+    dur_avg = round(sum(durations) / len(durations), 1) if durations else 0
+    dur_min = round(min(durations), 1) if durations else 0
+    dur_max = round(max(durations), 1) if durations else 0
+
     # Per-machine stats
     machine_map = {}
     for r in records:
         mid = r.get("machine", "unknown")
         if mid not in machine_map:
-            machine_map[mid] = {"name": mid, "tasks": 0, "gen": 0, "saved": 0,
-                                "api_calls": 0, "success": 0, "last_ts": ""}
+            machine_map[mid] = {
+                "name": mid, "tasks": 0, "gen": 0, "saved": 0,
+                "api_calls": 0, "success": 0, "fail": 0,
+                "last_ts": "", "durations": [],
+            }
         m = machine_map[mid]
         m["tasks"] += 1
         m["gen"] += r.get("gen", 0)
@@ -122,11 +151,22 @@ def compute_stats(records: list) -> dict:
         m["api_calls"] += r.get("batch", 1)
         if r.get("ok"):
             m["success"] += 1
+        else:
+            m["fail"] += 1
+        d = r.get("dur_s", 0)
+        if d > 0:
+            m["durations"].append(d)
         ts = r.get("ts", "")
         if ts > m["last_ts"]:
             m["last_ts"] = ts
 
+    # Finalize machine stats
+    for m in machine_map.values():
+        ds = m.pop("durations")
+        m["dur_avg"] = round(sum(ds) / len(ds), 1) if ds else 0
+
     machines = sorted(machine_map.values(), key=lambda x: x["name"])
+    machine_list = sorted(machine_map.keys())
 
     # Per-model stats
     model_map = {}
@@ -140,6 +180,32 @@ def compute_stats(records: list) -> dict:
         node = r.get("node", "unknown")
         node_map[node] = node_map.get(node, 0) + 1
 
+    # Timeline aggregation
+    # If viewing a single day (today or date_exact), group by hour.
+    # If viewing week/all, group by day.
+    use_hourly = (date_filter == "today" or date_exact != "")
+    timeline = {}
+    for r in records:
+        ts = r.get("ts", "")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts)
+            if use_hourly:
+                key = dt.strftime("%H:00")
+            else:
+                key = dt.strftime("%m-%d")
+        except Exception:
+            continue
+        if key not in timeline:
+            timeline[key] = {"tasks": 0, "api_calls": 0, "gen": 0}
+        timeline[key]["tasks"] += 1
+        timeline[key]["api_calls"] += r.get("batch", 1)
+        timeline[key]["gen"] += r.get("gen", 0)
+
+    # Sort timeline keys
+    sorted_tl = dict(sorted(timeline.items()))
+
     # Recent records (last 50)
     sorted_records = sorted(records, key=lambda x: x.get("ts", ""), reverse=True)
     recent = sorted_records[:50]
@@ -150,27 +216,34 @@ def compute_stats(records: list) -> dict:
         "total_saved": total_saved,
         "total_api_calls": total_api_calls,
         "success_rate": success_rate,
+        "dur_avg": dur_avg,
+        "dur_min": dur_min,
+        "dur_max": dur_max,
         "machines": machines,
+        "machine_list": machine_list,
         "models": model_map,
         "nodes": node_map,
         "recent": recent,
+        "timeline": sorted_tl,
     }
 
 
 # ==========================================
 # Embedded HTML Dashboard
 # ==========================================
-DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BatchBox Usage Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #0f1117; --card-bg: #1a1d27; --border: #2d3142;
     --text: #e4e6eb; --text-dim: #8b8fa3; --accent: #6c5ce7;
     --green: #00b894; --red: #e17055; --blue: #0984e3; --yellow: #fdcb6e;
+    --orange: #e67e22; --teal: #00cec9;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -178,65 +251,123 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     background: var(--bg); color: var(--text); line-height: 1.5;
     padding: 20px; max-width: 1400px; margin: 0 auto;
   }
-  h1 { font-size: 1.5rem; margin-bottom: 8px; }
+  h1 { font-size: 1.5rem; margin-bottom: 0; }
   .header { display:flex; justify-content:space-between; align-items:center;
-    margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+    margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
   .header-left { display:flex; align-items:center; gap: 12px; }
   .status-dot { width:8px; height:8px; border-radius:50%; background:var(--green);
     display:inline-block; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+  /* Tab navigation */
+  .tab-bar { display:flex; gap:0; margin-bottom:16px; border-bottom:2px solid var(--border); }
+  .tab-btn {
+    padding:10px 20px; border:none; background:transparent; color:var(--text-dim);
+    cursor:pointer; font-size:0.95rem; font-weight:600; position:relative;
+    transition: color 0.2s;
+  }
+  .tab-btn.active { color:var(--accent); }
+  .tab-btn.active::after {
+    content:''; position:absolute; bottom:-2px; left:0; right:0;
+    height:2px; background:var(--accent);
+  }
+  .tab-btn:hover { color:var(--text); }
+  .tab-page { display:none; }
+  .tab-page.active { display:block; }
+
+  /* Controls bar */
+  .controls { display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:16px; flex-wrap:wrap; gap:10px; }
+  .controls-left { display:flex; align-items:center; gap:10px; }
   .filters { display:flex; gap:6px; }
   .filters button {
-    padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
-    background: transparent; color: var(--text-dim); cursor: pointer;
-    font-size: 0.85rem; transition: all 0.2s;
+    padding:6px 14px; border:1px solid var(--border); border-radius:6px;
+    background:transparent; color:var(--text-dim); cursor:pointer;
+    font-size:0.85rem; transition:all 0.2s;
   }
-  .filters button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .filters button:hover { border-color: var(--accent); }
+  .filters button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .filters button:hover { border-color:var(--accent); }
+  select {
+    padding:6px 10px; border:1px solid var(--border); border-radius:6px;
+    background:var(--card-bg); color:var(--text); font-size:0.85rem;
+    cursor:pointer; outline:none;
+  }
+  select:focus { border-color:var(--accent); }
 
-  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 14px; margin-bottom: 20px; }
+  /* Cards */
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap:12px; margin-bottom:16px; }
   .card {
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
-    padding: 16px; transition: transform 0.2s;
+    background:var(--card-bg); border:1px solid var(--border); border-radius:10px;
+    padding:14px; transition:transform 0.2s;
   }
-  .card:hover { transform: translateY(-2px); }
-  .card-label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.5px; margin-bottom: 4px; }
-  .card-value { font-size: 1.8rem; font-weight: 700; }
-  .card-value.green { color: var(--green); }
-  .card-value.blue { color: var(--blue); }
-  .card-value.yellow { color: var(--yellow); }
+  .card:hover { transform:translateY(-2px); }
+  .card-label { font-size:0.75rem; color:var(--text-dim); text-transform:uppercase;
+    letter-spacing:0.5px; margin-bottom:2px; }
+  .card-value { font-size:1.6rem; font-weight:700; }
+  .card-value.green { color:var(--green); }
+  .card-value.blue { color:var(--blue); }
+  .card-value.yellow { color:var(--yellow); }
+  .card-value.orange { color:var(--orange); }
+  .card-value.teal { color:var(--teal); }
+  .card-value.red { color:var(--red); }
 
-  .section { margin-bottom: 20px; }
-  .section-title { font-size: 1rem; margin-bottom: 10px; color: var(--text-dim);
-    border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  /* Sections */
+  .section { margin-bottom:20px; }
+  .section-title { font-size:1rem; margin-bottom:10px; color:var(--text-dim);
+    border-bottom:1px solid var(--border); padding-bottom:6px; }
 
+  /* Charts */
+  .chart-row { display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:16px; }
+  .chart-row-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+  .chart-box {
+    background:var(--card-bg); border:1px solid var(--border); border-radius:10px;
+    padding:16px; min-height:260px; position:relative;
+  }
+  .chart-box canvas { max-height:280px; }
+  .chart-label { font-size:0.85rem; color:var(--text-dim); margin-bottom:8px; font-weight:600; }
+  .drill-hint {
+    position:absolute; top:12px; right:16px; font-size:0.7rem;
+    color:var(--text-dim); background:var(--border); padding:2px 8px;
+    border-radius:4px; display:none;
+  }
+
+  /* Tables */
   table { width:100%; border-collapse:collapse; font-size:0.85rem; }
   th { text-align:left; padding:8px 10px; border-bottom:2px solid var(--border);
     color:var(--text-dim); font-weight:600; white-space:nowrap; }
   td { padding:8px 10px; border-bottom:1px solid var(--border); }
-  tr:hover td { background: rgba(108,92,231,0.08); }
-  .success-badge { color: var(--green); }
-  .fail-badge { color: var(--red); }
-
-  .model-bars { display:flex; flex-direction:column; gap:6px; }
-  .model-bar { display:flex; align-items:center; gap:10px; }
-  .model-bar-name { width:160px; font-size:0.85rem; text-align:right;
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .model-bar-track { flex:1; height:22px; background:var(--border); border-radius:4px;
-    overflow:hidden; position:relative; }
-  .model-bar-fill { height:100%; background: linear-gradient(90deg, var(--accent), var(--blue));
-    border-radius:4px; transition: width 0.5s; min-width:2px; }
-  .model-bar-count { width:50px; font-size:0.8rem; color:var(--text-dim); }
-
-  .recent-table { max-height: 400px; overflow-y: auto; }
+  tr:hover td { background:rgba(108,92,231,0.08); }
+  .success-badge { color:var(--green); }
+  .fail-badge { color:var(--red); }
+  .recent-table { max-height:400px; overflow-y:auto; }
   .recent-table::-webkit-scrollbar { width:6px; }
   .recent-table::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 
+  /* Machine detail grid (Tab 2) */
+  .machine-grid {
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+    gap:14px;
+  }
+  .machine-card {
+    background:var(--card-bg); border:1px solid var(--border); border-radius:10px;
+    padding:16px; display:flex; flex-direction:column; gap:8px;
+  }
+  .machine-card-header {
+    font-weight:700; font-size:0.9rem; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; border-bottom:1px solid var(--border); padding-bottom:6px;
+  }
+  .machine-card-chart { width:120px; height:120px; margin:0 auto; }
+  .machine-card-stats { font-size:0.8rem; color:var(--text-dim); display:flex;
+    flex-wrap:wrap; gap:4px 12px; }
+  .machine-card-stats span { white-space:nowrap; }
+  .machine-card-stats .val { color:var(--text); font-weight:600; }
+
   .refresh-info { font-size:0.75rem; color:var(--text-dim); }
-  .empty-state { text-align:center; padding:60px 20px; color:var(--text-dim); }
-  .empty-state svg { width:64px; height:64px; margin-bottom:16px; opacity:0.3; }
+  @media (max-width:768px) {
+    .chart-row-2 { grid-template-columns:1fr; }
+    .cards { grid-template-columns:repeat(auto-fit, minmax(130px,1fr)); }
+  }
 </style>
 </head>
 <body>
@@ -246,56 +377,101 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span class="status-dot"></span>
     <span class="refresh-info" id="refreshInfo">加载中...</span>
   </div>
-  <div class="filters">
+</div>
+
+<!-- Tab bar -->
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('overview')">📊 总览</button>
+  <button class="tab-btn" onclick="switchTab('machines')">👥 机器详情</button>
+</div>
+
+<!-- Controls -->
+<div class="controls">
+  <div class="controls-left">
+    <select id="machineSelect" onchange="onMachineChange()">
+      <option value="">全部机器</option>
+    </select>
+    <select id="statusSelect" onchange="onStatusChange()">
+      <option value="all">所有状态</option>
+      <option value="success">✅ 仅成功</option>
+      <option value="fail">❌ 仅失败</option>
+    </select>
+    <span id="drillBack" style="display:none; cursor:pointer; font-size:0.85rem; color:var(--accent);"
+          onclick="clearDrill()">← 返回周视图</span>
+  </div>
+  <div class="filters" id="filterBtns">
     <button class="active" onclick="setFilter('today')">今日</button>
     <button onclick="setFilter('week')">本周</button>
     <button onclick="setFilter('all')">全部</button>
   </div>
 </div>
 
-<div class="cards" id="summaryCards"></div>
+<!-- =================== Tab 1: Overview =================== -->
+<div class="tab-page active" id="page-overview">
+  <div class="cards" id="summaryCards"></div>
 
-<div class="section">
-  <div class="section-title">📋 按机器统计</div>
-  <table id="machineTable"><thead><tr>
-    <th>机器</th><th>任务数</th><th>API 调用</th><th>生成图片</th><th>保存图片</th><th>成功率</th><th>最近活跃</th>
-  </tr></thead><tbody></tbody></table>
-</div>
+  <!-- Timeline chart -->
+  <div class="chart-row">
+    <div class="chart-box">
+      <div class="chart-label">📈 生成活动时间线</div>
+      <div class="drill-hint" id="drillHint">💡 点击柱子钻取该日详情</div>
+      <canvas id="timelineChart"></canvas>
+    </div>
+  </div>
 
-<div class="section">
-  <div class="section-title">📦 模型分布</div>
-  <div class="model-bars" id="modelBars"></div>
-</div>
+  <!-- Machine bar + Model doughnut -->
+  <div class="chart-row-2">
+    <div class="chart-box">
+      <div class="chart-label">📊 机器任务排行</div>
+      <canvas id="machineChart"></canvas>
+    </div>
+    <div class="chart-box">
+      <div class="chart-label">🥧 模型使用分布</div>
+      <canvas id="modelChart"></canvas>
+    </div>
+  </div>
 
-<div class="section">
-  <div class="section-title">🕐 最近活动</div>
-  <div class="recent-table">
-    <table id="recentTable"><thead><tr>
-      <th>时间</th><th>机器</th><th>节点</th><th>模型</th><th>批次</th><th>生成</th><th>保存</th><th>状态</th><th>耗时</th>
-    </tr></thead><tbody></tbody></table>
+  <!-- Recent activity table -->
+  <div class="section">
+    <div class="section-title">🕐 最近活动 (附失败分析)</div>
+    <div class="recent-table">
+      <table id="recentTable"><thead><tr>
+        <th>时间</th><th>机器</th><th>节点</th><th>模型</th><th>批次</th>
+        <th>生成</th><th>保存</th><th>状态 (鼠标悬浮看原因)</th><th>耗时</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
   </div>
 </div>
 
+<!-- =================== Tab 2: Machine Details =================== -->
+<div class="tab-page" id="page-machines">
+  <div class="machine-grid" id="machineGrid"></div>
+</div>
+
 <script>
+// ==================== State ====================
 let currentFilter = 'today';
+let currentMachine = '';
+let currentStatus = 'all';
+let drillDate = '';   // '' = no drill;  'YYYY-MM-DD' = drilled
 let refreshTimer = null;
+let chartTimeline = null, chartMachine = null, chartModel = null;
+let machineChartInstances = {};  // Tab2 mini pies
 
-function setFilter(f) {
-  currentFilter = f;
-  document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  fetchStats();
-}
+const NODE_LABELS = {
+  'image':'🎨 图片','independent':'🚀 独立','editor':'🔧 编辑',
+  'blur_upscale':'🔍 放大','text':'📝 文本','video':'🎬 视频','audio':'🎵 音频'
+};
+const PALETTE = ['#6c5ce7','#0984e3','#00b894','#fdcb6e','#e17055','#00cec9',
+  '#a29bfe','#74b9ff','#55efc4','#ffeaa7','#fab1a0','#81ecec'];
 
-function formatTime(ts) {
+// ==================== Helpers ====================
+function fmt(ts) {
   if (!ts) return '-';
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-  } catch { return ts; }
+  try { return new Date(ts).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+  catch { return ts; }
 }
-
-function formatDateTime(ts) {
+function fmtDT(ts) {
   if (!ts) return '-';
   try {
     const d = new Date(ts);
@@ -303,17 +479,68 @@ function formatDateTime(ts) {
       + ' ' + d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
   } catch { return ts; }
 }
+function fmtDur(s) {
+  if (!s || s <= 0) return '-';
+  return s >= 60 ? (s/60).toFixed(1)+'m' : s.toFixed(1)+'s';
+}
 
-const NODE_LABELS = {
-  'image':'🎨 图片','independent':'🚀 独立','editor':'🔧 编辑',
-  'blur_upscale':'🔍 放大','text':'📝 文本','video':'🎬 视频','audio':'🎵 音频'
-};
+// ==================== Tab switching ====================
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+  if (tab === 'overview') {
+    document.querySelector('.tab-btn:nth-child(1)').classList.add('active');
+    document.getElementById('page-overview').classList.add('active');
+  } else {
+    document.querySelector('.tab-btn:nth-child(2)').classList.add('active');
+    document.getElementById('page-machines').classList.add('active');
+  }
+}
 
+// ==================== Filter / Machine / Drill ====================
+function setFilter(f) {
+  currentFilter = f;
+  drillDate = '';
+  document.getElementById('drillBack').style.display = 'none';
+  document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  fetchStats();
+}
+function onMachineChange() {
+  currentMachine = document.getElementById('machineSelect').value;
+  fetchStats();
+}
+function onStatusChange() {
+  currentStatus = document.getElementById('statusSelect').value;
+  fetchStats();
+}
+function selectMachine(name) {
+  currentMachine = name;
+  document.getElementById('machineSelect').value = name;
+  fetchStats();
+}
+function clearDrill() {
+  drillDate = '';
+  document.getElementById('drillBack').style.display = 'none';
+  // revert to week
+  currentFilter = 'week';
+  document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#filterBtns button')[1].classList.add('active');
+  fetchStats();
+}
+
+// ==================== Data fetch ====================
 async function fetchStats() {
   try {
-    const resp = await fetch('/api/stats?filter=' + currentFilter);
+    let url = '/api/stats?filter=' + currentFilter;
+    if (currentMachine) url += '&machine=' + encodeURIComponent(currentMachine);
+    if (currentStatus !== 'all') url += '&status=' + encodeURIComponent(currentStatus);
+    if (drillDate) url += '&date=' + drillDate;
+    const resp = await fetch(url);
     const data = await resp.json();
-    renderDashboard(data);
+    renderOverview(data);
+    renderMachineDetails(data);
+    updateMachineSelect(data.machine_list);
     document.getElementById('refreshInfo').textContent =
       '上次刷新: ' + new Date().toLocaleTimeString('zh-CN') + ' (每5秒自动)';
   } catch(e) {
@@ -321,80 +548,306 @@ async function fetchStats() {
   }
 }
 
-function renderDashboard(data) {
-  // Summary cards
+function updateMachineSelect(list) {
+  const sel = document.getElementById('machineSelect');
+  const cur = sel.value;
+  const opts = '<option value="">全部机器</option>' +
+    list.map(m => `<option value="${m}" ${m===cur?'selected':''}>${m}</option>`).join('');
+  sel.innerHTML = opts;
+}
+
+// ==================== Tab 1: Overview ====================
+function renderOverview(data) {
+  // --- Summary cards ---
   document.getElementById('summaryCards').innerHTML = `
-    <div class="card"><div class="card-label">总任务数</div>
+    <div class="card"><div class="card-label">任务数${currentStatus==='fail'?'(过滤后)':''}</div>
       <div class="card-value">${data.total_tasks}</div></div>
-    <div class="card"><div class="card-label">API 调用次数</div>
+    <div class="card"><div class="card-label">API 调用</div>
       <div class="card-value blue">${data.total_api_calls}</div></div>
     <div class="card"><div class="card-label">生成图片</div>
       <div class="card-value green">${data.total_generated}</div></div>
-    <div class="card"><div class="card-label">保存图片</div>
-      <div class="card-value yellow">${data.total_saved}</div></div>
     <div class="card"><div class="card-label">成功率</div>
       <div class="card-value green">${data.success_rate}%</div></div>
     <div class="card"><div class="card-label">活跃机器</div>
       <div class="card-value">${data.machines.length}</div></div>
+    <div class="card"><div class="card-label">⏱ 平均耗时</div>
+      <div class="card-value teal">${fmtDur(data.dur_avg)}</div></div>
+    <div class="card"><div class="card-label">⚡ 最短耗时</div>
+      <div class="card-value green">${fmtDur(data.dur_min)}</div></div>
+    <div class="card"><div class="card-label">🐢 最长耗时</div>
+      <div class="card-value orange">${fmtDur(data.dur_max)}</div></div>
   `;
 
-  // Machine table
-  const mtb = document.querySelector('#machineTable tbody');
-  if (!data.machines.length) {
-    mtb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-dim)">暂无数据</td></tr>';
+  // --- Timeline chart ---
+  const tlKeys = Object.keys(data.timeline);
+  const tlTasks = tlKeys.map(k => data.timeline[k].tasks);
+  const tlAPI = tlKeys.map(k => data.timeline[k].api_calls);
+  const isWeekOrAll = (currentFilter === 'week' || currentFilter === 'all') && !drillDate;
+
+  document.getElementById('drillHint').style.display = isWeekOrAll ? 'block' : 'none';
+
+  if (!chartTimeline) {
+    chartTimeline = new Chart(document.getElementById('timelineChart'), {
+      type: 'bar',
+      data: {
+        labels: tlKeys,
+        datasets: [
+          { label: '任务数', data: tlTasks, backgroundColor: 'rgba(108,92,231,0.7)',
+            borderColor: '#6c5ce7', borderWidth: 1, borderRadius: 4, order: 2 },
+          { label: 'API 调用', data: tlAPI, type: 'line',
+            borderColor: '#0984e3', backgroundColor: 'rgba(9,132,227,0.1)',
+            tension: 0.3, pointRadius: 3, fill: true, order: 1 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        animation: { duration: 400 },
+        plugins: {
+          legend: { labels: { color: '#8b8fa3', usePointStyle: true, pointStyle: 'circle' } },
+        },
+        scales: {
+          x: { ticks: { color: '#8b8fa3' }, grid: { color: 'rgba(45,49,66,0.5)' } },
+          y: { beginAtZero: true, ticks: { color: '#8b8fa3' }, grid: { color: 'rgba(45,49,66,0.5)' } },
+        },
+        onClick: (evt, elems) => {
+          if (!isWeekOrAll || !elems.length) return;
+          const idx = elems[0].index;
+          const label = chartTimeline.data.labels[idx];
+          const now = new Date();
+          const year = now.getFullYear();
+          const parts = label.split('-');
+          drillDate = year + '-' + parts[0].padStart(2,'0') + '-' + parts[1].padStart(2,'0');
+          document.getElementById('drillBack').style.display = 'inline';
+          fetchStats();
+        },
+      },
+    });
   } else {
-    mtb.innerHTML = data.machines.map(m => {
-      const rate = m.tasks ? Math.round(m.success / m.tasks * 100) : 0;
-      const rateClass = rate >= 80 ? 'success-badge' : rate >= 50 ? '' : 'fail-badge';
-      return `<tr>
-        <td><strong>${m.name}</strong></td>
-        <td>${m.tasks}</td><td>${m.api_calls}</td>
-        <td>${m.gen}</td><td>${m.saved}</td>
-        <td class="${rateClass}">${rate}%</td>
-        <td>${formatDateTime(m.last_ts)}</td>
-      </tr>`;
-    }).join('');
+    chartTimeline.data.labels = tlKeys;
+    chartTimeline.data.datasets[0].data = tlTasks;
+    chartTimeline.data.datasets[1].data = tlAPI;
+    chartTimeline.update('none'); // Update without full animation for smoother feel
   }
 
-  // Model distribution bars
-  const mb = document.getElementById('modelBars');
+  // --- Machine bar chart ---
+  const mSorted = [...data.machines].sort((a,b) => b.tasks - a.tasks).slice(0, 15);
+  const mNames = mSorted.map(m => m.name); // Keep full name for tooltip
+  const mTasks = mSorted.map(m => m.tasks);
+  const mColors = mSorted.map((_,i) => PALETTE[i % PALETTE.length]);
+
+  if (!chartMachine) {
+    chartMachine = new Chart(document.getElementById('machineChart'), {
+      type: 'bar',
+      data: {
+        labels: mNames,
+        datasets: [{ data: mTasks, backgroundColor: mColors, borderRadius: 4 }],
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        animation: { duration: 400 },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { beginAtZero: true, ticks: { color: '#8b8fa3' }, grid: { color: 'rgba(45,49,66,0.5)' } },
+          y: { 
+            ticks: { 
+              color: '#8b8fa3', 
+              font: { size: 11 },
+              callback: function(value, index, values) {
+                const label = this.getLabelForValue(value);
+                return label.length > 18 ? label.substring(0,18) + '…' : label;
+              }
+            }, 
+            grid: { display: false } 
+          },
+        },
+        onClick: (evt, elems) => {
+          if (!elems.length) return;
+          const idx = elems[0].index;
+          selectMachine(mSorted[idx].name);
+        },
+      },
+    });
+  } else {
+    chartMachine.data.labels = mNames;
+    chartMachine.data.datasets[0].data = mTasks;
+    chartMachine.data.datasets[0].backgroundColor = mColors;
+    chartMachine.update('none');
+  }
+
+  // --- Model doughnut chart ---
   const modelEntries = Object.entries(data.models).sort((a,b) => b[1]-a[1]);
-  const maxCount = modelEntries.length ? modelEntries[0][1] : 1;
-  if (!modelEntries.length) {
-    mb.innerHTML = '<div style="color:var(--text-dim)">暂无数据</div>';
+  const modelNames = modelEntries.map(e => e[0]);
+  const modelCounts = modelEntries.map(e => e[1]);
+  const modelColors = modelNames.map((_,i) => PALETTE[i % PALETTE.length]);
+
+  if (!chartModel) {
+    chartModel = new Chart(document.getElementById('modelChart'), {
+      type: 'doughnut',
+      data: {
+        labels: modelNames,
+        datasets: [{ data: modelCounts,
+          backgroundColor: modelColors,
+          borderWidth: 0, hoverOffset: 6 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        cutout: '55%',
+        animation: { duration: 400 },
+        plugins: {
+          legend: { position: 'right', labels: { color: '#8b8fa3', padding: 10, usePointStyle: true, pointStyle: 'circle' } },
+        },
+      },
+    });
   } else {
-    mb.innerHTML = modelEntries.map(([name, count]) => {
-      const pct = Math.round(count / maxCount * 100);
-      return `<div class="model-bar">
-        <div class="model-bar-name" title="${name}">${name}</div>
-        <div class="model-bar-track"><div class="model-bar-fill" style="width:${pct}%"></div></div>
-        <div class="model-bar-count">${count}</div>
-      </div>`;
-    }).join('');
+    chartModel.data.labels = modelNames;
+    chartModel.data.datasets[0].data = modelCounts;
+    chartModel.data.datasets[0].backgroundColor = modelColors;
+    chartModel.update('none');
   }
 
-  // Recent activity
+  // --- Recent activity table ---
   const rtb = document.querySelector('#recentTable tbody');
   if (!data.recent.length) {
     rtb.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-dim)">暂无数据</td></tr>';
   } else {
     rtb.innerHTML = data.recent.map(r => {
-      const status = r.ok
-        ? '<span class="success-badge">✅</span>'
-        : '<span class="fail-badge">❌ ' + (r.err||'').substring(0,30) + '</span>';
+      let statusHtml;
+      if (r.ok) {
+        statusHtml = '<span class="success-badge">✅</span>';
+      } else {
+        const fullErr = r.err || 'Unknown Error';
+        const safeErr = fullErr.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const shortErr = fullErr.length > 35 ? fullErr.substring(0, 35) + '...' : fullErr;
+        statusHtml = '<span class="fail-badge" style="cursor:help;" title="' + safeErr + '">❌ ' + shortErr + '</span>';
+      }
+      
       const node = NODE_LABELS[r.node] || r.node;
       return `<tr>
-        <td>${formatTime(r.ts)}</td>
+        <td>${fmt(r.ts)}</td>
         <td>${r.machine}</td><td>${node}</td>
         <td>${r.model}</td><td>${r.batch}</td>
         <td>${r.gen}</td><td>${r.saved}</td>
-        <td>${status}</td><td>${r.dur_s}s</td>
+        <td>${statusHtml}</td><td>${fmtDur(r.dur_s)}</td>
       </tr>`;
     }).join('');
   }
 }
 
-// Initial load + auto-refresh
+// ==================== Tab 2: Machine Details ====================
+function renderMachineDetails(data) {
+  const grid = document.getElementById('machineGrid');
+  if (!data.machines.length) {
+    grid.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:60px 20px">暂无数据</div>';
+    return;
+  }
+
+  // Remove elements for machines that no longer exist (e.g. if filtering changed)
+  const currentMachinesSet = new Set(data.machines.map(m => m.name));
+  Array.from(grid.children).forEach(child => {
+    if (child.id && child.id.startsWith('mcard-')) {
+      const mNameUrlSafe = child.getAttribute('data-mname');
+      if (!currentMachinesSet.has(mNameUrlSafe)) {
+        const canvasId = 'pie-' + mNameUrlSafe.replace(/[^a-zA-Z0-9]/g, '_');
+        if (machineChartInstances[canvasId]) {
+          machineChartInstances[canvasId].destroy();
+          delete machineChartInstances[canvasId];
+        }
+        grid.removeChild(child);
+      }
+    }
+  });
+
+  // Sort by success rate ascending (worst first)
+  const sorted = [...data.machines].sort((a,b) => {
+    const rateA = a.tasks ? a.success/a.tasks : 1;
+    const rateB = b.tasks ? b.success/b.tasks : 1;
+    return rateA - rateB;
+  });
+
+  // Update existing DOM cards or create new ones
+  sorted.forEach(m => {
+    const rate = m.tasks ? Math.round(m.success/m.tasks*100) : 0;
+    const rateColor = rate >= 80 ? 'var(--green)' : rate >= 50 ? 'var(--yellow)' : 'var(--red)';
+    const cleanId = m.name.replace(/[^a-zA-Z0-9]/g, '_');
+    const cardId = 'mcard-' + cleanId;
+    const canvasId = 'pie-' + cleanId;
+    
+    let card = document.getElementById(cardId);
+    if (!card) {
+      // Create new card
+      card = document.createElement('div');
+      card.className = 'machine-card';
+      card.id = cardId;
+      card.setAttribute('data-mname', m.name);
+      card.innerHTML = `
+        <div class="machine-card-header" title="${m.name}">
+          ${m.name}
+          <span class="m-rate" style="float:right;font-size:0.8rem;color:${rateColor}">${rate}%</span>
+        </div>
+        <div class="machine-card-chart">
+          <canvas id="${canvasId}"></canvas>
+        </div>
+        <div class="machine-card-stats">
+          <span>任务: <span class="val m-tasks">${m.tasks}</span></span>
+          <span>生成: <span class="val m-gen">${m.gen}</span></span>
+          <span>保存: <span class="val m-saved">${m.saved}</span></span>
+          <span>均耗: <span class="val m-dur">${fmtDur(m.dur_avg)}</span></span>
+          <span>最近: <span class="val m-last">${fmtDT(m.last_ts)}</span></span>
+        </div>`;
+      grid.appendChild(card);
+
+      // Initialize chart for the new card
+      const canvas = document.getElementById(canvasId);
+      if (canvas) {
+        machineChartInstances[canvasId] = new Chart(canvas, {
+          type: 'doughnut',
+          data: {
+            labels: ['成功', '失败'],
+            datasets: [{
+              data: [m.success, m.fail],
+              backgroundColor: ['#00b894', '#e17055'],
+              borderWidth: 0, hoverOffset: 4,
+            }],
+          },
+          options: {
+            responsive: true, maintainAspectRatio: true,
+            cutout: '50%', animation: { duration: 400 },
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + ctx.parsed + ' 次' } },
+            },
+          },
+        });
+      }
+    } else {
+      // Update DOM values in-place
+      card.querySelector('.m-rate').textContent = rate + '%';
+      card.querySelector('.m-rate').style.color = rateColor;
+      card.querySelector('.m-tasks').textContent = m.tasks;
+      card.querySelector('.m-gen').textContent = m.gen;
+      card.querySelector('.m-saved').textContent = m.saved;
+      card.querySelector('.m-dur').textContent = fmtDur(m.dur_avg);
+      card.querySelector('.m-last').textContent = fmtDT(m.last_ts);
+      
+      // Re-append to grid to respect sorted order 
+      // (appendChild moves the node to the end if it already exists)
+      grid.appendChild(card);
+      
+      // Update chart data in-place
+      if (machineChartInstances[canvasId]) {
+        const cData = machineChartInstances[canvasId].data.datasets[0].data;
+        if (cData[0] !== m.success || cData[1] !== m.fail) {
+          cData[0] = m.success;
+          cData[1] = m.fail;
+          machineChartInstances[canvasId].update('none'); // Update without flashing
+        }
+      }
+    }
+  });
+}
+
+// ==================== Init ====================
 fetchStats();
 refreshTimer = setInterval(fetchStats, 5000);
 </script>
@@ -421,8 +874,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/stats":
             params = parse_qs(parsed.query)
             date_filter = params.get("filter", ["today"])[0]
-            records = load_all_records(self.data_dir, date_filter)
-            stats = compute_stats(records)
+            machine_filter = params.get("machine", [""])[0]
+            date_exact = params.get("date", [""])[0]
+            status_filter = params.get("status", ["all"])[0]
+            records = load_all_records(self.data_dir, date_filter,
+                                       machine_filter, date_exact, status_filter)
+            stats = compute_stats(records, date_filter, date_exact)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
