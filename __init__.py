@@ -16,6 +16,7 @@ try:
         DynamicAudioGenerationNode,
         DynamicImageEditorNode,
         GaussianBlurUpscaleNode,
+        BatchBoxImageAnnotator,
         create_dynamic_node
     )
     from .config_manager import config_manager
@@ -33,6 +34,7 @@ except ImportError:
     DynamicAudioGenerationNode = None
     DynamicImageEditorNode = None
     GaussianBlurUpscaleNode = None
+    BatchBoxImageAnnotator = None
     create_dynamic_node = None
     config_manager = None
 
@@ -54,6 +56,7 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": DynamicAudioGenerationNode,
         "DynamicImageEditor": DynamicImageEditorNode,
         "GaussianBlurUpscale": GaussianBlurUpscaleNode,
+        "BatchBoxImageAnnotator": BatchBoxImageAnnotator,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -64,6 +67,7 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
         "DynamicImageEditor": "🔧 Dynamic Image Editor",
         "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
+        "BatchBoxImageAnnotator": "✏️ Image Annotator (编辑图像)",
     }
 
 # ==========================================
@@ -1127,7 +1131,7 @@ try:
                 })
             
             import time as _time
-            _usage_t0 = _time.time()
+            _usage_t0 = _time.monotonic()
             _batch_count = min(int(data.get("batch_count", 1)), 20)
             
             result = await generator.generate(
@@ -1141,7 +1145,7 @@ try:
                 on_batch_complete=on_batch_complete
             )
             
-            _usage_duration = _time.time() - _usage_t0
+            _usage_duration = _time.monotonic() - _usage_t0
             
             # --- Usage Tracking ---
             try:

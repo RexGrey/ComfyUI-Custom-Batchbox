@@ -932,9 +932,9 @@ class DynamicTextGenerationNode(DynamicImageNodeBase):
         extra_params_str = kwargs.get("extra_params", "{}")
         params.update(self._parse_extra_params(extra_params_str))
         
-        _usage_t0 = time.time()
+        _usage_t0 = time.monotonic()
         result = self.execute_with_failover(model, params, "text2text")
-        _usage_duration = time.time() - _usage_t0
+        _usage_duration = time.monotonic() - _usage_t0
         
         # --- Usage Tracking ---
         try:
@@ -1031,9 +1031,9 @@ class DynamicVideoGenerationNode(DynamicImageNodeBase):
                     upload_files.append((key, (f'{key}.png', buffered.getvalue(), 'image/png')))
             params["_upload_files"] = upload_files
         
-        _usage_t0 = time.time()
+        _usage_t0 = time.monotonic()
         result = self.execute_with_failover(model, params, mode)
-        _usage_duration = time.time() - _usage_t0
+        _usage_duration = time.monotonic() - _usage_t0
         
         # --- Usage Tracking ---
         try:
@@ -1111,9 +1111,9 @@ class DynamicAudioGenerationNode(DynamicImageNodeBase):
         extra_params_str = kwargs.get("extra_params", "{}")
         params.update(self._parse_extra_params(extra_params_str))
         
-        _usage_t0 = time.time()
+        _usage_t0 = time.monotonic()
         result = self.execute_with_failover(model, params, "text2audio")
-        _usage_duration = time.time() - _usage_t0
+        _usage_duration = time.monotonic() - _usage_t0
         
         # --- Usage Tracking ---
         try:
@@ -1288,7 +1288,7 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
         # With 429 auto-retry: if rate limited, wait and retry automatically
         import time
         
-        _usage_t0 = time.time()
+        _usage_t0 = time.monotonic()
         
         def execute_with_retry(attempt_num):
             """Execute with automatic 429 retry"""
@@ -1311,7 +1311,7 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
             print(f"[Editor] Generating {i+1}/{batch_count}...")
             results.append(execute_with_retry(i))
         
-        _usage_duration = time.time() - _usage_t0
+        _usage_duration = time.monotonic() - _usage_t0
         
         # Process all results
         output_tensors = []
@@ -1731,6 +1731,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
                 print(f"[GaussianBlurUpscale-Tiled] Filtered to {len(tiles)} selected tiles: {selected_tiles}")
             
             # Process each tile
+            _usage_t0 = time.monotonic()
             total_tiles = len(tiles)
             from comfy.utils import ProgressBar
             pbar = ProgressBar(total_tiles)
@@ -2115,6 +2116,96 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             },
             "result": (selected_tensor, blurred_tensor, images_tensor, info)
         }
+
+
+# ==========================================
+# Image Annotator Node (框选 & 数字标注)
+# ==========================================
+class BatchBoxImageAnnotator:
+    """
+    Image annotation node — draw rectangles and place numbered markers
+    on an image, then output the annotated result as IMAGE tensor.
+
+    Supports:
+    - Direct image upload / drag-and-drop (via frontend widget)
+    - Left-side IMAGE input from other nodes
+    - A popup editor with rectangle drawing & sequential number markers
+    - 6 preset colours, adjustable line width / font size
+
+    Priority uses "last-write-wins":
+    - _source_mode="local"    → dropped/uploaded file takes priority
+    - _source_mode="upstream" → wired IMAGE input takes priority
+    - edited_b64 always wins (it contains the user's actual annotation work)
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {},
+            "optional": {
+                "image": ("IMAGE",),
+            },
+            "hidden": {
+                # Base64 PNG pushed from the frontend editor canvas
+                "_edited_image_b64": ("STRING", {"default": ""}),
+                # Original image filename (for upload/drag-drop)
+                "_source_image_name": ("STRING", {"default": ""}),
+                # Which source was set last: "local" or "upstream"
+                "_source_mode": ("STRING", {"default": ""}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("annotated_image",)
+    FUNCTION = "execute"
+    CATEGORY = "ComfyUI-Custom-Batchbox"
+    OUTPUT_NODE = False
+
+    def execute(self, image=None, **kwargs):
+        edited_b64 = kwargs.get("_edited_image_b64", "")
+        source_name = kwargs.get("_source_image_name", "")
+        source_mode = kwargs.get("_source_mode", "")
+
+        # Priority 1: edited canvas from the frontend editor (always wins)
+        if edited_b64:
+            if "," in edited_b64:
+                edited_b64 = edited_b64.split(",", 1)[1]
+            img_bytes = base64.b64decode(edited_b64)
+            pil_img = Image.open(BytesIO(img_bytes)).convert("RGB")
+            return (pil2tensor(pil_img),)
+
+        # Priority 2+3: last-write-wins between local and upstream
+        if source_mode == "local":
+            # User dropped/uploaded after connecting — local wins
+            if source_name:
+                input_dir = folder_paths.get_input_directory()
+                filepath = _safe_join_under(input_dir, source_name)
+                if filepath and os.path.isfile(filepath):
+                    pil_img = Image.open(filepath).convert("RGB")
+                    return (pil2tensor(pil_img),)
+            # Fall through to upstream if local file missing
+            if image is not None:
+                return (image,)
+        else:
+            # Default / upstream mode — wired image wins
+            if image is not None:
+                return (image,)
+            # Fall through to local if no upstream
+            if source_name:
+                input_dir = folder_paths.get_input_directory()
+                filepath = _safe_join_under(input_dir, source_name)
+                if filepath and os.path.isfile(filepath):
+                    pil_img = Image.open(filepath).convert("RGB")
+                    return (pil2tensor(pil_img),)
+
+        # Fallback: 512×512 black placeholder
+        placeholder = Image.new("RGB", (512, 512), color="black")
+        return (pil2tensor(placeholder),)
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        """Always re-evaluate so edits are picked up immediately."""
+        return float("nan")
 
 
 # ==========================================
