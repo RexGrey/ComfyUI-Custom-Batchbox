@@ -139,7 +139,12 @@ class ImageAnnotatorEditor {
         this.annotations = existingAnnotations ? JSON.parse(JSON.stringify(existingAnnotations)) : [];
         this.nextNumber = existingNextNumber || 1;
         this.dragging = false;
+        this.dragMode = null;  // "draw" or "modify"
         this.dragStart = null;
+        this.selectedIdx = -1;
+        this.hoverHit = null;  // { idx, part } from hit testing
+        this.dragHit = null;   // "center", "tl", "tr", "bl", "br"
+        this.dragOrig = null;  // deep copy of selected annotation before drag
         this._build();
     }
 
@@ -261,10 +266,17 @@ class ImageAnnotatorEditor {
         /* Init canvas */
         this._initCanvas();
 
-        /* Keyboard: Escape to close, Ctrl+Z to undo */
+        /* Keyboard: Escape to close, Ctrl+Z to undo, Delete to remove selected */
         this._keyHandler = (e) => {
             if (e.key === "Escape") this.close();
             if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); this._undo(); }
+            if (e.key === "Delete" || e.key === "Backspace") {
+                if (this.selectedIdx !== -1) {
+                    this.annotations.splice(this.selectedIdx, 1);
+                    this.selectedIdx = -1;
+                    this._redraw();
+                }
+            }
         };
         document.addEventListener("keydown", this._keyHandler);
     }
@@ -280,9 +292,12 @@ class ImageAnnotatorEditor {
         btn.className = "bbia-tool-btn" + (tool === this.tool ? " active" : "");
         btn.textContent = label;
         btn.addEventListener("click", () => {
+            if (this.tool === tool) return;
             this.tool = tool;
             this.btnRect.classList.toggle("active", tool === "rect");
             this.btnNum.classList.toggle("active", tool === "number");
+            this.selectedIdx = -1;
+            this._redraw();
             this._updateToolControls();
         });
         return btn;
@@ -294,8 +309,16 @@ class ImageAnnotatorEditor {
     }
 
     _updateToolControls() {
-        if (this.lwGroup) this.lwGroup.style.display = this.tool === "rect" ? "flex" : "none";
-        if (this.fsGroup) this.fsGroup.style.display = this.tool === "number" ? "flex" : "none";
+        const sel = this._getSelected();
+        const showLw = (this.tool === "rect" && !sel) || (sel?.type === "rect");
+        const showFs = (this.tool === "number" && !sel) || (sel?.type === "number");
+
+        if (this.lwGroup) this.lwGroup.style.display = showLw ? "flex" : "none";
+        if (this.fsGroup) this.fsGroup.style.display = showFs ? "flex" : "none";
+    }
+
+    _getSelected() {
+        return this.selectedIdx >= 0 && this.selectedIdx < this.annotations.length ? this.annotations[this.selectedIdx] : null;
     }
 
     /* ---- Canvas ---- */
@@ -326,11 +349,83 @@ class ImageAnnotatorEditor {
         };
     }
 
+    _hitTest(x, y) {
+        // Search backwards (top to bottom)
+        for (let i = this.annotations.length - 1; i >= 0; i--) {
+            const a = this.annotations[i];
+            if (a.type === "number") {
+                const r = a.fontSize / 2;
+                if (Math.abs(x - a.x) < r && Math.abs(y - a.y) < r) {
+                    return { idx: i, part: "center" };
+                }
+            } else if (a.type === "rect") {
+                const l = Math.min(a.x1, a.x2), r = Math.max(a.x1, a.x2);
+                const t = Math.min(a.y1, a.y2), b = Math.max(a.y1, a.y2);
+                const T = Math.max(a.lineWidth, 15);
+                // Corners
+                if (Math.hypot(x - l, y - t) < T) return { idx: i, part: "tl" };
+                if (Math.hypot(x - r, y - t) < T) return { idx: i, part: "tr" };
+                if (Math.hypot(x - l, y - b) < T) return { idx: i, part: "bl" };
+                if (Math.hypot(x - r, y - b) < T) return { idx: i, part: "br" };
+                // Edges (move)
+                const onTop = Math.abs(y - t) < T && x >= l - T && x <= r + T;
+                const onBottom = Math.abs(y - b) < T && x >= l - T && x <= r + T;
+                const onLeft = Math.abs(x - l) < T && y >= t - T && y <= b + T;
+                const onRight = Math.abs(x - r) < T && y >= t - T && y <= b + T;
+                if (onTop || onBottom || onLeft || onRight) {
+                    return { idx: i, part: "center" };
+                }
+            }
+        }
+        return null;
+    }
+
+    _getCursorForPart(part) {
+        if (!part) return "crosshair";
+        if (part === "center") return "move";
+        if (part === "tl" || part === "br") return "nwse-resize";
+        if (part === "tr" || part === "bl") return "nesw-resize";
+        return "default";
+    }
+
     _bindEvents() {
         this.canvas.addEventListener("mousedown", (e) => {
             if (e.button !== 0) return;
             const pos = this._toImageCoords(e);
+
+            // Re-hit test instantly just in case mousemove didn't catch the exact frame
+            this.hoverHit = this._hitTest(pos.x, pos.y);
+
+            if (this.hoverHit) {
+                // Clicked on an existing annotation -> Modify Mode
+                this.selectedIdx = this.hoverHit.idx;
+                const a = this.annotations[this.selectedIdx];
+                this.dragMode = "modify";
+                this.dragHit = this.hoverHit.part;
+                this.dragging = true;
+                this.dragStart = pos;
+                this.dragOrig = JSON.parse(JSON.stringify(a));
+
+                // Switch tool to match the selected annotation type
+                if (a.type !== this.tool) {
+                    this.btnRect.classList.toggle("active", a.type === "rect");
+                    this.btnNum.classList.toggle("active", a.type === "number");
+                    this.tool = a.type;
+                }
+
+                this._updateToolControls();
+                if (a.type === "rect") { this.lwSlider.value = a.lineWidth; this.lwValue.textContent = a.lineWidth; }
+                if (a.type === "number") { this.fsSlider.value = a.fontSize; this.fsValue.textContent = a.fontSize; }
+                this._redraw();
+                return;
+            }
+
+            // Clicked on empty space -> Draw Mode
+            this.selectedIdx = -1;
+            this._updateToolControls();
+
             if (this.tool === "rect") {
+                this.dragMode = "draw";
                 this.dragging = true;
                 this.dragStart = pos;
             } else if (this.tool === "number") {
@@ -341,33 +436,82 @@ class ImageAnnotatorEditor {
                     color: this.color,
                     fontSize: this.fontSize,
                 });
+                this.selectedIdx = this.annotations.length - 1;
+                this._updateToolControls();
                 this._redraw();
             }
         });
 
         this.canvas.addEventListener("mousemove", (e) => {
-            if (!this.dragging) return;
             const pos = this._toImageCoords(e);
-            this._redraw();
-            // Draw live preview rectangle
-            this._drawRect(this.dragStart.x, this.dragStart.y, pos.x, pos.y, this.color, this.lineWidth, true);
+
+            if (!this.dragging) {
+                this.hoverHit = this._hitTest(pos.x, pos.y);
+                this.canvas.style.cursor = this.hoverHit ? this._getCursorForPart(this.hoverHit.part) : "crosshair";
+                return;
+            }
+
+            if (this.dragMode === "modify") {
+                const a = this.annotations[this.selectedIdx];
+                const dx = pos.x - this.dragStart.x;
+                const dy = pos.y - this.dragStart.y;
+                if (a.type === "number") {
+                    a.x = this.dragOrig.x + dx;
+                    a.y = this.dragOrig.y + dy;
+                } else if (a.type === "rect") {
+                    if (this.dragHit === "center") {
+                        a.x1 = this.dragOrig.x1 + dx; a.x2 = this.dragOrig.x2 + dx;
+                        a.y1 = this.dragOrig.y1 + dy; a.y2 = this.dragOrig.y2 + dy;
+                    } else {
+                        const isOriginalX1Left = this.dragOrig.x1 <= this.dragOrig.x2;
+                        const isOriginalY1Top = this.dragOrig.y1 <= this.dragOrig.y2;
+                        let nx1 = this.dragOrig.x1, nx2 = this.dragOrig.x2;
+                        let ny1 = this.dragOrig.y1, ny2 = this.dragOrig.y2;
+
+                        if (this.dragHit.includes("l")) { if (isOriginalX1Left) nx1 += dx; else nx2 += dx; }
+                        if (this.dragHit.includes("r")) { if (isOriginalX1Left) nx2 += dx; else nx1 += dx; }
+                        if (this.dragHit.includes("t")) { if (isOriginalY1Top) ny1 += dy; else ny2 += dy; }
+                        if (this.dragHit.includes("b")) { if (isOriginalY1Top) ny2 += dy; else ny1 += dy; }
+
+                        a.x1 = nx1; a.x2 = nx2; a.y1 = ny1; a.y2 = ny2;
+                    }
+                }
+                this._redraw();
+                return;
+            }
+
+            if (this.dragMode === "draw" && this.tool === "rect") {
+                this._redraw();
+                this._drawRect(this.dragStart.x, this.dragStart.y, pos.x, pos.y, this.color, this.lineWidth, true);
+            }
         });
 
         const endDrag = (e) => {
             if (!this.dragging) return;
             this.dragging = false;
-            const pos = this._toImageCoords(e);
-            const dx = Math.abs(pos.x - this.dragStart.x);
-            const dy = Math.abs(pos.y - this.dragStart.y);
-            if (dx > 4 || dy > 4) {
-                this.annotations.push({
-                    type: "rect",
-                    x1: this.dragStart.x, y1: this.dragStart.y,
-                    x2: pos.x, y2: pos.y,
-                    color: this.color,
-                    lineWidth: this.lineWidth,
-                });
+
+            if (this.dragMode === "modify") {
+                this.dragMode = null;
+                return;
             }
+
+            const pos = this._toImageCoords(e);
+            if (this.dragMode === "draw" && this.tool === "rect") {
+                const dx = Math.abs(pos.x - this.dragStart.x);
+                const dy = Math.abs(pos.y - this.dragStart.y);
+                if (dx > 4 || dy > 4) {
+                    this.annotations.push({
+                        type: "rect",
+                        x1: this.dragStart.x, y1: this.dragStart.y,
+                        x2: pos.x, y2: pos.y,
+                        color: this.color,
+                        lineWidth: this.lineWidth,
+                    });
+                    this.selectedIdx = this.annotations.length - 1;
+                    this._updateToolControls();
+                }
+            }
+            this.dragMode = null;
             this._redraw();
         };
         this.canvas.addEventListener("mouseup", endDrag);
@@ -378,11 +522,46 @@ class ImageAnnotatorEditor {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         ctx.drawImage(this.sourceImage, 0, 0);
-        for (const a of this.annotations) {
+        for (let i = 0; i < this.annotations.length; i++) {
+            const a = this.annotations[i];
             if (a.type === "rect") {
                 this._drawRect(a.x1, a.y1, a.x2, a.y2, a.color, a.lineWidth, false);
             } else if (a.type === "number") {
                 this._drawNumber(a.x, a.y, a.num, a.color, a.fontSize);
+            }
+
+            // Draw selection outlines and handles
+            if (i === this.selectedIdx) {
+                ctx.save();
+                ctx.strokeStyle = "#4ea8ff";
+                ctx.lineWidth = 2;
+                ctx.fillStyle = "#fff";
+                ctx.setLineDash([6, 4]);
+
+                let l, t, r, b;
+                if (a.type === "rect") {
+                    l = Math.min(a.x1, a.x2); r = Math.max(a.x1, a.x2);
+                    t = Math.min(a.y1, a.y2); b = Math.max(a.y1, a.y2);
+                } else if (a.type === "number") {
+                    const sr = a.fontSize / 2;
+                    l = a.x - sr; r = a.x + sr;
+                    t = a.y - sr; b = a.y + sr;
+                }
+
+                // Outline
+                ctx.strokeRect(l - 4, t - 4, r - l + 8, b - t + 8);
+
+                // Corners only for rects
+                if (a.type === "rect") {
+                    ctx.setLineDash([]);
+                    const h = 8; // handle size
+                    const drawHandle = (hx, hy) => { ctx.fillRect(hx - h / 2, hy - h / 2, h, h); ctx.strokeRect(hx - h / 2, hy - h / 2, h, h); };
+                    drawHandle(l - 4, t - 4);
+                    drawHandle(r + 4, t - 4);
+                    drawHandle(l - 4, b + 4);
+                    drawHandle(r + 4, b + 4);
+                }
+                ctx.restore();
             }
         }
     }
