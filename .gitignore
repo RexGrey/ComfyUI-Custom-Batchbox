@@ -66,3 +66,5 @@ output/
 
 # IDE backup files
 .codex-backups/
+
+ci_test*.log

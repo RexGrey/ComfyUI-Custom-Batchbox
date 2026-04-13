@@ -150,19 +150,37 @@ function createLoadImageNode(imageName, canvasX, canvasY) {
 
     // Set the image widget value
     // LoadImage node has a widget named "image" that lists available images
-    const imageWidget = node.widgets?.find(w => w.name === "image");
-    if (imageWidget) {
-        imageWidget.value = imageName;
-        // Trigger callback to update preview
-        if (imageWidget.callback) {
-            imageWidget.callback(imageName);
-        }
-    }
+    setLoadImageWidgetValue(node, imageName);
 
     // Force the node to refresh so the preview shows
     node.setDirtyCanvas(true, true);
     app.graph.setDirtyCanvas(true, true);
     console.log(`[ImageDrop] ✅ Created LoadImage node with: ${imageName}`);
+}
+
+/**
+ * Set the image widget value on a LoadImage node, ensuring the filename
+ * is in the combo options list so execution can find it.
+ */
+function setLoadImageWidgetValue(node, imageName) {
+    const imageWidget = node.widgets?.find(w => w.name === "image");
+    if (!imageWidget) return;
+
+    // Ensure the uploaded filename is in the widget's options list
+    // ComfyUI combo widgets store options in widget.options.values (array)
+    // or may use a different structure depending on version
+    if (imageWidget.options?.values && Array.isArray(imageWidget.options.values)) {
+        if (!imageWidget.options.values.includes(imageName)) {
+            imageWidget.options.values.push(imageName);
+        }
+    }
+
+    imageWidget.value = imageName;
+
+    // Trigger callback to update preview
+    if (imageWidget.callback) {
+        imageWidget.callback(imageName);
+    }
 }
 
 /**
@@ -232,13 +250,7 @@ app.registerExtension({
                 console.log(`[ImageDrop] Replacing image in node #${nodeUnderCursor.id}: ${file.name}`);
                 const uploadedName = await uploadImageToInput(file);
                 if (uploadedName) {
-                    const imageWidget = nodeUnderCursor.widgets?.find(w => w.name === "image");
-                    if (imageWidget) {
-                        imageWidget.value = uploadedName;
-                        if (imageWidget.callback) {
-                            imageWidget.callback(uploadedName);
-                        }
-                    }
+                    setLoadImageWidgetValue(nodeUnderCursor, uploadedName);
                     nodeUnderCursor.setDirtyCanvas(true, true);
                     app.graph.setDirtyCanvas(true, true);
                     console.log(`[ImageDrop] ✅ Replaced image in node #${nodeUnderCursor.id}: ${uploadedName}`);

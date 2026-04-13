@@ -228,6 +228,22 @@ def compute_stats(records: list, date_filter: str = "today",
     }
 
 
+def get_valid_dates(data_dir: str) -> list:
+    """Scan usage_logs and return all dates (YYYY-MM-DD) that have records."""
+    logs_dir = os.path.join(data_dir, "usage_logs")
+    if not os.path.isdir(logs_dir):
+        return []
+    dates = set()
+    for machine_dir in glob.glob(os.path.join(logs_dir, "*")):
+        if not os.path.isdir(machine_dir):
+            continue
+        for f in glob.glob(os.path.join(machine_dir, "usage_*.jsonl")):
+            basename = os.path.basename(f)
+            d = basename.replace("usage_", "").replace(".jsonl", "")
+            dates.add(d)
+    return sorted(list(dates))
+
+
 # ==========================================
 # Embedded HTML Dashboard
 # ==========================================
@@ -237,6 +253,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BatchBox Usage Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/zh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -287,6 +307,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .filters button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
   .filters button:hover { border-color:var(--accent); }
+  .date-picker {
+    padding:5px 12px; border:1px solid var(--border); border-radius:6px;
+    background:var(--card-bg); color:var(--text); font-size:0.85rem; cursor:pointer;
+  }
+  .date-picker:hover, .date-picker:focus { border-color:var(--accent); }
   select {
     padding:6px 10px; border:1px solid var(--border); border-radius:6px;
     background:var(--card-bg); color:var(--text); font-size:0.85rem;
@@ -397,9 +422,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <option value="fail">❌ 仅失败</option>
     </select>
     <span id="drillBack" style="display:none; cursor:pointer; font-size:0.85rem; color:var(--accent);"
-          onclick="clearDrill()">← 返回周视图</span>
+          onclick="clearDrill()">← 取消日期筛选</span>
   </div>
   <div class="filters" id="filterBtns">
+    <button id="dateBtn" class="date-picker">📅 日期</button>
     <button class="active" onclick="setFilter('today')">今日</button>
     <button onclick="setFilter('week')">本周</button>
     <button onclick="setFilter('all')">全部</button>
@@ -457,6 +483,7 @@ let drillDate = '';   // '' = no drill;  'YYYY-MM-DD' = drilled
 let refreshTimer = null;
 let chartTimeline = null, chartMachine = null, chartModel = null;
 let machineChartInstances = {};  // Tab2 mini pies
+let fpInstance = null;
 
 const NODE_LABELS = {
   'image':'🎨 图片','independent':'🚀 独立','editor':'🔧 编辑',
@@ -502,6 +529,8 @@ function setFilter(f) {
   currentFilter = f;
   drillDate = '';
   document.getElementById('drillBack').style.display = 'none';
+  if (fpInstance) fpInstance.clear();
+  document.getElementById('dateBtn').textContent = '📅 日期';
   document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   fetchStats();
@@ -522,11 +551,58 @@ function selectMachine(name) {
 function clearDrill() {
   drillDate = '';
   document.getElementById('drillBack').style.display = 'none';
+  if (fpInstance) fpInstance.clear();
+  document.getElementById('dateBtn').textContent = '📅 日期';
   // revert to week
   currentFilter = 'week';
   document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('#filterBtns button')[1].classList.add('active');
+  document.querySelectorAll('#filterBtns button')[2].classList.add('active'); // active week btn shifted by dateBtn
   fetchStats();
+}
+
+function initFlatpickr(validDates) {
+    if (fpInstance) {
+        fpInstance.set('enable', validDates);
+        return;
+    }
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    
+    fpInstance = flatpickr("#dateBtn", {
+        locale: "zh",
+        minDate: new Date().getFullYear() + "-04-01",
+        enable: validDates, // Only enable dates with records
+        onChange: function(selectedDates, dateStr) {
+            if (dateStr) {
+                drillDate = dateStr;
+                document.getElementById('dateBtn').textContent = '📅 ' + dateStr;
+                document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
+                document.getElementById('drillBack').style.display = 'inline';
+                fetchStats();
+            }
+        },
+        onDayCreate: function(dObj, dStr, fp, dayElem) {
+            const y = dayElem.dateObj.getFullYear();
+            const m = String(dayElem.dateObj.getMonth() + 1).padStart(2, '0');
+            const d = String(dayElem.dateObj.getDate()).padStart(2, '0');
+            const ds = `${y}-${m}-${d}`;
+
+            if (ds === todayStr) {
+                // Hyper-highlight today
+                dayElem.style.backgroundColor = '#6c5ce7';
+                dayElem.style.color = '#fff';
+                dayElem.style.fontWeight = 'bold';
+                dayElem.style.borderColor = '#6c5ce7';
+                // Add dot or mark if it also has valid data
+                if (validDates.includes(todayStr)) {
+                   dayElem.innerHTML += '<span class="flatDateDot" style="display:block;width:4px;height:4px;border-radius:50%;background:#fff;margin:0 auto;position:absolute;bottom:3px;left:50%;transform:translateX(-50%);"></span>';
+                }
+            } else if (validDates.includes(ds)) {
+                // Highlight recorded dates with a prominent background
+                dayElem.style.backgroundColor = 'rgba(108, 92, 231, 0.3)';
+            }
+        }
+    });
 }
 
 // ==================== Data fetch ====================
@@ -538,6 +614,7 @@ async function fetchStats() {
     if (drillDate) url += '&date=' + drillDate;
     const resp = await fetch(url);
     const data = await resp.json();
+    if (data.valid_dates) initFlatpickr(data.valid_dates);
     renderOverview(data);
     renderMachineDetails(data);
     updateMachineSelect(data.machine_list);
@@ -618,7 +695,10 @@ function renderOverview(data) {
           const year = now.getFullYear();
           const parts = label.split('-');
           drillDate = year + '-' + parts[0].padStart(2,'0') + '-' + parts[1].padStart(2,'0');
+          if (fpInstance) fpInstance.setDate(drillDate);
+          document.getElementById('dateBtn').textContent = '📅 ' + drillDate;
           document.getElementById('drillBack').style.display = 'inline';
+          document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
           fetchStats();
         },
       },
@@ -655,7 +735,7 @@ function renderOverview(data) {
               font: { size: 11 },
               callback: function(value, index, values) {
                 const label = this.getLabelForValue(value);
-                return label.length > 18 ? label.substring(0,18) + '…' : label;
+                return label.length > 15 ? '…' + label.substring(label.length - 15) : label;
               }
             }, 
             grid: { display: false } 
@@ -742,7 +822,7 @@ function renderMachineDetails(data) {
     return;
   }
 
-  // Remove elements for machines that no longer exist (e.g. if filtering changed)
+  // Remove existing "暂无数据" placeholder or old machines
   const currentMachinesSet = new Set(data.machines.map(m => m.name));
   Array.from(grid.children).forEach(child => {
     if (child.id && child.id.startsWith('mcard-')) {
@@ -755,6 +835,9 @@ function renderMachineDetails(data) {
         }
         grid.removeChild(child);
       }
+    } else {
+      // If it has no 'mcard-' ID (like the placeholder "暂无数据" text/div), remove it!
+      grid.removeChild(child);
     }
   });
 
@@ -880,6 +963,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             records = load_all_records(self.data_dir, date_filter,
                                        machine_filter, date_exact, status_filter)
             stats = compute_stats(records, date_filter, date_exact)
+            stats["valid_dates"] = get_valid_dates(self.data_dir)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
