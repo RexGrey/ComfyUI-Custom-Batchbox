@@ -825,8 +825,15 @@ async function collectImageInputsBase64(node) {
       const imageWidget = sourceNode.widgets?.find(w => w.name === "image");
       if (imageWidget && imageWidget.value) {
         try {
-          const filename = imageWidget.value;
-          const url = `/view?filename=${encodeURIComponent(filename)}&type=input`;
+          const rawValue = imageWidget.value;
+          let filename = rawValue;
+          let subfolder = "";
+          const slashIdx = rawValue.lastIndexOf("/");
+          if (slashIdx >= 0) {
+            subfolder = rawValue.substring(0, slashIdx);
+            filename = rawValue.substring(slashIdx + 1);
+          }
+          const url = `/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=input`;
           const response = await fetch(url);
           if (response.ok) {
             const blob = await response.blob();
