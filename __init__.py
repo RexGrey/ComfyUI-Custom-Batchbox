@@ -758,7 +758,15 @@ try:
                         break
 
             if not model:
-                return web.json_response({"success": False, "error": "未配置放大模型，请在 API Manager 中设置"}, status=400)
+                # Last resort: pick the very first model in config
+                raw_cfg = config_manager.get_raw_config()
+                all_models = list(raw_cfg.get("models", {}).keys())
+                if all_models:
+                    model = all_models[0]
+                    print(f"[BlurUpscale] No image-category model found, falling back to first available: {model}")
+
+            if not model:
+                return web.json_response({"success": False, "error": "未找到任何可用模型，请在 api_config.yaml 中配置至少一个模型"}, status=400)
 
             # --- Step 2: Build prompt ---
             REPAIR_PROMPTS = {

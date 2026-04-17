@@ -2438,15 +2438,23 @@ app.registerExtension({
           try {
             // Collect all connected image inputs via shared API
             let allImagesBase64 = [];
-            if (window.batchboxAPI?.collectImageInputsBase64) {
-              allImagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
-            } else {
-              // Fallback to legacy single-image method
-              const singleB64 = await getInputImageBase64(node);
-              if (singleB64) allImagesBase64 = [singleB64];
-            }
-            if (allImagesBase64.length === 0) {
-              throw new Error("无法获取输入图片，请确保已连接加载图像节点");
+            try {
+              if (window.batchboxAPI?.collectImageInputsBase64) {
+                allImagesBase64 = await window.batchboxAPI.collectImageInputsBase64(node);
+              } else {
+                const singleB64 = await getInputImageBase64(node);
+                if (singleB64) allImagesBase64 = [singleB64];
+              }
+              if (allImagesBase64.length === 0) {
+                throw new Error("未能加载到图片数据");
+              }
+            } catch (e) {
+              console.log("[BlurUpscale] 未从前端加载到现成的输入缓存，降级由 ComfyUI 后端队列获取。");
+              executeScopedToNode(node);
+              generateBtn._isGenerating = false;
+              generateBtn.name = generateBtn._originalName;
+              app.graph.setDirtyCanvas(true);
+              return;
             }
 
             // Split: first image = blur target, rest = reference face images
@@ -2891,6 +2899,67 @@ app.registerExtension({
     };
   },
 });
+
+// Helper for extracting individual image base64 directly from node
+async function extractBase64FromNode(sourceNode) {
+  if (!sourceNode) return null;
+
+  if (sourceNode.type === "LoadImage" || sourceNode.comfyClass === "LoadImage") {
+    const imageWidget = sourceNode.widgets?.find(w => w.name === "image");
+    if (imageWidget && imageWidget.value) {
+      const url = `/view?filename=${encodeURIComponent(imageWidget.value)}&type=input`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const blob = await response.blob();
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      }
+    }
+  } else if (sourceNode.imgs && sourceNode.imgs.length > 0) {
+    const source = sourceNode.imgs[0];
+    return await new Promise((resolve, reject) => {
+      const doProcess = () => {
+        try {
+          const w = source.naturalWidth || source.width;
+          const h = source.naturalHeight || source.height;
+          const canvas = document.createElement("canvas");
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(source, 0, 0, w, h);
+          canvas.toBlob((blob) => {
+            if (!blob) return reject(new Error("Canvas export failed"));
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          }, "image/png");
+        } catch (e) { reject(e); }
+      };
+      if (source.complete) doProcess();
+      else { source.onload = doProcess; source.onerror = reject; }
+    });
+  } else if (sourceNode.images && sourceNode.images.length > 0) {
+    const imgInfo = sourceNode.images[0];
+    const url = `/view?filename=${encodeURIComponent(imgInfo.filename)}&subfolder=${encodeURIComponent(imgInfo.subfolder || "")}&type=${imgInfo.type || "output"}`;
+    const response = await fetch(url);
+    if (response.ok) {
+      const blob = await response.blob();
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+  }
+
+  // Need explicitly throw so it can be handled by fallback ComfyUI queue builder
+  throw new Error(`无法获取节点 "${sourceNode.title || sourceNode.type}" 的图片。请先执行一次工作流。`);
+}
 
 
 // ================================================================

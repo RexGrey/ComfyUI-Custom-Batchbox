@@ -1612,6 +1612,12 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             # Fallback: use first available image model
             models = self.get_models_for_category("image")
             model = models[0] if models and models[0] != "No Models Found" else ""
+        if not model:
+            # Last resort: pick the very first model in config
+            all_models = config_manager.get_models()
+            if all_models:
+                model = all_models[0]
+                print(f"[BlurUpscale] No image-category model found, falling back to first available: {model}")
         return model, endpoint
     
     def _build_prompt(self, repair_mode: str, style_prompt: str) -> str:
