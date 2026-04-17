@@ -183,12 +183,12 @@ class ConfigManager:
             try:
                 from .crypto_utils import decrypt_secrets_file, get_key_from_env, ENV_KEY_NAME
             except ImportError:
-                print(f"[ConfigManager] ✗ crypto_utils 模块不可用, 无法解密 {self.secrets_enc_path}")
+                print(f"[ConfigManager] [X] crypto_utils not available, cannot decrypt {self.secrets_enc_path}")
                 return
 
             key = get_key_from_env()
             if not key:
-                print(f"[ConfigManager] ✗ 加密 secrets 文件已找到, 但环境变量 {ENV_KEY_NAME} 未设置")
+                print(f"[ConfigManager] [X] Encrypted secrets found but env {ENV_KEY_NAME} not set")
                 print(f"[ConfigManager]   请在启动脚本中添加: set {ENV_KEY_NAME}=<你的密钥>")
                 print(f"[ConfigManager]   所有 API provider 将不可用")
                 return
@@ -197,7 +197,7 @@ class ConfigManager:
                 plaintext = decrypt_secrets_file(self.secrets_enc_path, key)
             except Exception as e:
                 error_type = type(e).__name__
-                print(f"[ConfigManager] ✗ secrets 解密失败 ({error_type}): {e}")
+                print(f"[ConfigManager] [X] Secrets decryption failed ({error_type}): {e}")
                 if "InvalidToken" in error_type:
                     print(f"[ConfigManager]   密钥不正确或 .enc 文件已损坏, 请管理员重新运行 encrypt_secrets.py")
                 print(f"[ConfigManager]   所有 API provider 将不可用")
@@ -208,11 +208,11 @@ class ConfigManager:
                 if "providers" in secrets:
                     self._config["providers"] = secrets["providers"]
                     provider_names = list(secrets["providers"].keys())
-                    print(f"[ConfigManager] ✓ 已从加密文件解密并加载 {len(provider_names)} 个 provider")
+                    print(f"[ConfigManager] [OK] Decrypted and loaded {len(provider_names)} providers from encrypted file")
                 else:
                     print(f"[ConfigManager] Warning: 解密后的 secrets 中无 'providers' 段")
             except yaml.YAMLError as e:
-                print(f"[ConfigManager] ✗ 解密后的内容不是有效的 YAML: {e}")
+                print(f"[ConfigManager] [X] Decrypted content is not valid YAML: {e}")
                 print(f"[ConfigManager]   .enc 文件可能已损坏, 请管理员重新加密")
             return
 

@@ -1848,8 +1848,7 @@ app.registerExtension({
       "DynamicVideo",
       "DynamicText",
       "DynamicAudio",
-      "NanoBananaPro",
-      "GaussianBlurUpscale"
+      "NanoBananaPro"
     ];
 
     const isMatchingNode = batchboxNodePatterns.some(pattern =>
@@ -1898,8 +1897,10 @@ app.registerExtension({
         }
       };
 
-      // Add the "开始生成" button (skip for Editor - it needs Queue Prompt for image+mask)
-      if (!nodeData.name.includes("Editor")) {
+      // Add the "开始生成" button (skip for Editor and GaussianBlurUpscale)
+      // Editor needs Queue Prompt for image+mask;
+      // GaussianBlurUpscale has its own dedicated button in blur_upscale.js
+      if (!nodeData.name.includes("Editor") && !nodeData.name.includes("GaussianBlurUpscale")) {
         addGenerateButton(this);
       }
 

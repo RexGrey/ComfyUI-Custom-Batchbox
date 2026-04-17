@@ -16,7 +16,6 @@ try:
         DynamicAudioGenerationNode,
         DynamicImageEditorNode,
         GaussianBlurUpscaleNode,
-        BatchBoxImageAnnotator,
         create_dynamic_node
     )
     from .config_manager import config_manager
@@ -34,9 +33,15 @@ except ImportError:
     DynamicAudioGenerationNode = None
     DynamicImageEditorNode = None
     GaussianBlurUpscaleNode = None
-    BatchBoxImageAnnotator = None
     create_dynamic_node = None
     config_manager = None
+
+# Optional node: imported separately so a stale .pyd doesn't crash ALL nodes
+# during NAS -> local sync (Start_Client.bat may fail to update .pyd files)
+try:
+    from .nodes import BatchBoxImageAnnotator
+except (ImportError, AttributeError):
+    BatchBoxImageAnnotator = None
 
 # ==========================================
 # 1. Base Node Mappings
@@ -56,7 +61,6 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": DynamicAudioGenerationNode,
         "DynamicImageEditor": DynamicImageEditorNode,
         "GaussianBlurUpscale": GaussianBlurUpscaleNode,
-        "BatchBoxImageAnnotator": BatchBoxImageAnnotator,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -67,8 +71,12 @@ if _PACKAGE_BOOTSTRAP_AVAILABLE:
         "DynamicAudioGeneration": "🎵 Dynamic Audio Generation (Beta)",
         "DynamicImageEditor": "🔧 Dynamic Image Editor",
         "GaussianBlurUpscale": "🔍 Gaussian Blur Upscale (高斯模糊放大)",
-        "BatchBoxImageAnnotator": "✏️ Image Annotator (编辑图像)",
     }
+
+    # Register optional nodes only if available
+    if BatchBoxImageAnnotator is not None:
+        NODE_CLASS_MAPPINGS["BatchBoxImageAnnotator"] = BatchBoxImageAnnotator
+        NODE_DISPLAY_NAME_MAPPINGS["BatchBoxImageAnnotator"] = "✏️ Image Annotator (编辑图像)"
 
 # ==========================================
 # 2. Dynamic Node Registration
@@ -750,7 +758,15 @@ try:
                         break
 
             if not model:
-                return web.json_response({"success": False, "error": "未配置放大模型，请在 API Manager 中设置"}, status=400)
+                # Last resort: pick the very first model in config
+                raw_cfg = config_manager.get_raw_config()
+                all_models = list(raw_cfg.get("models", {}).keys())
+                if all_models:
+                    model = all_models[0]
+                    print(f"[BlurUpscale] No image-category model found, falling back to first available: {model}")
+
+            if not model:
+                return web.json_response({"success": False, "error": "未找到任何可用模型，请在 api_config.yaml 中配置至少一个模型"}, status=400)
 
             # --- Step 2: Build prompt ---
             REPAIR_PROMPTS = {

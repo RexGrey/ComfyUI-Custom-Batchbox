@@ -431,6 +431,12 @@ class GenericAPIAdapter(APIAdapter):
                 filename, file_bytes, mime_type = file_tuple
                 cached_b64 = None
             
+            if not cached_b64:
+                try:
+                    from ..image_compress import compress_for_upload
+                    file_bytes, mime_type = compress_for_upload(file_bytes, max_size_mb=10.0, mime_type=mime_type)
+                except Exception as e:
+                    logger.warning(f"[Gemini] Image compression failed: {e}")
 
             
             # Vertex AI: GCS gs:// URI (natively supported)
@@ -568,6 +574,11 @@ class GenericAPIAdapter(APIAdapter):
                 b64_data = cached_b64
             else:
                 filename, file_bytes, mime_type = file_tuple
+                try:
+                    from ..image_compress import compress_for_upload
+                    file_bytes, mime_type = compress_for_upload(file_bytes, max_size_mb=10.0, mime_type=mime_type)
+                except Exception as e:
+                    logger.warning(f"[Gemini] Image compression failed: {e}")
                 b64_data = base64.b64encode(file_bytes).decode('utf-8')
             
             data_url = f"data:{mime_type};base64,{b64_data}"

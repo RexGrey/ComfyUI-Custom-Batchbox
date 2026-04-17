@@ -276,7 +276,15 @@ class Account:
             return {"success": False, "error": "已在等待登录中"}
 
         self.waiting_for_login = True
-        webbrowser.open(self.login_url)
+        
+        import platform
+        if platform.system() == "Windows":
+            import os
+            os.startfile(self.login_url)
+        else:
+            import webbrowser
+            webbrowser.open(self.login_url)
+            
         logger.info(f"Opening login URL: {self.login_url}")
 
         async def login_callback(

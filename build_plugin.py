@@ -5,7 +5,11 @@ import subprocess
 def main():
     print("Starting ComfyUI-Custom-Batchbox secure build process...")
     
-    # 1. Compile all Python files
+    # 1. Force-clean Cython build cache to prevent stale .pyd reuse
+    if os.path.exists("build"):
+        shutil.rmtree("build")
+    
+    # 2. Compile all Python files
     print("Compiling Python source files to .pyd...")
     try:
         subprocess.run(["python", "setup_build.py"], check=True)
@@ -24,7 +28,7 @@ def main():
     
     for root, dirs, files in os.walk("."):
         # Exclude directories we don't want to copy
-        dirs[:] = [d for d in dirs if d not in ["venv", ".worktrees", "tests", "dist", ".git", "__pycache__", ".agents", "docs"]]
+        dirs[:] = [d for d in dirs if d not in ["venv", ".worktrees", "tests", "dist", ".git", "__pycache__", ".agents", "docs", "build", ".codex-backups", ".pytest_cache", "service_accounts"]]
             
         for file in files:
             # We want to copy .pyd files, regular web assets, and __init__.py
@@ -35,8 +39,10 @@ def main():
             is_static = file.endswith(".png") or file.endswith(".jpg")
             
             if is_pyd or is_asset or is_doc or is_init or is_static:
-                # Exclude secrets/api_config logic from being packaged as static files
-                if file == "secrets.yaml" or file == "api_config.yaml" or file.endswith(".enc"):
+                # Exclude secrets/config/sensitive files from being packaged
+                if file in ("secrets.yaml", "api_config.yaml", ".auth.json",
+                            "_bench_results.json", "skills-lock.json",
+                            "deploy_to_z.bat") or file.endswith(".enc"):
                     continue
                     
                 src_path = os.path.join(root, file)
