@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import uuid
+import shutil
 import socket
 import logging
 from datetime import datetime, timezone, timedelta
@@ -104,6 +105,60 @@ class UsageTracker:
         self._nas_base = None
         self._init_paths()
         logger.info("[UsageTracker] Machine ID: %s", self._machine_id)
+        
+        # Start background sync thread
+        self._sync_loop_running = True
+        threading.Thread(target=self._sync_loop, daemon=True).start()
+
+    def _sync_loop(self):
+        """Background thread that runs periodically to sync missing logs to NAS."""
+        while self._sync_loop_running:
+            try:
+                # Attempt to find NAS dir (it might become available later)
+                if not self._nas_base:
+                    nas_dir = _find_nas_dir()
+                    if nas_dir:
+                        self._nas_base = os.path.join(nas_dir, self._machine_id)
+                        logger.info("[UsageTracker] NAS discovered: %s", self._nas_base)
+                
+                if self._nas_base and self._local_base and os.path.exists(self._local_base):
+                    self._sync_backlog_to_nas()
+            except Exception as e:
+                logger.debug("[UsageTracker] Sync loop error: %s", e)
+            
+            # Wait 5 minutes before next check
+            time.sleep(300)
+
+    def _sync_backlog_to_nas(self):
+        """Cross-check local vs NAS files, push missing or larger files to NAS."""
+        os.makedirs(self._nas_base, exist_ok=True)
+        for filename in os.listdir(self._local_base):
+            if not filename.endswith(".jsonl"):
+                continue
+            
+            local_path = os.path.join(self._local_base, filename)
+            nas_path = os.path.join(self._nas_base, filename)
+            
+            if not os.path.exists(local_path):
+                continue
+                
+            local_size = os.path.getsize(local_path)
+            
+            sync_needed = False
+            if not os.path.exists(nas_path):
+                sync_needed = True
+            else:
+                nas_size = os.path.getsize(nas_path)
+                if local_size > nas_size:
+                    sync_needed = True
+            
+            if sync_needed:
+                try:
+                    with self._write_lock:
+                        shutil.copy2(local_path, nas_path)
+                    logger.debug("[UsageTracker] Synced %s to NAS (%d bytes)", filename, local_size)
+                except Exception as e:
+                    logger.debug("[UsageTracker] Failed to sync %s: %s", filename, e)
 
     def _init_paths(self):
         """Initialize local and NAS log directories."""

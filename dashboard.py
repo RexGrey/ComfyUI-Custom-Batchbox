@@ -244,6 +244,29 @@ def get_valid_dates(data_dir: str) -> list:
     return sorted(list(dates))
 
 
+def _notes_path(data_dir: str) -> str:
+    return os.path.join(data_dir, "machine_notes.json")
+
+
+def load_machine_notes(data_dir: str) -> dict:
+    """Load machine notes from JSON file."""
+    path = _notes_path(data_dir)
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_machine_notes(data_dir: str, notes: dict):
+    """Save machine notes to JSON file."""
+    path = _notes_path(data_dir)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(notes, f, ensure_ascii=False, indent=2)
+
+
 # ==========================================
 # Embedded HTML Dashboard
 # ==========================================
@@ -299,7 +322,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .controls { display:flex; justify-content:space-between; align-items:center;
     margin-bottom:16px; flex-wrap:wrap; gap:10px; }
   .controls-left { display:flex; align-items:center; gap:10px; }
-  .filters { display:flex; gap:6px; }
+  .filters { display:flex; gap:6px; position:relative; }
   .filters button {
     padding:6px 14px; border:1px solid var(--border); border-radius:6px;
     background:transparent; color:var(--text-dim); cursor:pointer;
@@ -311,7 +334,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     padding:5px 12px; border:1px solid var(--border); border-radius:6px;
     background:var(--card-bg); color:var(--text); font-size:0.85rem; cursor:pointer;
   }
+  /* Fix flatpickr: position the calendar dropdown */
+  .fp-cal-wrap {
+    position:absolute; top:calc(100% + 4px); right:0; z-index:999999;
+    display:none;
+  }
+  .fp-cal-wrap .flatpickr-calendar {
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    position:static !important;
+    left:auto !important; top:auto !important;
+  }
   .date-picker:hover, .date-picker:focus { border-color:var(--accent); }
+  .date-picker.fp-active { background:var(--accent); color:#fff; border-color:var(--accent); }
   select {
     padding:6px 10px; border:1px solid var(--border); border-radius:6px;
     background:var(--card-bg); color:var(--text); font-size:0.85rem;
@@ -387,6 +421,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     flex-wrap:wrap; gap:4px 12px; }
   .machine-card-stats span { white-space:nowrap; }
   .machine-card-stats .val { color:var(--text); font-weight:600; }
+  .m-note {
+    font-size:0.75rem; color:var(--text-dim); cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    max-width: 170px; display:inline-block; vertical-align:middle;
+  }
+  .m-note:hover { color:var(--accent); }
+  .m-note-input {
+    font-size:0.75rem; background:var(--bg); color:var(--text); border:1px solid var(--accent);
+    border-radius:4px; padding:1px 4px; width:130px; outline:none;
+  }
 
   .refresh-info { font-size:0.75rem; color:var(--text-dim); }
   @media (max-width:768px) {
@@ -425,7 +469,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           onclick="clearDrill()">← 取消日期筛选</span>
   </div>
   <div class="filters" id="filterBtns">
-    <button id="dateBtn" class="date-picker">📅 日期</button>
+    <button id="dateBtn" class="date-picker" onclick="toggleDatePicker(event)">📅 日期</button>
+    <div class="fp-cal-wrap" id="fpCalWrap"></div>
     <button class="active" onclick="setFilter('today')">今日</button>
     <button onclick="setFilter('week')">本周</button>
     <button onclick="setFilter('all')">全部</button>
@@ -473,6 +518,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="tab-page" id="page-machines">
   <div class="machine-grid" id="machineGrid"></div>
 </div>
+</div>
 
 <script>
 // ==================== State ====================
@@ -484,6 +530,8 @@ let refreshTimer = null;
 let chartTimeline = null, chartMachine = null, chartModel = null;
 let machineChartInstances = {};  // Tab2 mini pies
 let fpInstance = null;
+let fpOpen = false;
+let machineNotes = {};  // { machineName: "note text" }
 
 const NODE_LABELS = {
   'image':'🎨 图片','independent':'🚀 独立','editor':'🔧 编辑',
@@ -510,6 +558,50 @@ function fmtDur(s) {
   if (!s || s <= 0) return '-';
   return s >= 60 ? (s/60).toFixed(1)+'m' : s.toFixed(1)+'s';
 }
+function getNote(name) { return machineNotes[name] || ''; }
+function displayName(name) {
+  const n = getNote(name);
+  return n ? name + ' (' + n + ')' : name;
+}
+
+// ==================== Machine Notes ====================
+async function loadNotes() {
+  try {
+    const resp = await fetch('/api/notes');
+    machineNotes = await resp.json();
+  } catch(e) { machineNotes = {}; }
+}
+async function saveNote(machine, note) {
+  machineNotes[machine] = note;
+  try {
+    await fetch('/api/notes', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({machine, note})
+    });
+  } catch(e) { console.error('Save note failed', e); }
+}
+function startEditNote(machine, spanEl) {
+  const cur = getNote(machine);
+  const input = document.createElement('input');
+  input.className = 'm-note-input';
+  input.value = cur;
+  input.placeholder = '输入备注…';
+  spanEl.replaceWith(input);
+  input.focus();
+  const finish = () => {
+    const val = input.value.trim();
+    saveNote(machine, val);
+    const span = document.createElement('span');
+    span.className = 'm-note';
+    span.title = '点击编辑备注';
+    span.textContent = val ? '📝 ' + val : '📝 添加备注';
+    span.onclick = () => startEditNote(machine, span);
+    input.replaceWith(span);
+  };
+  input.onblur = finish;
+  input.onkeydown = (e) => { if (e.key === 'Enter') input.blur(); };
+}
 
 // ==================== Tab switching ====================
 function switchTab(tab) {
@@ -529,8 +621,11 @@ function setFilter(f) {
   currentFilter = f;
   drillDate = '';
   document.getElementById('drillBack').style.display = 'none';
-  if (fpInstance) fpInstance.clear();
+  document.getElementById('fpCalWrap').style.display = 'none';
   document.getElementById('dateBtn').textContent = '📅 日期';
+  document.getElementById('dateBtn').classList.remove('fp-active');
+  fpOpen = false;
+  if (fpInstance) fpInstance.clear();
   document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   fetchStats();
@@ -551,12 +646,15 @@ function selectMachine(name) {
 function clearDrill() {
   drillDate = '';
   document.getElementById('drillBack').style.display = 'none';
-  if (fpInstance) fpInstance.clear();
+  document.getElementById('fpCalWrap').style.display = 'none';
   document.getElementById('dateBtn').textContent = '📅 日期';
+  document.getElementById('dateBtn').classList.remove('fp-active');
+  fpOpen = false;
+  if (fpInstance) fpInstance.clear();
   // revert to week
   currentFilter = 'week';
   document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('#filterBtns button')[2].classList.add('active'); // active week btn shifted by dateBtn
+  document.querySelectorAll('#filterBtns button')[2].classList.add('active');
   fetchStats();
 }
 
@@ -568,16 +666,28 @@ function initFlatpickr(validDates) {
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     
-    fpInstance = flatpickr("#dateBtn", {
+    // Create a hidden input inside the calendar wrapper 
+    const wrap = document.getElementById('fpCalWrap');
+    const hiddenInput = document.createElement('input');
+    hiddenInput.type = 'text';
+    hiddenInput.style.display = 'none';
+    wrap.appendChild(hiddenInput);
+
+    fpInstance = flatpickr(hiddenInput, {
+        appendTo: wrap,
+        inline: true,
         locale: "zh",
         minDate: new Date().getFullYear() + "-04-01",
-        enable: validDates, // Only enable dates with records
+        enable: validDates,
         onChange: function(selectedDates, dateStr) {
             if (dateStr) {
                 drillDate = dateStr;
-                document.getElementById('dateBtn').textContent = '📅 ' + dateStr;
+                document.getElementById('dateBtn').textContent = '\ud83d\udcc5 ' + dateStr;
                 document.querySelectorAll('#filterBtns button').forEach(b => b.classList.remove('active'));
                 document.getElementById('drillBack').style.display = 'inline';
+                fpOpen = false;
+                wrap.style.display = 'none';
+                document.getElementById('dateBtn').classList.remove('fp-active');
                 fetchStats();
             }
         },
@@ -588,22 +698,40 @@ function initFlatpickr(validDates) {
             const ds = `${y}-${m}-${d}`;
 
             if (ds === todayStr) {
-                // Hyper-highlight today
                 dayElem.style.backgroundColor = '#6c5ce7';
                 dayElem.style.color = '#fff';
                 dayElem.style.fontWeight = 'bold';
                 dayElem.style.borderColor = '#6c5ce7';
-                // Add dot or mark if it also has valid data
                 if (validDates.includes(todayStr)) {
-                   dayElem.innerHTML += '<span class="flatDateDot" style="display:block;width:4px;height:4px;border-radius:50%;background:#fff;margin:0 auto;position:absolute;bottom:3px;left:50%;transform:translateX(-50%);"></span>';
+                   dayElem.innerHTML += '<span style="display:block;width:4px;height:4px;border-radius:50%;background:#fff;margin:0 auto;position:absolute;bottom:3px;left:50%;transform:translateX(-50%);"></span>';
                 }
             } else if (validDates.includes(ds)) {
-                // Highlight recorded dates with a prominent background
                 dayElem.style.backgroundColor = 'rgba(108, 92, 231, 0.3)';
             }
         }
     });
 }
+
+function toggleDatePicker(e) {
+    e && e.stopPropagation();
+    const wrap = document.getElementById('fpCalWrap');
+    const btn = document.getElementById('dateBtn');
+    fpOpen = !fpOpen;
+    wrap.style.display = fpOpen ? 'block' : 'none';
+    btn.classList.toggle('fp-active', fpOpen);
+}
+
+// Close calendar when clicking outside
+document.addEventListener('click', function(e) {
+    if (!fpOpen) return;
+    const wrap = document.getElementById('fpCalWrap');
+    const btn = document.getElementById('dateBtn');
+    if (!wrap.contains(e.target) && e.target !== btn) {
+        fpOpen = false;
+        wrap.style.display = 'none';
+        btn.classList.remove('fp-active');
+    }
+});
 
 // ==================== Data fetch ====================
 async function fetchStats() {
@@ -629,7 +757,11 @@ function updateMachineSelect(list) {
   const sel = document.getElementById('machineSelect');
   const cur = sel.value;
   const opts = '<option value="">全部机器</option>' +
-    list.map(m => `<option value="${m}" ${m===cur?'selected':''}>${m}</option>`).join('');
+    list.map(m => {
+      const n = getNote(m);
+      const label = n ? m + ' (' + n + ')' : m;
+      return `<option value="${m}" ${m===cur?'selected':''}>${label}</option>`;
+    }).join('');
   sel.innerHTML = opts;
 }
 
@@ -863,10 +995,13 @@ function renderMachineDetails(data) {
       card.className = 'machine-card';
       card.id = cardId;
       card.setAttribute('data-mname', m.name);
+      const noteText = getNote(m.name);
+      const noteDisplay = noteText ? '📝 ' + noteText : '📝 添加备注';
       card.innerHTML = `
         <div class="machine-card-header" title="${m.name}">
           ${m.name}
           <span class="m-rate" style="float:right;font-size:0.8rem;color:${rateColor}">${rate}%</span>
+          <br><span class="m-note" title="点击编辑备注">${noteDisplay}</span>
         </div>
         <div class="machine-card-chart">
           <canvas id="${canvasId}"></canvas>
@@ -903,6 +1038,9 @@ function renderMachineDetails(data) {
           },
         });
       }
+      // Bind note click handler
+      const noteSpan = card.querySelector('.m-note');
+      if (noteSpan) noteSpan.onclick = () => startEditNote(m.name, noteSpan);
     } else {
       // Update DOM values in-place
       card.querySelector('.m-rate').textContent = rate + '%';
@@ -931,8 +1069,10 @@ function renderMachineDetails(data) {
 }
 
 // ==================== Init ====================
-fetchStats();
-refreshTimer = setInterval(fetchStats, 5000);
+loadNotes().then(() => {
+  fetchStats();
+  refreshTimer = setInterval(fetchStats, 5000);
+});
 </script>
 </body>
 </html>"""
@@ -969,6 +1109,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(json.dumps(stats, ensure_ascii=False).encode("utf-8"))
+        elif parsed.path == "/api/notes":
+            notes = load_machine_notes(self.data_dir)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(notes, ensure_ascii=False).encode("utf-8"))
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/notes":
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body)
+                machine = payload.get("machine", "")
+                note = payload.get("note", "")
+                if machine:
+                    notes = load_machine_notes(self.data_dir)
+                    notes[machine] = note
+                    save_machine_notes(self.data_dir, notes)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+            except Exception as e:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(str(e).encode())
         else:
             self.send_error(404)
 
