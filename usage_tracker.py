@@ -15,8 +15,10 @@ import threading
 import time
 import uuid
 import shutil
+import shutil
 import socket
 import logging
+import ctypes
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -103,7 +105,10 @@ class UsageTracker:
         self._machine_id = _get_machine_id()
         self._local_base = None
         self._nas_base = None
+        self._daily_gen = 0
+        self._last_warn_tier = 0
         self._init_paths()
+        self._load_today_gen()
         logger.info("[UsageTracker] Machine ID: %s", self._machine_id)
         
         # Start background sync thread
@@ -179,6 +184,33 @@ class UsageTracker:
         logger.info("[UsageTracker] Local: %s", self._local_base)
         logger.info("[UsageTracker] NAS: %s", self._nas_base or "(not found)")
 
+    def _load_today_gen(self):
+        """Load today's tally from local file to survive ComfyUI restarts."""
+        if not self._local_base:
+            return
+        filepath = os.path.join(self._local_base, self._get_today_filename())
+        if not os.path.exists(filepath):
+            return
+        total = 0
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip(): continue
+                    try:
+                        total += json.loads(line).get("gen", 0)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug("[UsageTracker] Failed to read today's gen: %s", e)
+        self._daily_gen = total
+        self._last_warn_tier = self._calc_tier(self._daily_gen)
+        logger.info("[UsageTracker] Today's initial gen count loaded: %d", self._daily_gen)
+
+    def _calc_tier(self, gen_count: int) -> int:
+        if gen_count < 800:
+            return 0
+        return 1 + (gen_count - 800) // 200
+
     @property
     def machine_id(self) -> str:
         return self._machine_id
@@ -229,6 +261,19 @@ class UsageTracker:
             "providers": providers_tried or [],
             "err": error_message[:200] if error_message else "",
         }
+
+        # Check and warn student
+        if images_generated > 0:
+            with self._write_lock:
+                self._daily_gen += images_generated
+                new_tier = self._calc_tier(self._daily_gen)
+                if new_tier > self._last_warn_tier:
+                    self._last_warn_tier = new_tier
+                    warning_msg = f"⚠️警告：您今日生成的图片数量已达 {self._daily_gen} 张！\n过度使用会占用整个实验室的算力资源，请尽量节约喔。"
+                    threading.Thread(
+                        target=lambda: ctypes.windll.user32.MessageBoxW(0, warning_msg, "用量预警系统", 0x30 | 0x0),
+                        daemon=True
+                    ).start()
 
         json_line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 

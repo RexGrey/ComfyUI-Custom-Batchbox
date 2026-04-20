@@ -18,6 +18,9 @@ import sys
 import webbrowser
 import glob
 import socket
+import threading
+import time
+import ctypes
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -1188,11 +1191,59 @@ def main():
     if not args.no_browser:
         webbrowser.open(url)
 
+    # Start the admin warning daemon
+    threading.Thread(target=admin_warning_loop, args=(data_dir,), daemon=True).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nDashboard stopped.")
         server.server_close()
+
+def admin_warning_loop(data_dir):
+    """Background loop that warns the admin locally if a machine exceeds usage limits today."""
+    admin_warn_tiers = {}
+    
+    while True:
+        try:
+            today_str = datetime.now(_TZ_CST).strftime('%Y-%m-%d')
+            logs_dir = os.path.join(data_dir, "usage_logs")
+            if not os.path.isdir(logs_dir):
+                time.sleep(30)
+                continue
+                
+            for machine_dir in glob.glob(os.path.join(logs_dir, "*")):
+                if not os.path.isdir(machine_dir):
+                    continue
+                machine_name = os.path.basename(machine_dir)
+                filepath = os.path.join(machine_dir, f"usage_{today_str}.jsonl")
+                
+                if not os.path.exists(filepath):
+                    continue
+                    
+                total_gen = 0
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if not line.strip(): continue
+                        try:
+                            total_gen += json.loads(line).get("gen", 0)
+                        except Exception:
+                            pass
+                
+                tier = 0
+                if total_gen >= 800:
+                    tier = 1 + (total_gen - 800) // 200
+                
+                if tier > admin_warn_tiers.get(machine_name, 0):
+                    admin_warn_tiers[machine_name] = tier
+                    warning_msg = f"🚨警告：机器 {machine_name} 今日生图已达 {total_gen} 张！"
+                    threading.Thread(
+                        target=lambda msg=warning_msg: ctypes.windll.user32.MessageBoxW(0, msg, "学生疯狂生图警报", 0x30 | 0x0),
+                        daemon=True
+                    ).start()
+        except Exception:
+            pass
+        time.sleep(30)
 
 
 if __name__ == "__main__":
