@@ -493,7 +493,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <!-- Machine bar + Model doughnut -->
   <div class="chart-row-2">
     <div class="chart-box">
-      <div class="chart-label">📊 机器任务排行</div>
+      <div class="chart-label">📊 机器生图排行</div>
       <canvas id="machineChart"></canvas>
     </div>
     <div class="chart-box">
@@ -843,9 +843,9 @@ function renderOverview(data) {
   }
 
   // --- Machine bar chart ---
-  const mSorted = [...data.machines].sort((a,b) => b.tasks - a.tasks).slice(0, 15);
+  const mSorted = [...data.machines].sort((a,b) => b.gen - a.gen).slice(0, 15);
   const mNames = mSorted.map(m => m.name); // Keep full name for tooltip
-  const mTasks = mSorted.map(m => m.tasks);
+  const mGen = mSorted.map(m => m.gen);
   const mColors = mSorted.map((_,i) => PALETTE[i % PALETTE.length]);
 
   if (!chartMachine) {
@@ -853,7 +853,7 @@ function renderOverview(data) {
       type: 'bar',
       data: {
         labels: mNames,
-        datasets: [{ data: mTasks, backgroundColor: mColors, borderRadius: 4 }],
+        datasets: [{ data: mGen, backgroundColor: mColors, borderRadius: 4 }],
       },
       options: {
         indexAxis: 'y', responsive: true, maintainAspectRatio: false,
@@ -882,7 +882,7 @@ function renderOverview(data) {
     });
   } else {
     chartMachine.data.labels = mNames;
-    chartMachine.data.datasets[0].data = mTasks;
+    chartMachine.data.datasets[0].data = mGen;
     chartMachine.data.datasets[0].backgroundColor = mColors;
     chartMachine.update('none');
   }
