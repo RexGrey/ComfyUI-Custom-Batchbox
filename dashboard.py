@@ -937,7 +937,7 @@ function renderOverview(data) {
       const node = NODE_LABELS[r.node] || r.node;
       return `<tr>
         <td>${fmt(r.ts)}</td>
-        <td>${r.machine}</td><td>${node}</td>
+        <td style="cursor:pointer; color:var(--accent);" onclick="selectMachine('${r.machine}')" title="点击查看此机器详情">${r.machine}</td><td>${node}</td>
         <td>${r.model}</td><td>${r.batch}</td>
         <td>${r.gen}</td><td>${r.saved}</td>
         <td>${statusHtml}</td><td>${fmtDur(r.dur_s)}</td>
