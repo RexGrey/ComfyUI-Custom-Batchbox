@@ -938,9 +938,11 @@ function renderOverview(data) {
       }
       
       const node = NODE_LABELS[r.node] || r.node;
+      const mNote = getNote(r.machine);
+      const mLabel = mNote ? r.machine + ' <span style="font-size:0.75rem;color:var(--text-dim)">(' + mNote + ')</span>' : r.machine;
       return `<tr>
         <td>${fmt(r.ts)}</td>
-        <td style="cursor:pointer; color:var(--accent);" onclick="selectMachine('${r.machine}')" title="点击查看此机器详情">${r.machine}</td><td>${node}</td>
+        <td style="cursor:pointer; color:var(--accent);" onclick="selectMachine('${r.machine}')" title="点击查看此机器详情">${mLabel}</td><td>${node}</td>
         <td>${r.model}</td><td>${r.batch}</td>
         <td>${r.gen}</td><td>${r.saved}</td>
         <td>${statusHtml}</td><td>${fmtDur(r.dur_s)}</td>
@@ -1045,6 +1047,8 @@ function renderMachineDetails(data) {
       const noteSpan = card.querySelector('.m-note');
       if (noteSpan) noteSpan.onclick = () => startEditNote(m.name, noteSpan);
     } else {
+      // Skip update if user is currently editing a note on this card
+      if (card.querySelector('.m-note-input')) return;
       // Update DOM values in-place
       card.querySelector('.m-rate').textContent = rate + '%';
       card.querySelector('.m-rate').style.color = rateColor;
