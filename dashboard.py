@@ -885,6 +885,7 @@ function renderOverview(data) {
           x: { beginAtZero: true, ticks: { color: '#8b8fa3' }, grid: { color: 'rgba(45,49,66,0.5)' } },
           y: { 
             ticks: { 
+              autoSkip: false,
               color: '#8b8fa3', 
               font: { size: 11 },
               callback: function(value, index, values) {
@@ -1204,7 +1205,7 @@ def main():
     port = args.port
     for attempt in range(10):
         try:
-            server = HTTPServer(("0.0.0.0", port), DashboardHandler)
+            server = HTTPServer(("127.0.0.1", port), DashboardHandler)
             break
         except OSError:
             port += 1
