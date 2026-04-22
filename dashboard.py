@@ -519,6 +519,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
 <!-- =================== Tab 2: Machine Details =================== -->
 <div class="tab-page" id="page-machines">
+  <div style="margin-bottom:16px; display:flex; gap:10px; align-items:center; background:var(--card-bg); padding:10px 16px; border:1px solid var(--border); border-radius:10px;">
+    <span style="font-size:0.85rem; color:var(--text-dim);">排序方式：</span>
+    <select id="mSortBy" onchange="onSortChange()">
+      <option value="success">成功率</option>
+      <option value="gen">生成数量</option>
+      <option value="dur_avg">均耗 (秒)</option>
+    </select>
+    <select id="mSortOrder" onchange="onSortChange()">
+      <option value="asc">递增 (从小到大)</option>
+      <option value="desc">递减 (从大到小)</option>
+    </select>
+  </div>
   <div class="machine-grid" id="machineGrid"></div>
 </div>
 </div>
@@ -534,6 +546,8 @@ let chartTimeline = null, chartMachine = null, chartModel = null;
 let machineChartInstances = {};  // Tab2 mini pies
 let fpInstance = null;
 let fpOpen = false;
+let mSortBy = 'success';
+let mSortOrder = 'asc';
 let machineNotes = {};  // { machineName: "note text" }
 
 const NODE_LABELS = {
@@ -639,6 +653,11 @@ function onMachineChange() {
 }
 function onStatusChange() {
   currentStatus = document.getElementById('statusSelect').value;
+  fetchStats();
+}
+function onSortChange() {
+  mSortBy = document.getElementById('mSortBy').value;
+  mSortOrder = document.getElementById('mSortOrder').value;
   fetchStats();
 }
 function selectMachine(name) {
@@ -978,11 +997,20 @@ function renderMachineDetails(data) {
     }
   });
 
-  // Sort by success rate ascending (worst first)
+  // Sort dynamically based on user controls
   const sorted = [...data.machines].sort((a,b) => {
-    const rateA = a.tasks ? a.success/a.tasks : 1;
-    const rateB = b.tasks ? b.success/b.tasks : 1;
-    return rateA - rateB;
+    let valA = 0, valB = 0;
+    if (mSortBy === 'success') {
+      valA = a.tasks ? a.success/a.tasks : 1;
+      valB = b.tasks ? b.success/b.tasks : 1;
+    } else if (mSortBy === 'gen') {
+      valA = a.gen;
+      valB = b.gen;
+    } else if (mSortBy === 'dur_avg') {
+      valA = a.dur_avg;
+      valB = b.dur_avg;
+    }
+    return mSortOrder === 'asc' ? valA - valB : valB - valA;
   });
 
   // Update existing DOM cards or create new ones
