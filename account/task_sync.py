@@ -27,6 +27,11 @@ from .task_history import (
 )
 from .network import get_session
 
+try:
+    from ..batchbox_logger import sanitize_text, sanitize_url
+except ImportError:
+    from batchbox_logger import sanitize_text, sanitize_url
+
 if TYPE_CHECKING:
     from .core import Account
 
@@ -149,7 +154,7 @@ class StatusResponseParser:
         for url in urls:
             if not self._is_safe_result_url(url):
                 raise ValueError(f"Unsafe result URL rejected: {url}")
-            logger.info(f"Downloading result from: {url}")
+            logger.info(f"Downloading result from: {sanitize_url(url)}")
             session = get_session()
             response = session.get(url, timeout=(10, 60))
             response.raise_for_status()
@@ -339,7 +344,7 @@ class TaskSyncService:
             return True
         except Exception as e:
             logger.error(f"Failed to update task {task_history.task_id}: {e}")
-            task_history.error_message = f"Status sync failed: {str(e)}"
+            task_history.error_message = f"Status sync failed: {sanitize_text(e)}"
             task_history.finished_at = time.time()
             task_history.state = TaskStatus.ERROR
             task_history.progress = 0.0

@@ -134,6 +134,26 @@ try:
         _app._client_max_size = _BATCHBOX_MAX_BODY
         print(f"[ComfyUI-Custom-Batchbox] Increased max upload size to 500MB")
 
+    import logging as _logging
+    _bb_logger = _logging.getLogger("batchbox.api")
+    try:
+        from .batchbox_logger import sanitize_text as _sanitize_text, sanitize_url as _sanitize_url
+    except ImportError:
+        from batchbox_logger import sanitize_text as _sanitize_text, sanitize_url as _sanitize_url
+
+    def _safe_error_response(e: Exception, context: str = ""):
+        """Return a sanitized error to frontend and logs."""
+        _bb_logger.error("[API] %s: %s: %s", context or "error", type(e).__name__, _sanitize_text(e))
+        # Only send the exception class name to the client, never str(e)
+        safe_msg = f"Internal error ({type(e).__name__})"
+        return web.json_response({"error": safe_msg}, status=500)
+
+    def _safe_error_response_with_success(e: Exception, context: str = ""):
+        """Same as _safe_error_response but with {success: False} format."""
+        _bb_logger.error("[API] %s: %s: %s", context or "error", type(e).__name__, _sanitize_text(e))
+        safe_msg = f"Internal error ({type(e).__name__})"
+        return web.json_response({"success": False, "error": safe_msg}, status=500)
+
     async def _read_request_json_limited(request, max_size):
         """
         Read a JSON request body while enforcing a hard byte limit.
@@ -178,7 +198,17 @@ try:
         try:
             return web.json_response({"is_encrypted_mode": config_manager.is_encrypted_mode()})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
+
+    def _sanitize_config_strings(value):
+        """Redact sensitive URL query values anywhere in config payloads."""
+        if isinstance(value, dict):
+            return {k: _sanitize_config_strings(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_sanitize_config_strings(v) for v in value]
+        if isinstance(value, str):
+            return _sanitize_text(_sanitize_url(value))
+        return value
 
     def _mask_secrets(config: dict) -> dict:
         """Deep copy and mask sensitive API keys and secrets in the config payload."""
@@ -186,11 +216,41 @@ try:
         masked = copy.deepcopy(config)
         providers = masked.get("providers", {})
         for name, p_data in providers.items():
+            # 1. Scalar keys: api_key, secret_key, access_key
             for key in ["api_key", "secret_key", "access_key"]:
                 if p_data.get(key):
                     val = str(p_data[key])
                     p_data[key] = f"***{val[-4:]}" if len(val) > 4 else "***"
-        return masked
+            # 2. List-form keys: api_keys: [{key: "...", name: "..."}, ...]
+            if "api_keys" in p_data and isinstance(p_data["api_keys"], list):
+                for item in p_data["api_keys"]:
+                    if isinstance(item, dict) and item.get("key"):
+                        val = str(item["key"])
+                        item["key"] = f"***{val[-4:]}" if len(val) > 4 else "***"
+                    elif isinstance(item, str) and item:
+                        idx = p_data["api_keys"].index(item)
+                        p_data["api_keys"][idx] = f"***{item[-4:]}" if len(item) > 4 else "***"
+            # 3. Service account files: mask json path and project_id
+            if "service_account_files" in p_data and isinstance(p_data["service_account_files"], list):
+                for sa in p_data["service_account_files"]:
+                    if isinstance(sa, dict):
+                        if sa.get("json"):
+                            sa["json"] = "***masked***"
+                        if sa.get("project_id"):
+                            val = str(sa["project_id"])
+                            sa["project_id"] = f"***{val[-4:]}" if len(val) > 4 else "***"
+        # 4. Top-level GCS credentials
+        if "gcs" in masked and isinstance(masked["gcs"], dict):
+            gcs = masked["gcs"]
+            if gcs.get("bucket_name"):
+                val = str(gcs["bucket_name"])
+                gcs["bucket_name"] = f"***{val[-4:]}" if len(val) > 4 else "***"
+            creds = gcs.get("credentials", {})
+            if isinstance(creds, dict):
+                for ck in ["private_key", "private_key_id", "client_email", "client_id"]:
+                    if creds.get(ck):
+                        creds[ck] = "***masked***"
+        return _sanitize_config_strings(masked)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/config")
     async def get_config(request):
@@ -203,7 +263,7 @@ try:
                 data = _mask_secrets(data)
             return web.json_response(data)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/config")
     async def save_config(request):
@@ -230,7 +290,7 @@ try:
             
             return web.json_response({"status": "success"})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/models")
     async def get_models(request):
@@ -252,7 +312,7 @@ try:
                         })
             return web.json_response({"models": models})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/schema/{model_name}")
     async def get_model_schema(request):
@@ -306,7 +366,7 @@ try:
                 "endpoint_options": endpoint_options
             })
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/providers")
     async def get_providers(request):
@@ -319,13 +379,13 @@ try:
                     providers.append({
                         "name": provider.name,
                         "display_name": provider.display_name,
-                        "base_url": provider.base_url,
+                        "base_url": _sanitize_url(provider.base_url),
                         "has_api_key": bool(provider.api_key),
                         "rate_limit": provider.rate_limit
                     })
             return web.json_response({"providers": providers})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/providers/{provider_name}")
     async def update_provider(request):
@@ -338,7 +398,7 @@ try:
                 return web.json_response({"status": "success"})
             return web.json_response({"error": "Failed to update provider"}, status=500)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/categories")
     async def get_categories(request):
@@ -347,7 +407,7 @@ try:
             categories = config_manager.get_categories()
             return web.json_response({"categories": categories})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/reload")
     async def reload_config(request):
@@ -359,7 +419,7 @@ try:
                 "mtime": config_manager.get_config_mtime()
             })
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/config/mtime")
     async def get_config_mtime(request):
@@ -377,7 +437,7 @@ try:
             
             return web.json_response(result)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/save-settings")
     async def get_save_settings(request):
@@ -386,7 +446,7 @@ try:
             settings = config_manager.get_save_settings()
             return web.json_response({"save_settings": settings})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/save-settings")
     async def update_save_settings(request):
@@ -399,7 +459,7 @@ try:
             else:
                 return web.json_response({"error": "Failed to save settings"}, status=500)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/save-settings/preview")
     async def preview_save_filename(request):
@@ -415,7 +475,7 @@ try:
             
             return web.json_response({"preview": preview})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/model-order/{category}")
     async def get_model_order(request):
@@ -425,7 +485,7 @@ try:
             order = config_manager.get_model_order(category)
             return web.json_response({"order": order})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/model-order/{category}")
     async def set_model_order(request):
@@ -437,7 +497,7 @@ try:
             config_manager.set_model_order(category, order)
             return web.json_response({"success": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/node-settings")
     async def get_node_settings(request):
@@ -446,7 +506,7 @@ try:
             settings = config_manager.get_node_settings()
             return web.json_response({"node_settings": settings})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/node-settings")
     async def update_node_settings(request):
@@ -459,7 +519,7 @@ try:
             else:
                 return web.json_response({"error": "Failed to save settings"}, status=500)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     # --- Upscale Settings ---
     @server.PromptServer.instance.routes.get("/api/batchbox/upscale-settings")
@@ -469,7 +529,7 @@ try:
             settings = config_manager.get_upscale_settings()
             return web.json_response({"upscale_settings": settings})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/upscale-settings")
     async def update_upscale_settings(request):
@@ -483,7 +543,7 @@ try:
             else:
                 return web.json_response({"error": "Failed to save settings"}, status=500)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     # --- Style Presets ---
     @server.PromptServer.instance.routes.get("/api/batchbox/style-presets")
@@ -492,7 +552,7 @@ try:
             presets = config_manager.get_style_presets()
             return web.json_response({"style_presets": presets})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/style-presets")
     async def update_style_presets(request):
@@ -505,7 +565,7 @@ try:
             else:
                 return web.json_response({"error": "Failed to save"}, status=500)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     # --- Blur Preview ---
     @server.PromptServer.instance.routes.post("/api/batchbox/blur-preview")
@@ -524,7 +584,7 @@ try:
             preview = await asyncio.to_thread(generate_blur_preview_base64, image_base64, sigma)
             return web.json_response({"preview_base64": preview})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/apply-blur")
     async def apply_blur(request):
@@ -679,7 +739,7 @@ try:
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return _safe_error_response_with_success(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/generate-blur-upscale")
     async def generate_blur_upscale(request):
@@ -1086,7 +1146,7 @@ try:
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return _safe_error_response_with_success(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/generate-independent")
     async def generate_independent(request):
@@ -1227,7 +1287,7 @@ try:
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return web.json_response({"success": False, "error": str(e)}, status=500)
+            return _safe_error_response_with_success(e)
 
     # ==========================================
     # 5. Account System API Endpoints
@@ -1270,7 +1330,7 @@ try:
             result = account.login()
             return web.json_response(result)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/account/logout")
     async def account_logout(request):
@@ -1281,7 +1341,7 @@ try:
             result = account.logout()
             return web.json_response(result)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/account/status")
     async def account_status(request):
@@ -1291,7 +1351,7 @@ try:
             account = Account.get_instance()
             return web.json_response(account.get_status())
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/account/credits")
     async def account_refresh_credits(request):
@@ -1303,7 +1363,7 @@ try:
             # Return current status (credits will update async)
             return web.json_response(account.get_status())
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.post("/api/batchbox/account/redeem")
     async def account_redeem(request):
@@ -1319,7 +1379,7 @@ try:
             result = account.redeem_credits(code)
             return web.json_response(result)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     @server.PromptServer.instance.routes.get("/api/batchbox/account/pricing")
     async def account_pricing(request):
@@ -1337,7 +1397,7 @@ try:
                 "price_table": account.price_table or []
             })
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return _safe_error_response(e)
 
     print("[ComfyUI-Custom-Batchbox] API endpoints registered (with Account system)")
 

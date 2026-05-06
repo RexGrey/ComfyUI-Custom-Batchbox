@@ -34,6 +34,11 @@ from .exceptions import (
     TokenExpiredException,
 )
 
+try:
+    from ..batchbox_logger import sanitize_text, sanitize_url
+except ImportError:
+    from batchbox_logger import sanitize_text, sanitize_url
+
 logger = logging.getLogger("batchbox.account")
 ACCOUNT_REQUEST_TIMEOUT = (10, 30)
 ACCOUNT_PING_TIMEOUT = 2
@@ -266,7 +271,7 @@ class Account:
             "auth_mode": self._auth_mode,
             "services_connected": self.services_connected,
             "token_expired": self.token_expired,
-            "errors": [str(e) for e in self.take_errors()],
+            "errors": [sanitize_text(e) for e in self.take_errors()],
         }
 
     # ==================== Login / Logout ====================
@@ -285,7 +290,7 @@ class Account:
             import webbrowser
             webbrowser.open(self.login_url)
             
-        logger.info(f"Opening login URL: {self.login_url}")
+        logger.info(f"Opening login URL: {sanitize_url(self.login_url)}")
 
         async def login_callback(
             server: WebSocketLoginServer, websocket, event: dict
@@ -427,7 +432,7 @@ class Account:
         try:
             resp.raise_for_status()
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": sanitize_text(e)}
 
         if resp.status_code == 200:
             resp_json: dict = resp.json()
@@ -506,7 +511,7 @@ class Account:
                 logger.info("[Account] Price table already loaded, skipping fetch")
                 return
             url = f"{self.service_url}/billing/model-price"
-            logger.info(f"[Account] Fetching pricing data from: {url}")
+            logger.info(f"[Account] Fetching pricing data from: {sanitize_url(url)}")
             headers = {
                 "Content-Type": "application/json",
             }

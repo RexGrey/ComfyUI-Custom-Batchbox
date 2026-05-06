@@ -17,12 +17,14 @@ from .template_engine import TemplateEngine
 try:
     from ..batchbox_logger import (
         logger, log_request, log_response, log_error,
-        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
+        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES,
+        sanitize_text, sanitize_url
     )
 except ImportError:
     from batchbox_logger import (
         logger, log_request, log_response, log_error,
-        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES
+        RequestTimer, RetryConfig, calculate_delay, RETRYABLE_STATUS_CODES,
+        sanitize_text, sanitize_url
     )
 
 
@@ -363,7 +365,7 @@ class GenericAPIAdapter(APIAdapter):
                     # Replace {project_id} in URL with the SA's project_id
                     if sa_project_id and "{project_id}" in url:
                         url = url.replace("{project_id}", sa_project_id)
-                    logger.info(f"[Gemini] Vertex AI SA: {sa_name} (project={sa_project_id}, token ...{sa_token[-6:]})")
+                    logger.info(f"[Gemini] Vertex AI SA: {sa_name} (project={sa_project_id}, token present)")
                 else:
                     headers = {
                         "Authorization": f"Bearer {_current_key}",
@@ -419,7 +421,7 @@ class GenericAPIAdapter(APIAdapter):
                 try:
                     from ..gemini_files_cache import gemini_files_cache
                     files_api_available = True
-                    logger.info(f"[Gemini] Files API enabled (key: {_current_key[:8]}...)")
+                    logger.info("[Gemini] Files API enabled (API key present)")
                 except Exception as e:
                     logger.warning(f"[Gemini] Files API import failed: {e}")
         
@@ -883,7 +885,7 @@ class GenericAPIAdapter(APIAdapter):
             total_size = sum(len(f[1][1]) for f in request_info.get("files", []) if len(f) > 1 and len(f[1]) > 1)
             logger.debug(f"[DEBUG] 📡 Request mode: Multipart (direct file upload)")
             logger.debug(f"[DEBUG]    Files: {file_count}, Total size: {total_size/1024:.0f}KB")
-        logger.debug(f"[DEBUG] 🔗 URL: {url}")
+        logger.debug(f"[DEBUG] URL: {sanitize_url(url)}")
         logger.debug(f"[DEBUG] ⏱️ Request build time: {_build_elapsed:.2f}s (includes OSS upload if any)")
         # ─── End Debug ───
         
@@ -950,7 +952,7 @@ class GenericAPIAdapter(APIAdapter):
                 
                 # Check HTTP status
                 if not is_success:
-                    logger.info(f"⬅️ 📋 Response body: {response.text[:300]}")
+                    logger.info(f"Response body: {sanitize_text(response.text[:300])}")
                     # Blacklist key if expired or invalid
                     resp_text = response.text.lower()
                     if "expired" in resp_text or "api key not valid" in resp_text:
@@ -965,8 +967,8 @@ class GenericAPIAdapter(APIAdapter):
                                 continue
                     return APIResponse(
                         success=False,
-                        error_message=f"HTTP {response.status_code}: {response.text[:200]}",
-                        raw_response={"status_code": response.status_code, "text": response.text}
+                        error_message=f"HTTP {response.status_code}: {sanitize_text(response.text[:200])}",
+                        raw_response={"status_code": response.status_code, "text": sanitize_text(response.text)}
                     )
                 
                 # Parse response
@@ -1012,7 +1014,7 @@ class GenericAPIAdapter(APIAdapter):
                 return APIResponse(success=False, error_message=last_error)
                 
             except requests.ConnectionError as e:
-                last_error = f"Connection error: {str(e)}"
+                last_error = f"Connection error: {sanitize_text(e)}"
                 if attempt < retry_config.max_retries:
                     delay = calculate_delay(attempt, retry_config)
                     logger.warning(
@@ -1028,7 +1030,7 @@ class GenericAPIAdapter(APIAdapter):
                 log_error(f"Request failed for {provider_name}", e)
                 return APIResponse(
                     success=False,
-                    error_message=f"Request failed: {str(e)}"
+                    error_message=f"Request failed: {sanitize_text(e)}"
                 )
         
         # Should not reach here, but just in case
