@@ -54,7 +54,7 @@ def _get_comfyui_base_path() -> Optional[str]:
     """Get ComfyUI root directory dynamically."""
     try:
         import folder_paths
-        return folder_paths.base_path
+        return getattr(folder_paths, "base_path", None)
     except ImportError:
         return None
 
