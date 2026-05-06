@@ -85,12 +85,17 @@ class TemplateEngine:
         
         Variables starting with _ are treated as special/mapped values:
         - _chat_content: Build Chat API content array with prompt + images
+        - _images_b64: Return list of raw base64 image strings
         - _map_size: Look up params['size'] in value_mappings['_map_size']
         - _extract_ratio: Similar extraction with mapping
         """
         # Special variable: _chat_content for Chat API format
         if var_name == "_chat_content":
             return self._build_chat_content(params)
+        
+        # Special variable: _images_b64 for raw base64 image array
+        if var_name == "_images_b64":
+            return self._build_images_b64(params)
         
         if var_name.startswith('_'):
             return self._get_mapped_value(var_name, params)
@@ -124,6 +129,27 @@ class TemplateEngine:
             })
         
         return content
+    
+    def _build_images_b64(self, params: Dict) -> list:
+        """
+        Return list of raw base64 image strings (without data URL prefix).
+        
+        Used for APIs that accept images as base64 strings in a JSON array,
+        e.g. 柏拉图's image field: {"image": ["iVBOR...", ...]}
+        Returns None if no images (so template engine skips the field).
+        """
+        images_base64 = params.get("_images_base64", [])
+        if not images_base64:
+            return None
+        
+        result = []
+        for data_url in images_base64:
+            # Strip data URL prefix: "data:image/png;base64,xxx" -> "xxx"
+            if "," in data_url:
+                result.append(data_url.split(",", 1)[1])
+            else:
+                result.append(data_url)
+        return result
     
     def _get_mapped_value(self, mapping_name: str, params: Dict) -> Any:
         """

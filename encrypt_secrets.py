@@ -38,7 +38,9 @@ def load_or_create_key() -> bytes:
         f.write(key)
     print(f"[✓] 已生成新密钥并保存到: {KEY_PATH}")
     print(f"[!] 请将以下字符串复制到 ComfyUI 启动脚本的 BATCHBOX_KEY 环境变量中:")
-    print(f"    set BATCHBOX_KEY={key.decode('ascii')}")
+    _k = key.decode('ascii')
+    print(f"    set BATCHBOX_KEY={_k[:8]}{'*' * (len(_k) - 8)}")
+    print(f"    (完整密钥已保存在 .secrets_key 文件中)")
     return key
 
 
@@ -60,7 +62,9 @@ def cmd_encrypt():
     print(f"    robocopy ... /XF secrets.yaml .secrets_key .auth.json")
     print()
     print(f"[启动脚本设置]:")
-    print(f"    set BATCHBOX_KEY={key.decode('ascii')}")
+    _k = key.decode('ascii')
+    print(f"    set BATCHBOX_KEY={_k[:8]}{'*' * (len(_k) - 8)}")
+    print(f"    (完整密钥已保存在 .secrets_key 文件中)")
 
 
 def cmd_verify():
