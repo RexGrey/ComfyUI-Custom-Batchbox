@@ -20,6 +20,8 @@ from batchbox_logger import (
     should_retry,
     calculate_delay,
     retry_request,
+    sanitize_text,
+    sanitize_url,
     log_request,
     log_response,
     log_error,
@@ -209,6 +211,29 @@ class TestRetryRequestDecorator:
 
 class TestLogFunctions:
 
+    def test_sanitize_url_masks_sensitive_query_params(self):
+        secret = "AIzaSyFakeSecretForRegression"
+        safe_url = sanitize_url(
+            f"https://generativelanguage.googleapis.com/v1beta/models/demo:generateContent?key={secret}&alt=json"
+        )
+
+        assert secret not in safe_url
+        assert "key=" in safe_url
+        assert "***" in safe_url
+        assert "alt=json" in safe_url
+
+    def test_sanitize_text_masks_key_query_params_inside_errors(self):
+        secret = "AIzaSyFakeSecretForRegression"
+        message = (
+            "Connection failed for url: "
+            f"/v1beta/models/demo:generateContent?key={secret}&alt=json"
+        )
+        safe_message = sanitize_text(message)
+
+        assert secret not in safe_message
+        assert "key=***" in safe_message
+        assert "alt=json" in safe_message
+
     def test_log_request_masks_auth_header(self, caplog):
         logger.setLevel(logging.DEBUG)
         with caplog.at_level(logging.DEBUG, logger="batchbox"):
@@ -222,6 +247,24 @@ class TestLogFunctions:
         with caplog.at_level(logging.INFO, logger="batchbox"):
             log_request("GET", "https://api.test.com/models")
         assert any("GET" in r.message and "api.test.com" in r.message for r in caplog.records)
+
+    def test_log_request_masks_sensitive_url_query(self, caplog):
+        secret = "AIzaSyFakeSecretForRegression"
+        with caplog.at_level(logging.INFO, logger="batchbox"):
+            log_request(
+                "POST",
+                f"https://generativelanguage.googleapis.com/v1beta/models/demo:generateContent?key={secret}",
+            )
+
+        messages = "\n".join(r.message for r in caplog.records)
+        assert secret not in messages
+        assert "key=***" in messages
+
+    def test_redaction_filter_preserves_numeric_format_args(self, caplog):
+        with caplog.at_level(logging.INFO, logger="batchbox"):
+            logger.info("count: %d", 2)
+
+        assert any("count: 2" in r.message for r in caplog.records)
 
     def test_log_response_success(self, caplog):
         with caplog.at_level(logging.INFO, logger="batchbox"):

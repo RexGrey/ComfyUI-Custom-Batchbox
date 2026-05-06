@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Union
 from io import BytesIO
 
+try:
+    from ..batchbox_logger import sanitize_text, sanitize_url
+except ImportError:
+    from batchbox_logger import sanitize_text, sanitize_url
+
 
 @dataclass
 class APIResponse:
@@ -109,7 +114,7 @@ class APIAdapter(ABC):
                 provider_name = self.provider.get("display_name", self.provider.get("name", "?"))
                 skipped = len(active_keys) - len(good_keys)
                 skip_info = f", {skipped} blacklisted" if skipped else ""
-                print(f"[APIAdapter] 🔑 Key#{key_num} ...{key[-6:]} for {provider_name} ({len(pool)}/{len(active_keys)} keys{skip_info})")
+                print(f"[APIAdapter] Key#{key_num} selected for {provider_name} ({len(pool)}/{len(active_keys)} keys{skip_info})")
                 return key
         return self.provider.get("api_key", "")
     
@@ -121,7 +126,7 @@ class APIAdapter(ABC):
         """Temporarily blacklist a key (e.g. quota exceeded, expired)."""
         import time
         cls._bad_keys[key] = time.time() + cls._BAD_KEY_TTL
-        print(f"[APIAdapter] ⛔ Key ...{key[-6:]} blacklisted for 1h ({reason})")
+        print(f"[APIAdapter] Key blacklisted for 1h ({sanitize_text(reason)})")
     
     @abstractmethod
     def build_request(self, params: Dict, mode: str = "text2img") -> Dict:
@@ -164,11 +169,11 @@ class APIAdapter(ABC):
                 resp.raise_for_status()
                 return resp.content
             except Exception as e:
-                print(f"[APIAdapter] Download attempt {attempt + 1}/{retries} failed for {url}: {e}")
+                print(f"[APIAdapter] Download attempt {attempt + 1}/{retries} failed for {sanitize_url(url)}: {sanitize_text(e)}")
                 if attempt < retries - 1:
                     import time
                     time.sleep(2 * (attempt + 1))  # Exponential backoff: 2s, 4s
-        print(f"[APIAdapter] All {retries} download attempts failed for {url}")
+        print(f"[APIAdapter] All {retries} download attempts failed for {sanitize_url(url)}")
         return None
     
     def _poll_for_result(self, task_id: str, timeout: int = 600) -> APIResponse:
@@ -210,7 +215,7 @@ class APIAdapter(ABC):
                     )
                     
             except Exception as e:
-                print(f"[APIAdapter] Polling error: {e}")
+                print(f"[APIAdapter] Polling error: {sanitize_text(e)}")
         
         return APIResponse(
             success=False,
