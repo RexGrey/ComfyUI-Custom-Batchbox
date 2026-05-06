@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from adapters.generic import GenericAPIAdapter
 from adapters.base import APIResponse
+from batchbox_logger import RetryConfig
 
 
 class TestGenericAPIAdapter:
@@ -118,6 +119,42 @@ class TestGenericAPIAdapter:
         
         assert result.success is False
         assert "timeout" in result.error_message.lower()
+
+    @patch('requests.request')
+    def test_execute_connection_error_redacts_api_key_from_error(self, mock_request):
+        """Connection errors returned to nodes must not expose query API keys."""
+        secret = "AIzaSyFakeSecretForRegression"
+        adapter = GenericAPIAdapter(
+            {
+                "name": "google_official",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                "api_key": secret,
+            },
+            {
+                "provider": "google_official",
+                "api_format": "gemini",
+                "auth_header_format": "none",
+                "model_name": "demo-model",
+            },
+            {
+                "endpoint": "/models/{{model}}:generateContent?key={api_key}",
+                "method": "POST",
+                "content_type": "application/json",
+            },
+        )
+        mock_request.side_effect = requests.ConnectionError(
+            f"Failed to establish connection for /models/demo-model:generateContent?key={secret}&alt=json"
+        )
+
+        result = adapter.execute(
+            {"prompt": "test"},
+            "text2img",
+            retry_config=RetryConfig(max_retries=0),
+        )
+
+        assert result.success is False
+        assert secret not in result.error_message
+        assert "key=***" in result.error_message
 
 
 class TestFileFormatHandling:

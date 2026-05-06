@@ -24,7 +24,7 @@ from urllib.parse import urlencode, quote
 from .base import APIAdapter, APIResponse, APIError
 from ..batchbox_logger import (
     logger, log_request, log_response, log_error,
-    RequestTimer
+    RequestTimer, sanitize_text
 )
 
 
@@ -366,7 +366,7 @@ class VolcengineAdapter(APIAdapter):
             
         except Exception as e:
             log_error(f"Volcengine submit failed", e)
-            return APIResponse(success=False, error_message=f"Submit failed: {str(e)}")
+            return APIResponse(success=False, error_message=f"Submit failed: {sanitize_text(e)}")
     
     def poll_and_download(self, task_id: str) -> APIResponse:
         """
