@@ -1568,7 +1568,7 @@ class GaussianBlurUpscaleNode(DynamicImageNodeBase):
             "required": {
                 "blur_intensity": (list(cls.BLUR_PRESETS.keys()), {"default": "轻 (σ1-3)"}),
                 "repair_mode": (list(cls.REPAIR_PROMPTS.keys()), {"default": "直出"}),
-                "custom_sigma": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 15.0, "step": 0.5}),
+                "custom_sigma": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.5}),
                 "aspect_ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9"], {"default": "auto"}),
                 "style_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "batch_count": ("INT", {"default": 1, "min": 1, "max": 10}),

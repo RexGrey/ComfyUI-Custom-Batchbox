@@ -102,6 +102,108 @@ models:
           content_type: application/json
           response_type: sync
           response_path: data[0].url
+  gpt_image_2:
+    display_name: 🖼️ GPT-Image-2 (旗舰·图像生成)
+    category: image
+    description: OpenAI 最新旗舰图像生成模型，文字渲染能力强（最大长边 3840px，2K以上为实验性功能）
+    show_seed_widget: true
+    dynamic_inputs:
+      image:
+        max: 16
+        type: IMAGE
+        label: 图片
+    parameter_schema:
+      basic:
+        prompt:
+          type: string
+          default: ''
+        size:
+          type: select
+          default: auto
+          options:
+          - value: auto
+            label: 自动 (模型决定)
+          - value: 1024x1024
+            label: 1024×1024 (1:1)
+          - value: 1536x1024
+            label: 1536×1024 (3:2 横版)
+          - value: 1024x1536
+            label: 1024×1536 (2:3 竖版)
+          - value: 1792x1024
+            label: 1792×1024 (16:9 横版)
+          - value: 1024x1792
+            label: 1024×1792 (9:16 竖版)
+          - value: 2048x2048
+            label: 2048×2048 (2K 1:1)
+          - value: 2048x1152
+            label: 2048×1152 (2K 横版)
+          - value: 3840x2160
+            label: 3840×2160 (4K 横版)
+          - value: 2160x3840
+            label: 2160×3840 (4K 竖版)
+        quality:
+          type: select
+          default: medium
+          options:
+          - value: low
+            label: 低质量 (快速)
+          - value: medium
+            label: 中等
+          - value: high
+            label: 高质量
+      advanced: {}
+    api_endpoints:
+    - provider: openrouter
+      priority: 2
+      model_name: openai/gpt-5.4-image-2
+      extra_params:
+        modalities:
+        - image
+      modes:
+        text2img:
+          endpoint: /v1/chat/completions
+          method: POST
+          content_type: application/json
+          response_type: sync
+          payload_template:
+            model: openai/gpt-5.4-image-2
+            messages:
+            - role: user
+              content: '{{prompt}}'
+            modalities:
+            - image
+        img2img:
+          endpoint: /v1/chat/completions
+          method: POST
+          content_type: application/json
+          response_type: sync
+          payload_template:
+            model: openai/gpt-5.4-image-2
+            messages:
+            - role: user
+              content: '{{_chat_content}}'
+            modalities:
+            - image
+    - provider: 柏拉图
+      priority: 1
+      model_name: gpt-image-2
+      modes:
+        text2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+        img2img:
+          endpoint: /v1/images/generations
+          method: POST
+          content_type: application/json
+          response_type: sync
+          response_path: data[0].url
+          payload_template:
+            model: gpt-image-2
+            prompt: '{{prompt}}'
+            image: '{{_images_b64}}'
   sora_image(文生图):
     display_name: 🖼️ Sora-Image (视觉先锋·文生图)
     category: image
@@ -374,6 +476,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Google 付费层级 (优先)
+      enabled: true
       provider: google_official_paid
       priority: 0
       model_name: gemini-3-pro-image-preview
@@ -496,6 +599,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Google 付费层级 (优先)
+      enabled: true
       provider: google_official_paid
       priority: 0
       model_name: gemini-3-pro-image-preview
@@ -616,7 +720,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
-      enabled: true
+      enabled: false
       provider: acggit_account
       priority: 4
       model_name: gemini-3-pro-image-preview
@@ -639,6 +743,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: Google 付费层级 (优先)
+      enabled: true
       provider: google_official_paid
       priority: 0
       model_name: gemini-3-pro-image-preview
@@ -707,7 +812,7 @@ models:
     - display_name: Vertex AI 正式版
       enabled: true
       provider: vertex_ai_sa
-      priority: 1
+      priority: 2
       model_name: gemini-3-pro-image-preview
       api_format: gemini
       auth_type: service_account
@@ -815,7 +920,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
-      enabled: true
+      enabled: false
       provider: acggit_account
       priority: 1
       model_name: gemini-3.1-flash-image-preview
@@ -838,6 +943,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: Google 付费层级 (优先)
+      enabled: true
       provider: google_official_paid
       priority: 1
       model_name: gemini-3.1-flash-image-preview
@@ -930,7 +1036,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
-      enabled: true
+      enabled: false
       provider: acggit_account
       priority: 1
       model_name: gemini-2.5-flash-image
@@ -953,6 +1059,7 @@ models:
           response_type: sync
           use_oss_cache: true
     - display_name: Google 付费层级 (优先)
+      enabled: true
       provider: google_official_paid
       priority: 1
       model_name: gemini-2.5-flash-image
@@ -1029,7 +1136,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
-      enabled: true
+      enabled: false
       provider: acggit_account
       priority: 1
       model_name: doubao-seedream-4-0-250828
@@ -1098,7 +1205,7 @@ models:
           api_name: seed
     api_endpoints:
     - display_name: Account 稳定通道
-      enabled: true
+      enabled: false
       provider: acggit_account
       priority: 1
       model_name: doubao-seedream-4-5-251128
@@ -1251,6 +1358,7 @@ model_order:
   - Seedream_v45
   - Seedream_v4
   - gpt4o_image(文生图)
+  - gpt_image_2
   - dalle3(文生图)
   - sora_image(文生图)
   - flux_dev(文生图)
