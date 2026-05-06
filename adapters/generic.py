@@ -172,9 +172,10 @@ class GenericAPIAdapter(APIAdapter):
                     logger.warning(f"[OSSCache] Error during OSS upload, falling back: {e}")
         # ─── End OSS Cache ───
         
-        # Prepare base64 images for Chat API format (if using _chat_content template variable)
+        # Prepare base64 images if template uses image variables
         # This converts _upload_files to _images_base64 data URLs
-        if "_chat_content" in str(payload_template):
+        _tpl_str = str(payload_template)
+        if "_chat_content" in _tpl_str or "_images_b64" in _tpl_str:
             params = self._prepare_images_base64(params)
         
         # Build payload using template engine
@@ -188,11 +189,17 @@ class GenericAPIAdapter(APIAdapter):
         # Auto-add parameters from params to payload
         # Pass through all non-internal params (keys starting with _ are internal)
         # Frontend handles api_name mapping, so params already have correct keys
+        # When payload has "messages" (Chat API), skip prompt/seed — they're inside messages
+        chat_mode = "messages" in payload
         for param_name, value in params.items():
             if param_name.startswith("_"):
                 continue
+            if chat_mode and param_name in ("prompt", "seed"):
+                continue
+            if param_name in ("endpoint_override",):
+                continue
             if param_name not in payload:
-                if value is not None and value != "":
+                if value is not None and value != "" and value != "auto":
                     payload[param_name] = value
         
         # Merge extra_params from endpoint config (e.g., response_modalities)
@@ -426,21 +433,23 @@ class GenericAPIAdapter(APIAdapter):
                     logger.warning(f"[Gemini] Files API import failed: {e}")
         
         for field_name, file_tuple in upload_files:
-            # file_tuple can be 3-element (filename, bytes, mime) or 4-element (+ cached base64)
             if len(file_tuple) >= 4:
                 filename, file_bytes, mime_type, cached_b64 = file_tuple
             else:
                 filename, file_bytes, mime_type = file_tuple
                 cached_b64 = None
             
-            if not cached_b64:
-                try:
-                    from ..image_compress import compress_for_upload
-                    file_bytes, mime_type = compress_for_upload(file_bytes, max_size_mb=10.0, mime_type=mime_type)
-                except Exception as e:
-                    logger.warning(f"[Gemini] Image compression failed: {e}")
+            try:
+                from ..image_compress import compress_for_upload
+                new_bytes, new_mime_type = compress_for_upload(file_bytes, max_size_mb=10.0, mime_type=mime_type)
+                # If compression changed the bytes, invalidate the old base64 cache
+                if len(new_bytes) < len(file_bytes):
+                    file_bytes = new_bytes
+                    mime_type = new_mime_type
+                    cached_b64 = None
+            except Exception as e:
+                logger.warning(f"[Gemini] Image compression failed: {e}")
 
-            
             # Vertex AI: GCS gs:// URI (natively supported)
             if gcs_available:
                 try:
@@ -573,14 +582,23 @@ class GenericAPIAdapter(APIAdapter):
             # file_tuple can be 3-element or 4-element (with cached base64)
             if len(file_tuple) >= 4:
                 filename, file_bytes, mime_type, cached_b64 = file_tuple
-                b64_data = cached_b64
             else:
                 filename, file_bytes, mime_type = file_tuple
-                try:
-                    from ..image_compress import compress_for_upload
-                    file_bytes, mime_type = compress_for_upload(file_bytes, max_size_mb=10.0, mime_type=mime_type)
-                except Exception as e:
-                    logger.warning(f"[Gemini] Image compression failed: {e}")
+                cached_b64 = None
+                
+            try:
+                from ..image_compress import compress_for_upload
+                new_bytes, new_mime_type = compress_for_upload(file_bytes, max_size_mb=10.0, mime_type=mime_type)
+                if len(new_bytes) < len(file_bytes):
+                    file_bytes = new_bytes
+                    mime_type = new_mime_type
+                    cached_b64 = None
+            except Exception as e:
+                logger.warning(f"[Gemini] Image compression failed: {e}")
+                
+            if cached_b64:
+                b64_data = cached_b64
+            else:
                 b64_data = base64.b64encode(file_bytes).decode('utf-8')
             
             data_url = f"data:{mime_type};base64,{b64_data}"
@@ -630,6 +648,60 @@ class GenericAPIAdapter(APIAdapter):
         images_data = self._extract_images_from_path(data, response_path)
         
         if not images_data:
+            # ─── Fallback: Chat completion format ───
+            # Different providers return images differently in Chat API:
+            # - OpenRouter: choices[0].message.images[].image_url.url (base64 data URL)
+            # - 柏拉图: choices[0].message.content with markdown ![image](url)
+            if "choices" in data:
+                import re, base64
+                try:
+                    message = data["choices"][0]["message"]
+                    
+                    # Format 1: OpenRouter — images array with base64 data URLs
+                    images_arr = message.get("images", [])
+                    if images_arr:
+                        decoded_images = []
+                        image_urls = []
+                        for img_item in images_arr:
+                            img_url_obj = img_item.get("image_url", {})
+                            url = img_url_obj.get("url", "") if isinstance(img_url_obj, dict) else ""
+                            if url.startswith("data:"):
+                                # Base64 data URL — decode to bytes
+                                try:
+                                    b64_part = url.split(",", 1)[1] if "," in url else url
+                                    decoded_images.append(base64.b64decode(b64_part))
+                                except Exception:
+                                    image_urls.append(url)
+                            elif url.startswith("http"):
+                                image_urls.append(url)
+                        
+                        if decoded_images or image_urls:
+                            logger.info(f"[ParseResponse] Chat completion (OpenRouter): {len(decoded_images)} base64 + {len(image_urls)} URL image(s)")
+                            return APIResponse(
+                                success=True,
+                                images=decoded_images,
+                                image_urls=image_urls,
+                                raw_response=data
+                            )
+                    
+                    # Format 2: 柏拉图 — markdown image in content string
+                    content = message.get("content", "")
+                    if isinstance(content, str):
+                        md_urls = re.findall(r'!\[.*?\]\((https?://[^\s\)]+)\)', content)
+                        if md_urls:
+                            logger.info(f"[ParseResponse] Chat completion (markdown): extracted {len(md_urls)} image(s)")
+                            return APIResponse(
+                                success=True,
+                                image_urls=md_urls,
+                                raw_response=data
+                            )
+                except (KeyError, IndexError, TypeError):
+                    pass
+            
+            # Debug: log response structure to help diagnose parsing failures
+            import json as _json
+            truncated = _json.dumps(data, ensure_ascii=False, default=str)[:800]
+            logger.warning(f"[ParseResponse] No images at path '{response_path}'. Response: {truncated}")
             return APIResponse(
                 success=False,
                 error_message="No images found in response",

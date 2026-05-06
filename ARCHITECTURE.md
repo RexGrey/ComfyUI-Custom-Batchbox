@@ -4,6 +4,7 @@
 
 | 版本 | 日期 | 描述 |
 |------|------|------|
+| 3.2 | 2026-05-06 | 新增：用量监控系统、图像压缩、图像拖放、图像标注编辑器、全局 Lightbox 修复 |
 | 3.1 | 2026-03-09 | 对齐当前实现：修正执行链路、并发策略、接口方法、Account 登录流程 |
 | 3.0 | 2026-03-09 | 架构文档重构：整合去重，changelog 独立 |
 | 2.24 | 2026-03-01 | 逐张预览 + 生成进度计数器 + WebSocket 批次推送 |
@@ -331,14 +332,22 @@ ComfyUI-Custom-Batchbox/
 ├── batchbox_logger.py       日志与重试模块
 ├── errors.py                结构化异常类
 ├── image_utils.py           图片处理工具
+├── image_compress.py        图片压缩（PNG→JPEG，防超限）
 ├── independent_generator.py 独立并发生成引擎
+├── usage_tracker.py         用量跟踪（JSONL 日志 + NAS 同步）
+├── dashboard.py             用量监控仪表板（独立 HTTP 服务）
 ├── save_settings.py         自动保存模块
 ├── prompt_templates.py      Prompt 模板管理
 ├── oss_cache.py             阿里 OSS 图片缓存
 ├── gcs_cache.py             Google Cloud Storage 缓存
 ├── gemini_files_cache.py    Gemini Files API 缓存
+├── crypto_utils.py          密钥加解密工具
+├── encrypt_secrets.py       secrets.yaml 加密脚本
+├── vertex_sa_auth.py        Vertex AI 服务账号认证
 ├── api_config.yaml          主配置文件
 ├── secrets.yaml             API 密钥（.gitignored）
+├── deploy_to_z.bat          Z 盘部署脚本（含 Cython 编译 + robocopy）
+├── sync_to_z.bat            Z 盘同步脚本（旧版）
 ├── adapters/
 │   ├── __init__.py          适配器导出
 │   ├── base.py              适配器接口 + APIResponse
@@ -357,15 +366,23 @@ ComfyUI-Custom-Batchbox/
 ├── web/
 │   ├── api_manager.js       API 管理界面
 │   ├── api_manager.css
-│   ├── dynamic_params.js    动态参数渲染
+│   ├── dynamic_params.js    动态参数渲染 + 全局 Lightbox
 │   ├── dynamic_params.css
 │   ├── dynamic_inputs.js    动态输入槽
 │   ├── blur_upscale.js      高斯模糊放大节点 UI
-│   └── blur_upscale.css
-├── tests/
+│   ├── blur_upscale.css
+│   ├── image_drop.js        图片拖放 → LoadImage 节点
+│   └── image_editor.js      图像标注编辑器
+├── tests/                   单元测试（25 个测试文件）
+│   ├── conftest.py          测试 fixtures
 │   ├── test_config_manager.py
 │   ├── test_adapters.py
-│   └── test_errors.py
+│   ├── test_errors.py
+│   ├── test_usage_tracker.py
+│   ├── test_independent_generator.py
+│   ├── test_image_utils.py
+│   ├── test_volcengine.py
+│   └── ...（其余 17 个测试文件）
 └── docs/                    文档
 ```
 
@@ -1140,3 +1157,88 @@ def resolve_model_id(self, model_display_name):
 | 端点不切换 | 检查 `priority` 设置 |
 | img2img 分辨率不对 | 确认 multipart 过滤用 `k.startswith("_")` |
 | Account Unknown Model | 确认 `fetch_credits_price()` 被调用 |
+
+---
+
+## 9. 新增子系统（v3.2）
+
+### 9.1 用量跟踪与监控仪表板
+
+面向多机房场景的学生用量监控系统，由两个模块组成：
+
+| 文件 | 职责 |
+|------|------|
+| `usage_tracker.py` | 单例 `UsageTracker`，记录每次 API 调用到 JSONL 日志 |
+| `dashboard.py` | 独立 HTTP 服务，读取 JSONL 数据并提供实时 Web 仪表板 |
+
+**数据流：**
+
+```
+生成完成 → UsageTracker.record()
+             ├── 本地写入: {ComfyUI_root}/usage_logs/{machine_id}/usage_YYYY-MM-DD.jsonl
+             └── 后台线程异步写入 NAS: {BATCHBOX_SHARED_CACHE}/usage_logs/{machine_id}/...
+
+dashboard.py (教师机运行)
+  └── 读取 NAS 上所有 machine_id 目录 → 聚合统计 → 实时 Web 仪表板
+```
+
+**用量预警机制：** 每台学生机日生成量达 800 张后，每增加 200 张弹出一次 Windows 原生 MessageBox 警告，防止滥用。
+
+**仪表板功能：**
+- 总览页：任务数、API 调用、生成图片、成功率、时间线图表、模型分布饼图
+- 机器详情页：每台机器的成功率/生成量/耗时环形图 + 可编辑备注
+- 支持日期筛选（Flatpickr 日历）、机器筛选、状态筛选
+- 5 秒自动刷新
+
+### 9.2 图片压缩（API 上传前）
+
+`image_compress.py` 在上传大图到 Gemini API 前自动压缩，防止超时。
+
+```
+原始 PNG (22MB) → JPEG q=90 (3-5MB) → 若仍超限 → 降质量 (85→80→70)
+                                     → 若仍超限 → 缩分辨率 (80%→70%→...)
+```
+
+- 默认阈值：10MB
+- 最小分辨率：512px（不会无限缩小）
+- RGBA 自动转 RGB（白色背景填充）
+
+### 9.3 图片拖放（Image Drop）
+
+`web/image_drop.js` 拦截画布上的图片文件拖放事件，替代 ComfyUI 默认行为（加载工作流）。
+
+| 场景 | 行为 |
+|------|------|
+| 拖放图片到空白区域 | 自动上传 → 创建 LoadImage 节点 → 设置图片 |
+| 拖放图片到已有 LoadImage 节点 | 替换该节点的图片 |
+| 拖放图片到 BatchBoxImageAnnotator 节点 | 委托 `onDropFile` 处理 |
+| 拖放多张图片 | 创建多个 LoadImage 节点（垂直排列，间距 220px） |
+
+**SHA-256 去重：** 上传前计算文件哈希，与 input 文件夹中同名文件对比，相同则复用，不同则加哈希后缀。
+
+**LoadImage 预览修复（`Batchbox.LoadImagePreviewFix`）：** Hook `onConfigure` 在工作流加载后强制触发 widget callback，修复某些 ComfyUI 版本中预览缩略图不显示的问题。
+
+### 9.4 图像标注编辑器（Image Annotator）
+
+`web/image_editor.js` 为 `BatchBoxImageAnnotator` 节点提供全屏标注编辑器。
+
+**工具：**
+- 矩形框选工具（可调颜色 × 6、线宽 15-30）
+- 顺序编号标记工具（可调字号 100-800，自动递增 1、2、3...）
+
+**交互：**
+- 拖拽移动已有标注
+- 角点拖拽调整矩形大小
+- 撤销 / 撤销所有 / Delete 删除选中
+- 保存时将标注合并到原图导出为 base64 PNG
+
+### 9.5 全局 Lightbox 双击预览
+
+`web/dynamic_params.js` 的 `setup()` 方法注册了全局 `dblclick` 监听器，解决 ComfyUI v1.36+ 前端绕过 LiteGraph 事件路由导致双击预览失效的问题。
+
+**坐标转换：** `graphPos = canvasPos / scale - offset`
+
+**Widget 排除：**
+- DOM 层：通过 CSS 选择器排除 `input`、`button`、`select` 等交互元素
+- Graph 层：遍历 `node.widgets`，排除标题栏和非预览 Widget
+- `$$canvas-image-preview` 类型的 Widget 不被排除（它是图片本身）
