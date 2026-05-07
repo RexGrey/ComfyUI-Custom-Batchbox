@@ -417,7 +417,7 @@ class TestGenerationRoutes:
         assert payload["success"] is False
         assert "200MB" in payload["error"]
 
-    def test_generate_independent_reads_chunked_body_and_writes_history(self, api_module, monkeypatch):
+    def test_generate_independent_reads_chunked_body_and_writes_history(self, api_module, monkeypatch, capsys):
         generator_instance = Mock()
 
         async def fake_generate(**kwargs):
@@ -462,6 +462,10 @@ class TestGenerationRoutes:
         payload = _response_json(response)
         assert response.status == 200
         assert payload["success"] is True
+        assert "duration_seconds" in payload
+        assert payload["duration_seconds"] >= 0
+        console_output = capsys.readouterr().out
+        assert "[Independent] ✅ 完成: model-a | 2 张 | 耗时 " in console_output
         generator_instance.generate.assert_awaited_once()
         call_kwargs = generator_instance.generate.await_args.kwargs
         assert call_kwargs["model"] == "model-a"

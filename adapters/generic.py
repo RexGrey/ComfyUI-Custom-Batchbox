@@ -191,8 +191,12 @@ class GenericAPIAdapter(APIAdapter):
         # Frontend handles api_name mapping, so params already have correct keys
         # When payload has "messages" (Chat API), skip prompt/seed — they're inside messages
         chat_mode = "messages" in payload
+        excluded_params = set(self.endpoint.get("exclude_params") or [])
+        excluded_params.update(self.mode_config.get("exclude_params") or [])
         for param_name, value in params.items():
             if param_name.startswith("_"):
+                continue
+            if param_name in excluded_params:
                 continue
             if chat_mode and param_name in ("prompt", "seed"):
                 continue
@@ -1115,6 +1119,11 @@ class GenericAPIAdapter(APIAdapter):
         status_path = self.mode_config.get("status_path", "data.status")
         success_value = self.mode_config.get("success_value", "SUCCESS")
         response_path = self.mode_config.get("response_path", "data.data.data[*].url")
+        poll_interval = self.mode_config.get("poll_interval", 2)
+        try:
+            poll_interval = max(float(poll_interval), 0)
+        except (TypeError, ValueError):
+            poll_interval = 2
         
         poll_url = f"{self.base_url}{polling_endpoint}"
         
@@ -1130,7 +1139,7 @@ class GenericAPIAdapter(APIAdapter):
         start_time = time.time()
         
         while time.time() - start_time < timeout:
-            time.sleep(2)
+            time.sleep(poll_interval)
             
             try:
                 resp = requests.get(
