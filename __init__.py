@@ -1222,6 +1222,12 @@ try:
             )
             
             _usage_duration = _time.monotonic() - _usage_t0
+            result["duration_seconds"] = _usage_duration
+            _preview_count = len(result.get("preview_images", []))
+            print(
+                f"[Independent] ✅ 完成: {model} | {_preview_count} 张 | 耗时 {_usage_duration:.1f}s",
+                flush=True,
+            )
             
             # --- Usage Tracking ---
             try:
