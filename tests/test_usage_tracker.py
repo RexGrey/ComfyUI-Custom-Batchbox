@@ -165,6 +165,52 @@ class TestUsageTracker:
         assert record["providers"] == ["Google", "Vertex"]
         assert record["gen"] == 0
 
+    def test_record_provider_usage_appends_without_replacing_existing_fields(self, tracker_with_tmpdir, tmp_path):
+        """Provider/key usage is additive and never stores full API keys."""
+        tracker = tracker_with_tmpdir
+        tracker.record(
+            node_type="image",
+            model="NanoBananaPro",
+            batch_count=2,
+            images_generated=2,
+            images_saved=1,
+            success=True,
+            providers_tried=["google"],
+            provider_usage=[
+                {
+                    "provider": "google",
+                    "provider_label": "Google",
+                    "key_label": "main · ****abcdef",
+                    "key": "sk-full-secret-abcdef",
+                    "gen": 2,
+                },
+            ],
+            duration_seconds=3.4,
+        )
+
+        import time
+        time.sleep(0.2)
+
+        local_dir = tmp_path / "local"
+        jsonl_files = list(local_dir.glob("usage_*.jsonl"))
+        with open(jsonl_files[0], "r", encoding="utf-8") as f:
+            record = json.loads(f.readline())
+
+        assert record["machine"] == "TEST-PC_AABBCC"
+        assert record["model"] == "NanoBananaPro"
+        assert record["gen"] == 2
+        assert record["saved"] == 1
+        assert record["providers"] == ["google"]
+        assert record["provider_usage"] == [
+            {
+                "provider": "google",
+                "provider_label": "Google",
+                "key_label": "main · ****abcdef",
+                "gen": 2,
+            }
+        ]
+        assert "sk-full-secret-abcdef" not in json.dumps(record, ensure_ascii=False)
+
     def test_nas_failure_graceful(self, tracker_with_tmpdir):
         """Test that NAS write failure doesn't crash."""
         tracker = tracker_with_tmpdir

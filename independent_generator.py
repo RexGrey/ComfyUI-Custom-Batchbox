@@ -19,6 +19,7 @@ import folder_paths
 from .config_manager import config_manager
 from .adapters.generic import GenericAPIAdapter
 from .adapters.base import APIResponse
+from .usage_tracker import aggregate_provider_usage
 
 
 class IndependentGenerator:
@@ -49,6 +50,7 @@ class IndependentGenerator:
             return VolcengineAdapter(
                 provider_config={
                     "name": provider.name,
+                    "display_name": getattr(provider, "display_name", provider.name),
                     "base_url": provider.base_url,
                     "access_key": provider.access_key,
                     "secret_key": provider.secret_key,
@@ -305,8 +307,8 @@ class IndependentGenerator:
         # Generate images in parallel with immediate saving
         response_log = ""
         
-        async def process_single_batch(batch_idx: int) -> Tuple[int, List[Dict], str]:
-            """Process a single batch, save immediately, return (index, preview_results, log)."""
+        async def process_single_batch(batch_idx: int) -> Tuple[int, List[Dict], str, List[Dict]]:
+            """Process a single batch and return previews, log, and safe provider usage."""
             print(f"\n[IndependentGenerator] Batch {batch_idx+1}/{batch_count} - Model: {model}")
             
             current_params = params.copy()
@@ -345,7 +347,7 @@ class IndependentGenerator:
                 except Exception as e:
                     print(f"[IndependentGenerator] Progress callback error: {e}")
             
-            return (batch_idx, batch_previews, batch_log)
+            return (batch_idx, batch_previews, batch_log, getattr(result, "provider_usage", []))
         
         # All batches run in parallel - memory is shared via cached image data
         print(f"[IndependentGenerator] Running all {batch_count} batches in parallel (shared image data)")
@@ -354,19 +356,22 @@ class IndependentGenerator:
         
         # Collect results in order
         all_previews = []
+        all_provider_usage = []
         for result in sorted(results, key=lambda x: x[0] if isinstance(x, tuple) else 999):
             if isinstance(result, Exception):
                 response_log += f"Batch error: {result}\n"
             else:
-                _, batch_previews, batch_log = result
+                _, batch_previews, batch_log, batch_provider_usage = result
                 all_previews.extend(batch_previews)
                 response_log += batch_log
+                all_provider_usage.extend(batch_provider_usage)
         
         if not all_previews:
             return {
                 "success": False,
                 "error": f"Generation failed.\n{response_log}",
-                "preview_images": []
+                "preview_images": [],
+                "provider_usage": aggregate_provider_usage(all_provider_usage),
             }
         
         effective_hash_images = None
@@ -395,6 +400,7 @@ class IndependentGenerator:
             "success": True,
             "preview_images": all_previews,
             "response_info": response_log if response_log else "Success",
+            "provider_usage": aggregate_provider_usage(all_provider_usage),
             "params_hash": params_hash  # Backend-computed hash for cache matching
         }
     

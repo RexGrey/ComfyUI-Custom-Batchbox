@@ -26,6 +26,7 @@ import folder_paths  # ComfyUI's folder paths helper
 from .config_manager import config_manager
 from .adapters.generic import GenericAPIAdapter
 from .adapters.base import APIResponse
+from .usage_tracker import aggregate_provider_usage
 from .image_utils import prepare_for_comfyui, pil_to_tensor_rgba, get_image_info
 
 logger = logging.getLogger("batchbox")
@@ -194,6 +195,7 @@ class DynamicImageNodeBase:
             return VolcengineAdapter(
                 provider_config={
                     "name": provider.name,
+                    "display_name": getattr(provider, "display_name", provider.name),
                     "base_url": provider.base_url,
                     "access_key": provider.access_key,
                     "secret_key": provider.secret_key
@@ -205,6 +207,7 @@ class DynamicImageNodeBase:
         return GenericAPIAdapter(
             provider_config={
                 "name": provider.name,
+                "display_name": getattr(provider, "display_name", provider.name),
                 "base_url": provider.base_url,
                 "api_key": provider.api_key,
                 "api_keys": provider.api_keys or [],
@@ -340,7 +343,8 @@ class DynamicImageNodeBase:
     
     def process_batch(self, model_name: str, batch_count: int, 
                       params: Dict[str, Any], mode: str = "text2img",
-                      endpoint_override: Optional[str] = None) :
+                      endpoint_override: Optional[str] = None,
+                      return_usage: bool = False) :
         """
         Process batch of image generation requests in parallel.
         
@@ -356,6 +360,7 @@ class DynamicImageNodeBase:
             
         Returns:
             Tuple of (image_tensor, response_log, last_image_url, pil_images)
+            or the same tuple plus provider_usage when return_usage=True.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
@@ -404,7 +409,14 @@ class DynamicImageNodeBase:
             else:
                 batch_log += f"Batch {batch_idx+1} failed: {result.error_message}\n"
             
-            return (batch_idx, batch_tensors, batch_pil_images, batch_url, batch_log)
+            return (
+                batch_idx,
+                batch_tensors,
+                batch_pil_images,
+                batch_url,
+                batch_log,
+                getattr(result, "provider_usage", []),
+            )
         
         # Run all batches in parallel
         with ThreadPoolExecutor(max_workers=batch_count) as executor:
@@ -421,12 +433,14 @@ class DynamicImageNodeBase:
         # Combine results
         all_tensors = []
         all_pil_images = []
+        all_provider_usage = []
         response_log = ""
         last_url = ""
         
-        for batch_idx, tensors, pil_images, url, log in successful_results:
+        for batch_idx, tensors, pil_images, url, log, provider_usage in successful_results:
             all_tensors.extend(tensors)
             all_pil_images.extend(pil_images)
+            all_provider_usage.extend(provider_usage)
             response_log += log
             if url:
                 last_url = url
@@ -434,12 +448,15 @@ class DynamicImageNodeBase:
         if not all_tensors:
             # Return black placeholder
             placeholder = Image.new('RGB', (512, 512), color='black')
-            return (
+            result_tuple = (
                 pil2tensor(placeholder),
                 f"Generation failed.\n{response_log}",
                 "",
                 [placeholder]
             )
+            if return_usage:
+                return result_tuple + (aggregate_provider_usage(all_provider_usage),)
+            return result_tuple
         
         # Normalize tensor dimensions before concatenation
         # All tensors must have same H,W dimensions to concatenate on dim=0
@@ -461,12 +478,15 @@ class DynamicImageNodeBase:
                     normalized_tensors.append(tensor)
             all_tensors = normalized_tensors
         
-        return (
+        result_tuple = (
             torch.cat(all_tensors, dim=0),
             response_log if response_log else "Success",
             last_url,
             all_pil_images
         )
+        if return_usage:
+            return result_tuple + (aggregate_provider_usage(all_provider_usage),)
+        return result_tuple
     
     def _compute_params_hash(self, model: str, prompt: str, batch_count: int, kwargs: Dict) -> str:
         """
@@ -799,8 +819,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
         
         # Process batch and get results including PIL images
         _usage_t0 = time.time()
-        images_tensor, response_info, last_url, pil_images = self.process_batch(
-            model, batch_count, params, mode, endpoint_override
+        images_tensor, response_info, last_url, pil_images, provider_usage = self.process_batch(
+            model, batch_count, params, mode, endpoint_override, return_usage=True
         )
         _usage_duration = time.time() - _usage_t0
         
@@ -841,7 +861,8 @@ class DynamicImageGenerationNode(DynamicImageNodeBase):
                 images_generated=len(pil_images),
                 images_saved=_saved_count,
                 success=bool(pil_images),
-                providers_tried=[],  # Collected per-batch; aggregate not available here
+                providers_tried=[],  # Derived from provider_usage by UsageTracker
+                provider_usage=provider_usage,
                 error_message=response_info if not pil_images else "",
                 duration_seconds=_usage_duration,
             )
@@ -1351,10 +1372,12 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
         try:
             from .usage_tracker import get_tracker
             _all_providers = []
+            _provider_usage = []
             for r in results:
                 for p in getattr(r, 'providers_tried', []):
                     if p not in _all_providers:
                         _all_providers.append(p)
+                _provider_usage.extend(getattr(r, 'provider_usage', []))
             get_tracker().record(
                 node_type="editor",
                 model=model,
@@ -1363,6 +1386,7 @@ class DynamicImageEditorNode(DynamicImageNodeBase):
                 images_saved=_saved_count,
                 success=bool(output_tensors),
                 providers_tried=_all_providers,
+                provider_usage=aggregate_provider_usage(_provider_usage),
                 error_message=results[-1].error_message if results and not results[-1].success else "",
                 duration_seconds=_usage_duration,
             )

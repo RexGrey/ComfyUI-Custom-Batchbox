@@ -312,6 +312,60 @@ class TestGenerate:
         assert "Batch 1 failed: no provider" in result["error"]
         assert "Batch 2 failed: no provider" in result["error"]
 
+    def test_generate_aggregates_provider_usage_from_batches(self):
+        png_bytes = self._png_bytes()
+        responses = [
+            APIResponse(
+                success=True,
+                images=[png_bytes],
+                provider_usage=[
+                    {
+                        "provider": "google",
+                        "provider_label": "Google",
+                        "key_label": "main · ****abcdef",
+                        "gen": 1,
+                    }
+                ],
+            ),
+            APIResponse(
+                success=True,
+                images=[png_bytes],
+                provider_usage=[
+                    {
+                        "provider": "google",
+                        "provider_label": "Google",
+                        "key_label": "main · ****abcdef",
+                        "gen": 1,
+                    }
+                ],
+            ),
+        ]
+
+        with patch.object(self.gen, "execute_with_failover", side_effect=responses):
+            with patch.object(
+                self.gen,
+                "_save_single_image",
+                return_value={"filename": "ok.png", "subfolder": "", "type": "output"},
+            ):
+                result = asyncio.run(
+                    self.gen.generate(
+                        "model_a",
+                        "prompt",
+                        seed=10,
+                        batch_count=2,
+                    )
+                )
+
+        assert result["success"] is True
+        assert result["provider_usage"] == [
+            {
+                "provider": "google",
+                "provider_label": "Google",
+                "key_label": "main · ****abcdef",
+                "gen": 2,
+            }
+        ]
+
     def test_generate_hash_uses_only_successfully_decoded_images(self):
         valid_png = self._png_bytes()
         valid_b64 = "data:image/png;base64," + base64.b64encode(valid_png).decode("ascii")

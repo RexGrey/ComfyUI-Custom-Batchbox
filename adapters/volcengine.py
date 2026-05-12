@@ -407,6 +407,24 @@ class VolcengineAdapter(APIAdapter):
                 if img_bytes:
                     result.images.append(img_bytes)
         
+        self._attach_provider_usage(result)
+        return result
+
+    def _attach_provider_usage(self, result: APIResponse) -> APIResponse:
+        """Attach safe Volcengine access-key image counts to successful image results."""
+        if not result.success or not result.images:
+            return result
+        provider = self.provider.get("name", "volcengine")
+        result.provider_usage.append({
+            "provider": provider,
+            "provider_label": self.provider.get("display_name") or provider,
+            "key_label": self._format_safe_key_label(
+                self.provider.get("access_key", ""),
+                index=1,
+                name="AccessKey",
+            ),
+            "gen": len(result.images),
+        })
         return result
     
     def _poll_for_result(self, task_id: str, timeout: int = 120) -> APIResponse:

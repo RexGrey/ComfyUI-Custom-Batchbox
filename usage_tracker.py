@@ -29,6 +29,67 @@ logger = logging.getLogger("batchbox.usage")
 _TZ_CST = timezone(timedelta(hours=8))
 
 
+def _safe_text(value: Any, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+def _safe_key_label(value: Any) -> str:
+    label = _safe_text(value, 160)
+    if not label:
+        return "未记录Key"
+    if "****" in label:
+        return label
+    compact = label.replace("-", "").replace("_", "")
+    looks_secret = len(compact) >= 20 and any(c.isalpha() for c in compact) and any(c.isdigit() for c in compact)
+    if looks_secret and " " not in label:
+        return f"Key · ****{label[-6:]}"
+    return label
+
+
+def normalize_provider_usage(provider_usage: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Return safe provider/key usage entries for logs and dashboards."""
+    safe_entries: List[Dict[str, Any]] = []
+    if not provider_usage:
+        return safe_entries
+
+    for item in provider_usage:
+        if not isinstance(item, dict):
+            continue
+        try:
+            gen = int(item.get("gen", 0))
+        except (TypeError, ValueError):
+            continue
+        if gen <= 0:
+            continue
+
+        provider = _safe_text(item.get("provider") or item.get("provider_label") or "unknown", 80)
+        provider_label = _safe_text(item.get("provider_label") or provider, 120)
+        safe_entries.append({
+            "provider": provider or "unknown",
+            "provider_label": provider_label or provider or "unknown",
+            "key_label": _safe_key_label(item.get("key_label")),
+            "gen": gen,
+        })
+
+    return safe_entries
+
+
+def aggregate_provider_usage(provider_usage: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Aggregate safe usage entries by provider and key label."""
+    totals: Dict[tuple, Dict[str, Any]] = {}
+    for item in normalize_provider_usage(provider_usage):
+        key = (item["provider"], item["provider_label"], item["key_label"])
+        if key not in totals:
+            totals[key] = dict(item)
+        else:
+            totals[key]["gen"] += item["gen"]
+    return sorted(
+        totals.values(),
+        key=lambda x: (-x["gen"], x["provider_label"], x["key_label"]),
+    )
+
+
 def _get_mac_last6() -> str:
     """Get last 6 hex chars of the primary MAC address."""
     try:
@@ -229,6 +290,7 @@ class UsageTracker:
         images_saved: int,
         success: bool,
         providers_tried: Optional[List[str]] = None,
+        provider_usage: Optional[List[Dict[str, Any]]] = None,
         error_message: str = "",
         duration_seconds: float = 0.0,
     ):
@@ -244,9 +306,20 @@ class UsageTracker:
             images_saved: Images saved to output directory
             success: Whether the task succeeded
             providers_tried: List of provider names attempted
+            provider_usage: Safe provider/key image counts
             error_message: Error message if failed
             duration_seconds: Time taken in seconds
         """
+        safe_provider_usage = aggregate_provider_usage(provider_usage)
+        provider_list = list(providers_tried or [])
+        if not provider_list and safe_provider_usage:
+            seen = set()
+            for item in safe_provider_usage:
+                provider_name = item.get("provider", "unknown")
+                if provider_name not in seen:
+                    seen.add(provider_name)
+                    provider_list.append(provider_name)
+
         record = {
             "task_id": uuid.uuid4().hex[:12],
             "ts": datetime.now(_TZ_CST).isoformat(timespec="seconds"),
@@ -258,7 +331,8 @@ class UsageTracker:
             "gen": images_generated,
             "saved": images_saved,
             "ok": success,
-            "providers": providers_tried or [],
+            "providers": provider_list,
+            "provider_usage": safe_provider_usage,
             "err": error_message[:200] if error_message else "",
         }
 
