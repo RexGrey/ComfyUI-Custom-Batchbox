@@ -959,6 +959,7 @@ try:
                 from .image_utils import detect_aspect_ratio as _dar
                 all_preview_images = []
                 all_params_hashes = []
+                all_provider_usage = []
                 total_boxes = len(blurred_b64_list)
                 total_calls = total_boxes * batch_count
                 _progress_total_override = total_calls
@@ -1055,14 +1056,17 @@ try:
                         all_preview_images.extend(box_result["preview_images"])
                     elif "error" in box_result:
                         result["error"] = box_result["error"]
+                    all_provider_usage.extend(box_result.get("provider_usage", []))
                         
                     if box_result.get("params_hash"):
                         all_params_hashes.append(box_result["params_hash"])
                 
                 # Update combined result, preserving any existing error messages
+                from .usage_tracker import aggregate_provider_usage as _aggregate_provider_usage
                 result["success"] = bool(all_preview_images)
                 result["preview_images"] = all_preview_images
                 result["params_hash"] = "_".join(all_params_hashes) if all_params_hashes else ""
+                result["provider_usage"] = _aggregate_provider_usage(all_provider_usage)
             else:
                 # Merge: blurred image(s) + all reference images
                 merged_images = blurred_b64_list + reference_images_base64
@@ -1107,6 +1111,7 @@ try:
                     images_saved=_saved_count,
                     success=result.get("success", False),
                     providers_tried=[],
+                    provider_usage=result.get("provider_usage", []),
                     error_message=result.get("error", ""),
                     duration_seconds=_usage_duration,
                 )
@@ -1241,7 +1246,8 @@ try:
                     images_generated=len(_preview_images),
                     images_saved=_saved_count,
                     success=result.get("success", False),
-                    providers_tried=[],  # Aggregated per-batch, not available in result dict
+                    providers_tried=[],  # Derived from provider_usage by UsageTracker
+                    provider_usage=result.get("provider_usage", []),
                     error_message=result.get("error", ""),
                     duration_seconds=_usage_duration,
                 )

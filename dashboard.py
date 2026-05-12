@@ -120,6 +120,7 @@ def compute_stats(records: list, date_filter: str = "today",
         "dur_avg": 0, "dur_min": 0, "dur_max": 0,
         "machines": [], "models": {}, "nodes": {},
         "recent": [], "timeline": {}, "machine_list": [],
+        "providers_usage": [],
     }
     if not records:
         return empty
@@ -183,6 +184,46 @@ def compute_stats(records: list, date_filter: str = "today",
         node = r.get("node", "unknown")
         node_map[node] = node_map.get(node, 0) + 1
 
+    # Per-provider/key image counts. Only direct provider_usage records are used.
+    provider_map = {}
+    for r in records:
+        entries = r.get("provider_usage", [])
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                gen = int(entry.get("gen", 0))
+            except (TypeError, ValueError):
+                continue
+            if gen <= 0:
+                continue
+            provider = str(entry.get("provider") or entry.get("provider_label") or "unknown")
+            provider_label = str(entry.get("provider_label") or provider)
+            key_label = str(entry.get("key_label") or "未记录Key")
+            if provider not in provider_map:
+                provider_map[provider] = {
+                    "provider": provider,
+                    "provider_label": provider_label,
+                    "gen": 0,
+                    "keys": {},
+                }
+            p = provider_map[provider]
+            p["gen"] += gen
+            p["keys"][key_label] = p["keys"].get(key_label, 0) + gen
+
+    providers_usage = []
+    for provider_data in provider_map.values():
+        keys = [
+            {"key_label": key_label, "gen": gen}
+            for key_label, gen in provider_data.pop("keys").items()
+        ]
+        keys.sort(key=lambda x: (-x["gen"], x["key_label"]))
+        provider_data["keys"] = keys
+        providers_usage.append(provider_data)
+    providers_usage.sort(key=lambda x: (-x["gen"], x["provider_label"]))
+
     # Timeline aggregation
     # If viewing a single day (today or date_exact), group by hour.
     # If viewing week/all, group by day.
@@ -228,6 +269,7 @@ def compute_stats(records: list, date_filter: str = "today",
         "nodes": node_map,
         "recent": recent,
         "timeline": sorted_tl,
+        "providers_usage": providers_usage,
     }
 
 
@@ -406,6 +448,32 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .recent-table::-webkit-scrollbar { width:6px; }
   .recent-table::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 
+  /* Provider usage */
+  .provider-usage-list {
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
+    gap:12px;
+  }
+  .provider-card {
+    background:var(--card-bg); border:1px solid var(--border); border-radius:10px;
+    padding:14px;
+  }
+  .provider-card-head {
+    display:flex; justify-content:space-between; align-items:center; gap:10px;
+    font-weight:700; margin-bottom:10px; padding-bottom:8px;
+    border-bottom:1px solid var(--border);
+  }
+  .provider-total { color:var(--green); white-space:nowrap; }
+  .provider-key-row {
+    display:flex; justify-content:space-between; gap:10px;
+    font-size:0.82rem; color:var(--text-dim); padding:5px 0;
+  }
+  .provider-key-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .provider-key-gen { color:var(--text); font-weight:600; white-space:nowrap; }
+  .empty-block {
+    color:var(--text-dim); background:var(--card-bg); border:1px solid var(--border);
+    border-radius:10px; padding:18px; text-align:center;
+  }
+
   /* Machine detail grid (Tab 2) */
   .machine-grid {
     display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
@@ -455,6 +523,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <div class="tab-bar">
   <button class="tab-btn active" onclick="switchTab('overview')">📊 总览</button>
   <button class="tab-btn" onclick="switchTab('machines')">👥 机器详情</button>
+  <button class="tab-btn" onclick="switchTab('providers')">供应商/API数量详情</button>
 </div>
 
 <!-- Controls -->
@@ -511,7 +580,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="recent-table">
       <table id="recentTable"><thead><tr>
         <th>时间</th><th>机器</th><th>节点</th><th>模型</th><th>批次</th>
-        <th>生成</th><th>保存</th><th>状态 (鼠标悬浮看原因)</th><th>耗时</th>
+        <th>供应商</th><th>生成</th><th>保存</th><th>状态 (鼠标悬浮看原因)</th><th>耗时</th>
       </tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -533,6 +602,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="machine-grid" id="machineGrid"></div>
 </div>
+
+<!-- =================== Tab 3: Provider/API Details =================== -->
+<div class="tab-page" id="page-providers">
+  <div class="chart-row">
+    <div class="chart-box provider-chart-box">
+      <div class="chart-label">供应商生图占比</div>
+      <canvas id="providerChart"></canvas>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">供应商 / API Key 生图统计</div>
+    <div id="providerUsageList" class="provider-usage-list"></div>
+  </div>
+</div>
 </div>
 
 <script>
@@ -543,6 +626,7 @@ let currentStatus = 'all';
 let drillDate = '';   // '' = no drill;  'YYYY-MM-DD' = drilled
 let refreshTimer = null;
 let chartTimeline = null, chartMachine = null, chartModel = null;
+let chartProvider = null;
 let machineChartInstances = {};  // Tab2 mini pies
 let fpInstance = null;
 let fpOpen = false;
@@ -575,10 +659,29 @@ function fmtDur(s) {
   if (!s || s <= 0) return '-';
   return s >= 60 ? (s/60).toFixed(1)+'m' : s.toFixed(1)+'s';
 }
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[ch]));
+}
 function getNote(name) { return machineNotes[name] || ''; }
 function displayName(name) {
   const n = getNote(name);
   return n ? name + ' (' + n + ')' : name;
+}
+function providerSummary(record) {
+  const entries = Array.isArray(record.provider_usage) ? record.provider_usage : [];
+  if (!entries.length) return '';
+  const totals = {};
+  entries.forEach(item => {
+    const label = item.provider_label || item.provider || '';
+    if (!label) return;
+    totals[label] = (totals[label] || 0) + (Number(item.gen) || 0);
+  });
+  return Object.entries(totals)
+    .sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, gen]) => gen > 0 ? `${label}(${gen})` : label)
+    .join(' / ');
 }
 
 // ==================== Machine Notes ====================
@@ -624,13 +727,10 @@ function startEditNote(machine, spanEl) {
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
-  if (tab === 'overview') {
-    document.querySelector('.tab-btn:nth-child(1)').classList.add('active');
-    document.getElementById('page-overview').classList.add('active');
-  } else {
-    document.querySelector('.tab-btn:nth-child(2)').classList.add('active');
-    document.getElementById('page-machines').classList.add('active');
-  }
+  const tabIndex = { overview: 1, machines: 2, providers: 3 }[tab] || 1;
+  const pageId = 'page-' + (tabIndex === 1 ? 'overview' : tabIndex === 2 ? 'machines' : 'providers');
+  document.querySelector(`.tab-btn:nth-child(${tabIndex})`).classList.add('active');
+  document.getElementById(pageId).classList.add('active');
 }
 
 // ==================== Filter / Machine / Drill ====================
@@ -941,10 +1041,12 @@ function renderOverview(data) {
     chartModel.update('none');
   }
 
+  renderProviderUsage(data.providers_usage || []);
+
   // --- Recent activity table ---
   const rtb = document.querySelector('#recentTable tbody');
   if (!data.recent.length) {
-    rtb.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-dim)">暂无数据</td></tr>';
+    rtb.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-dim)">暂无数据</td></tr>';
   } else {
     rtb.innerHTML = data.recent.map(r => {
       let statusHtml;
@@ -960,14 +1062,99 @@ function renderOverview(data) {
       const node = NODE_LABELS[r.node] || r.node;
       const mNote = getNote(r.machine);
       const mLabel = mNote ? r.machine + ' <span style="font-size:0.75rem;color:var(--text-dim)">(' + mNote + ')</span>' : r.machine;
+      const providerText = providerSummary(r);
       return `<tr>
         <td>${fmt(r.ts)}</td>
         <td style="cursor:pointer; color:var(--accent);" onclick="selectMachine('${r.machine}')" title="点击查看此机器详情">${mLabel}</td><td>${node}</td>
         <td>${r.model}</td><td>${r.batch}</td>
+        <td>${esc(providerText)}</td>
         <td>${r.gen}</td><td>${r.saved}</td>
         <td>${statusHtml}</td><td>${fmtDur(r.dur_s)}</td>
       </tr>`;
     }).join('');
+  }
+}
+
+function renderProviderUsage(items) {
+  renderProviderChart(items);
+  const box = document.getElementById('providerUsageList');
+  if (!box) return;
+  if (!items.length) {
+    box.innerHTML = '<div class="empty-block">暂无供应商 / API Key 明细；新版本记录后会自动显示</div>';
+    return;
+  }
+
+  box.innerHTML = items.map(provider => {
+    const keys = provider.keys || [];
+    const keyRows = keys.length
+      ? keys.map(k => `
+        <div class="provider-key-row">
+          <span class="provider-key-name" title="${esc(k.key_label)}">${esc(k.key_label)}</span>
+          <span class="provider-key-gen">${k.gen} 张</span>
+        </div>
+      `).join('')
+      : '<div class="provider-key-row"><span class="provider-key-name">未记录Key</span><span class="provider-key-gen">0 张</span></div>';
+    return `
+      <div class="provider-card">
+        <div class="provider-card-head">
+          <span title="${esc(provider.provider)}">${esc(provider.provider_label || provider.provider)}</span>
+          <span class="provider-total">${provider.gen} 张</span>
+        </div>
+        ${keyRows}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderProviderChart(items) {
+  const canvas = document.getElementById('providerChart');
+  if (!canvas) return;
+
+  const hasData = items.length > 0;
+  const labels = hasData
+    ? items.map(p => p.provider_label || p.provider || '未知供应商')
+    : ['暂无数据'];
+  const counts = hasData ? items.map(p => p.gen || 0) : [1];
+  const colors = hasData
+    ? labels.map((_, i) => PALETTE[i % PALETTE.length])
+    : ['#2d3142'];
+
+  if (!chartProvider) {
+    chartProvider = new Chart(canvas, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data: counts,
+          backgroundColor: colors,
+          borderWidth: 0,
+          hoverOffset: hasData ? 6 : 0,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '58%',
+        animation: { duration: 400 },
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: { color: '#8b8fa3', padding: 12, usePointStyle: true, pointStyle: 'circle' },
+          },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => hasData ? `${ctx.label}: ${ctx.parsed} 张` : '暂无数据',
+            },
+          },
+        },
+      },
+    });
+  } else {
+    chartProvider.data.labels = labels;
+    chartProvider.data.datasets[0].data = counts;
+    chartProvider.data.datasets[0].backgroundColor = colors;
+    chartProvider.data.datasets[0].hoverOffset = hasData ? 6 : 0;
+    chartProvider.update('none');
   }
 }
 

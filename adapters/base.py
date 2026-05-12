@@ -28,6 +28,7 @@ class APIResponse:
     task_id: str = ""
     status: str = ""  # pending, processing, success, failed
     providers_tried: List[str] = field(default_factory=list)  # Usage tracking: providers attempted
+    provider_usage: List[Dict[str, Any]] = field(default_factory=list)  # Safe provider/key image counts
 
 
 @dataclass
@@ -81,42 +82,76 @@ class APIAdapter(ABC):
           2. api_keys: ["key1", "key2"]                               (plain list)
           3. api_key: "single_key"                                    (original)
         """
+        return self.select_api_key_info().get("key", "")
+
+    def select_api_key_info(self) -> Dict[str, Any]:
+        """Select an API key and return full key plus a safe display label.
+
+        The returned ``key`` is for request signing only. ``label`` is safe for
+        usage logs and dashboards because it never contains the complete key.
+        """
         import random
         import time
         
         keys_config = self.provider.get("api_keys", [])
         if keys_config and isinstance(keys_config, list):
-            # Build list of active keys
-            active_keys = []
-            for item in keys_config:
+            # Build list of active keys with stable config-order numbering.
+            active_infos = []
+            for idx, item in enumerate(keys_config, start=1):
                 if isinstance(item, dict):
                     if item.get("enabled", True) and item.get("key"):
-                        active_keys.append(item["key"])
+                        active_infos.append(self._make_key_info(
+                            item["key"],
+                            idx,
+                            str(item.get("name") or "").strip(),
+                        ))
                 elif isinstance(item, str) and item:
-                    active_keys.append(item)
+                    active_infos.append(self._make_key_info(item, idx, ""))
             
-            if active_keys:
+            if active_infos:
                 # Filter out blacklisted keys (always use CLASS-level dict, never instance)
                 now = time.time()
                 bad = APIAdapter._bad_keys  # explicit class reference
-                good_keys = [k for k in active_keys if k not in bad or bad[k] < now]
-                
+
                 # Clean expired entries IN-PLACE (don't reassign to avoid shadowing)
                 expired = [k for k, t in bad.items() if t < now]
                 for k in expired:
                     del bad[k]
-                
+
+                good_infos = [
+                    info for info in active_infos
+                    if info["key"] not in bad or bad[info["key"]] < now
+                ]
+
                 # Use good keys if available, fall back to all keys if all blacklisted
-                pool = good_keys if good_keys else active_keys
-                key = random.choice(pool)
-                # Key numbering: stable index based on config order (1-based)
-                key_num = active_keys.index(key) + 1 if key in active_keys else "?"
+                pool = good_infos if good_infos else active_infos
+                info = random.choice(pool)
                 provider_name = self.provider.get("display_name", self.provider.get("name", "?"))
-                skipped = len(active_keys) - len(good_keys)
+                skipped = len(active_infos) - len(good_infos)
                 skip_info = f", {skipped} blacklisted" if skipped else ""
-                print(f"[APIAdapter] Key#{key_num} selected for {provider_name} ({len(pool)}/{len(active_keys)} keys{skip_info})")
-                return key
-        return self.provider.get("api_key", "")
+                print(f"[APIAdapter] Key#{info['index']} selected for {provider_name} ({len(pool)}/{len(active_infos)} keys{skip_info})")
+                return dict(info)
+
+        key = self.provider.get("api_key", "")
+        return self._make_key_info(key, 1, "") if key else {"key": "", "index": 0, "name": "", "label": ""}
+
+    def _make_key_info(self, key: str, index: int, name: str = "") -> Dict[str, Any]:
+        safe_name = str(name or "").strip() or f"Key#{index}"
+        return {
+            "key": key,
+            "index": index,
+            "name": safe_name,
+            "label": self._format_safe_key_label(key, index=index, name=safe_name),
+        }
+
+    @staticmethod
+    def _format_safe_key_label(key: str, index: int = 1, name: str = "") -> str:
+        safe_name = str(name or "").strip() or f"Key#{index}"
+        key_str = str(key or "")
+        if not key_str:
+            return safe_name
+        suffix = key_str[-6:]
+        return f"{safe_name} · ****{suffix}"
     
     # Store active_keys list for key number lookup in blacklist_key
     _last_active_keys: list = []

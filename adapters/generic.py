@@ -75,7 +75,9 @@ class GenericAPIAdapter(APIAdapter):
     def _build_openai_request(self, params: Dict, mode: str = "text2img") -> Dict:
         """Build request for OpenAI-compatible APIs."""
         # Pick API key ONCE (self.api_key returns random key each call)
-        _current_key = self.api_key or ""
+        key_info = self.select_api_key_info()
+        _current_key = key_info.get("key", "") or ""
+        key_label = key_info.get("label", "")
         used_key = _current_key  # Track for blacklisting on failure
         endpoint_path = self.mode_config.get("endpoint", "")
         method = self.mode_config.get("method", "POST")
@@ -86,6 +88,7 @@ class GenericAPIAdapter(APIAdapter):
         # Build headers - support Account auth mode
         auth_type = self.endpoint.get("auth_type", "api")
         if auth_type == "account":
+            key_label = "Account Token"
             # Account mode: use X-Auth-T token from Account singleton
             try:
                 from ..account import Account
@@ -94,6 +97,7 @@ class GenericAPIAdapter(APIAdapter):
             except Exception:
                 headers = {"Authorization": f"Bearer {_current_key}"}
         elif auth_type == "service_account":
+            key_label = "Service Account"
             # Vertex AI proper: OAuth2 Bearer token from Service Account JSON
             try:
                 from ..vertex_sa_auth import get_access_token
@@ -219,6 +223,9 @@ class GenericAPIAdapter(APIAdapter):
             "method": method,
             "headers": headers,
             "_used_key": used_key,
+            "_provider": self.provider.get("name", "unknown"),
+            "_provider_label": self.provider.get("display_name") or self.provider.get("name", "unknown"),
+            "_key_label": key_label,
         }
         
         if content_type == "application/json":
@@ -298,7 +305,9 @@ class GenericAPIAdapter(APIAdapter):
         
         # Pick API key ONCE for the entire request (URL + Files API + tracking)
         # CRITICAL: self.api_key is a property that returns a random key each call!
-        _current_key = self.api_key or ""
+        key_info = self.select_api_key_info()
+        _current_key = key_info.get("key", "") or ""
+        key_label = key_info.get("label", "")
         used_key = _current_key  # Track for blacklisting on failure
         
         endpoint_path = self.mode_config.get("endpoint", "")
@@ -327,6 +336,7 @@ class GenericAPIAdapter(APIAdapter):
         auth_header_format = self.endpoint.get("auth_header_format", "bearer")
         
         if auth_type == "account":
+            key_label = "Account Token"
             try:
                 from ..account import Account
                 account = Account.get_instance()
@@ -369,6 +379,8 @@ class GenericAPIAdapter(APIAdapter):
                 from ..vertex_sa_auth import get_random_sa_token
                 sa_token, sa_project_id, sa_name = get_random_sa_token(self.provider)
                 if sa_token:
+                    safe_sa_name = str(sa_name or "Service Account").replace("\\", "/").rsplit("/", 1)[-1]
+                    key_label = f"Service Account · {safe_sa_name}"
                     headers = {
                         "Authorization": f"Bearer {sa_token}",
                         "Content-Type": "application/json"
@@ -566,9 +578,28 @@ class GenericAPIAdapter(APIAdapter):
             "headers": headers,
             "json": payload,
             "_used_key": used_key,
+            "_provider": self.provider.get("name", "unknown"),
+            "_provider_label": self.provider.get("display_name") or self.provider.get("name", "unknown"),
+            "_key_label": key_label,
         }
 
     
+    def _attach_provider_usage(self, result: APIResponse, request_info: Dict[str, Any]) -> APIResponse:
+        """Attach safe provider/key image counts to a successful response."""
+        if not result.success:
+            return result
+        gen_count = len(result.images or [])
+        if gen_count <= 0:
+            return result
+
+        result.provider_usage.append({
+            "provider": request_info.get("_provider") or self.provider.get("name", "unknown"),
+            "provider_label": request_info.get("_provider_label") or self.provider.get("display_name") or self.provider.get("name", "unknown"),
+            "key_label": request_info.get("_key_label") or "未记录Key",
+            "gen": gen_count,
+        })
+        return result
+
     def _prepare_images_base64(self, params: Dict) -> Dict:
         """
         Convert uploaded files to base64 data URLs for Chat API format.
@@ -1074,6 +1105,7 @@ class GenericAPIAdapter(APIAdapter):
                     except Exception:
                         pass
 
+                self._attach_provider_usage(result, request_info)
                 return result
                 
             except requests.Timeout:

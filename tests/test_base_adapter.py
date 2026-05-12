@@ -41,6 +41,7 @@ class TestAPIResponse:
         assert r.error_message == ""
         assert r.task_id == ""
         assert r.status == ""
+        assert r.provider_usage == []
 
     def test_success_response(self):
         r = APIResponse(
@@ -138,6 +139,33 @@ class TestAPIAdapterHelpers:
     def test_api_key_empty_list_falls_back(self):
         a = self._make_adapter({"base_url": "", "api_keys": [], "api_key": "sk-fallback"})
         assert a.api_key == "sk-fallback"
+
+    @patch("random.choice", side_effect=lambda keys: keys[1])
+    def test_select_api_key_info_masks_named_key(self, _):
+        a = self._make_adapter({
+            "name": "google",
+            "display_name": "Google",
+            "base_url": "",
+            "api_keys": [
+                {"name": "main", "key": "sk-main-111111", "enabled": True},
+                {"name": "backup", "key": "sk-backup-abcdef", "enabled": True},
+            ],
+        })
+
+        info = a.select_api_key_info()
+
+        assert info["key"] == "sk-backup-abcdef"
+        assert info["label"] == "backup · ****abcdef"
+        assert "sk-backup-abcdef" not in info["label"]
+
+    def test_select_api_key_info_masks_single_key(self):
+        a = self._make_adapter({"base_url": "", "api_key": "sk-single-654321"})
+
+        info = a.select_api_key_info()
+
+        assert info["key"] == "sk-single-654321"
+        assert info["label"] == "Key#1 · ****654321"
+        assert "sk-single-654321" not in info["label"]
 
     # _get_nested_value
     def test_get_nested_simple(self):
